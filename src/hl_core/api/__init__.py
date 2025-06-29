@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import httpx
+import websockets
 
 from typing import Any, Optional
 
@@ -50,9 +51,12 @@ class WSClient:
         self.reconnect = reconnect
         logger.debug("WSClient initialised: %s", self.url)
 
-    async def connect(self) -> None:  # noqa: D401
-        """接続（後で実装）"""
-        pass
+    async def connect(self) -> None:
+        """1 回つないで受信メッセージを表示するだけ（自動再接続なし）"""
+        async with websockets.connect(self.url, ping_interval=None) as ws:
+            self._ws = ws
+            msg = await ws.recv()          # 何か 1 つ受信してみる
+            print("WS first message:", msg)
 
     async def subscribe(
         self, channel: str, params: dict[str, Any] | None = None
@@ -60,9 +64,9 @@ class WSClient:
         """購読（後で実装）"""
         pass
 
-    async def close(self) -> None:  # noqa: D401
-        """切断（後で実装）"""
-        pass
+    async def close(self) -> None:
+        if self._ws:
+            await self._ws.close()
 
 
 __all__ = ["HTTPClient", "WSClient"]
