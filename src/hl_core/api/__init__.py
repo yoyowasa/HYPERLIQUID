@@ -55,7 +55,7 @@ class WSClient:
         """1 回つないで受信メッセージを表示するだけ（自動再接続なし）"""
         async with websockets.connect(self.url, ping_interval=None) as ws:
             self._ws = ws
-            msg = await ws.recv()          # 何か 1 つ受信してみる
+            msg = await ws.recv()  # 何か 1 つ受信してみる
             print("WS first message:", msg)
 
     async def subscribe(
