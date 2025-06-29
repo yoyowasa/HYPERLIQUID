@@ -1,0 +1,4 @@
+# src/bots/pfpl/config.yaml
+target_symbol: ETH-PERP
+order_size: 0.01        # ロット
+spread_threshold: 0.05  # %
