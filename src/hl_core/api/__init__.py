@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import httpx
+
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -15,6 +17,7 @@ class HTTPClient:
     def __init__(self, base_url: str, api_key: Optional[str] = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self._cli = httpx.AsyncClient(base_url=self.base_url)
         logger.debug("HTTPClient initialised: %s", self.base_url)
 
     async def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
@@ -27,10 +30,13 @@ class HTTPClient:
         resp.raise_for_status()                    # 4xx / 5xx なら例外
         return resp.json()
 
-    async def post(self, endpoint: str, data: dict[str, Any] | None = None) -> Any:  # noqa: D401
-        """
-        非同期 POST（実装は後で）"""
-        pass
+    async def post(self, path: str, data: dict[str, Any] | None = None) -> Any:
+        url = f"/{path.lstrip('/')}"
+        resp = await self._cli.post(url, json=data or {})
+        resp.raise_for_status()
+        return resp.json()
+    async def close(self) -> None:
+        await self._cli.aclose()
 
 
 class WSClient:
