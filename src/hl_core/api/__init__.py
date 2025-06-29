@@ -25,9 +25,9 @@ class HTTPClient:
         指定パスに GET リクエストを送り、JSON を返す。
         例: await cli.get("v1/markets")
         """
-        url = f"/{path.lstrip('/')}"               # 末尾スラッシュずれを解消
+        url = f"/{path.lstrip('/')}"  # 末尾スラッシュずれを解消
         resp = await self._cli.get(url, params=params)
-        resp.raise_for_status()                    # 4xx / 5xx なら例外
+        resp.raise_for_status()  # 4xx / 5xx なら例外
         return resp.json()
 
     async def post(self, path: str, data: dict[str, Any] | None = None) -> Any:
@@ -35,6 +35,7 @@ class HTTPClient:
         resp = await self._cli.post(url, json=data or {})
         resp.raise_for_status()
         return resp.json()
+
     async def close(self) -> None:
         await self._cli.aclose()
 
@@ -53,7 +54,9 @@ class WSClient:
         """接続（後で実装）"""
         pass
 
-    async def subscribe(self, channel: str, params: dict[str, Any] | None = None) -> None:  # noqa: D401
+    async def subscribe(
+        self, channel: str, params: dict[str, Any] | None = None
+    ) -> None:  # noqa: D401
         """購読（後で実装）"""
         pass
 

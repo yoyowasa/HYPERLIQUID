@@ -14,7 +14,7 @@ from colorama import Fore, Style, init as _color_init
 # ────────────────────────────────────────────────────────────
 # 内部定数
 # ────────────────────────────────────────────────────────────
-_TZ: Final = _dt.timezone.utc           # すべて UTC
+_TZ: Final = _dt.timezone.utc  # すべて UTC
 _LOG_FMT: Final = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 _LEVEL_COLOR: Final = {
     logging.DEBUG: Fore.CYAN,

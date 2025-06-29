@@ -6,7 +6,7 @@ from typing import Any
 
 from hl_core.utils.logger import setup_logger
 
-setup_logger(bot_name="pfpl")         # ← Bot 切替時はここだけ変える
+setup_logger(bot_name="pfpl")  # ← Bot 切替時はここだけ変える
 
 logger = logging.getLogger(__name__)
 
