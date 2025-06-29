@@ -6,7 +6,7 @@ authors = [
     {name = "Yoshi",email = "yoshiyoshi@example.com"}
 ]
 readme = "README.md"
-requires-python = "^3.13"
+requires-python = ">=3.13,<4.0"
 packages = [
     { include = "app",       from = "src" },   # ← new
     { include = "hl_core",   from = "src" },
