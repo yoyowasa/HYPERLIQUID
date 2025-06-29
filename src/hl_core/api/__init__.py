@@ -17,10 +17,15 @@ class HTTPClient:
         self.api_key = api_key
         logger.debug("HTTPClient initialised: %s", self.base_url)
 
-    async def get(self, endpoint: str, params: dict[str, Any] | None = None) -> Any:  # noqa: D401
+    async def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """
-        非同期 GET（実装は後で）"""
-        pass
+        指定パスに GET リクエストを送り、JSON を返す。
+        例: await cli.get("v1/markets")
+        """
+        url = f"/{path.lstrip('/')}"               # 末尾スラッシュずれを解消
+        resp = await self._cli.get(url, params=params)
+        resp.raise_for_status()                    # 4xx / 5xx なら例外
+        return resp.json()
 
     async def post(self, endpoint: str, data: dict[str, Any] | None = None) -> Any:  # noqa: D401
         """
