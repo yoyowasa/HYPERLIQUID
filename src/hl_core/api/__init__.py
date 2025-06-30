@@ -68,7 +68,6 @@ class WSClient:
         }
         await self._ws.send(json.dumps(msg))
 
-
     async def close(self) -> None:
         if self._ws:
             await self._ws.close()
