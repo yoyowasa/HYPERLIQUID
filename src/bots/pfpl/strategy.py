@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-import anyio
+import asyncio
 from hl_core.api import HTTPClient
 from hl_core.utils.logger import setup_logger
 
@@ -56,7 +56,7 @@ class PFPLStrategy:
         threshold = self.config.get("spread_threshold", 0.5)
         if abs(spread) >= threshold:
             side = "BUY" if spread < 0 else "SELL"
-            anyio.create_task(self.place_order(side, 0.01))  # ★追加
+            asyncio.create_task(self.place_order(side, 0.01))  # ★追加
 
     # ─────────────── 注文 Stub ────────────────
     async def place_order(self, side: str, size: float) -> None:
