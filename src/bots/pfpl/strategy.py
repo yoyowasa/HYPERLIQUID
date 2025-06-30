@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-
+import anyio
+from hl_core.api import HTTPClient
 from hl_core.utils.logger import setup_logger
 
 setup_logger(bot_name="pfpl")  # ← Bot 切替時はここだけ変える
@@ -22,6 +23,7 @@ class PFPLStrategy:
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config
         self.mids: dict[str, str] = {}  # ★ 追加：最新ミッドを保持
+        self.http = HTTPClient(base_url="https://api.hyperliquid.xyz")
         logger.info("PFPLStrategy initialised with %s", config)
 
     async def on_depth_update(self, depth: dict[str, Any]) -> None:  # noqa: D401
@@ -47,15 +49,16 @@ class PFPLStrategy:
 
     # ───────────────────────── シグナル判定 ──────────────────────
     def evaluate(self) -> None:
-        """
-        最新 mid@1 が設定スプレッド閾値を超えたらシグナルを出すだけの雛形。
-        今はログに出すだけ。後で Order API を呼ぶ処理に置き換える。
-        """
         mid = self.mids.get("@1")
         if mid is None:
-            return  # まだデータが無い
-
+            return
         spread = float(mid) - float(self.config.get("target_mid", 30.0))
         threshold = self.config.get("spread_threshold", 0.5)
         if abs(spread) >= threshold:
-            logger.info("EVALUATE: spread=%.4f → SIGNAL!", spread)
+            side = "BUY" if spread < 0 else "SELL"
+            anyio.create_task(self.place_order(side, 0.01))  # ★追加
+
+    # ─────────────── 注文 Stub ────────────────
+    async def place_order(self, side: str, size: float) -> None:
+        """現状はログだけ。後で本物の注文 API を呼ぶ。"""
+        logger.info("PLACE_ORDER: %s %.4f", side.upper(), size)
