@@ -4,7 +4,7 @@ import json
 import logging
 import httpx
 import websockets
-
+import asyncio
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -52,9 +52,14 @@ class WSClient:
         logger.debug("WSClient initialised: %s", self.url)
 
     async def connect(self) -> None:
-        """1 回つないで受信メッセージを表示するだけ（自動再接続なし）"""
-        async with websockets.connect(self.url, ping_interval=None) as ws:
-            self._ws = ws
+        """WS 接続し、受信ループをバックグラウンドで走らせる"""
+        self._ws = await websockets.connect(self.url, ping_interval=None)
+        asyncio.create_task(self._listen())   # 受信ループを常駐
+
+    async def _listen(self) -> None:          # ★新規メソッド
+        assert self._ws
+        async for msg in self._ws:
+            self.on_message(json.loads(msg))
 
     async def subscribe(self, feed_type: str) -> None:
         """
