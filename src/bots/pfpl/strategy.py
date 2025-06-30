@@ -43,3 +43,19 @@ class PFPLStrategy:
             self.mids.update(mids)
             mid1 = mids.get("@1")
             logger.info("on_message mid@1=%s", mid1)
+            self.evaluate()
+
+    # ───────────────────────── シグナル判定 ──────────────────────
+    def evaluate(self) -> None:
+        """
+        最新 mid@1 が設定スプレッド閾値を超えたらシグナルを出すだけの雛形。
+        今はログに出すだけ。後で Order API を呼ぶ処理に置き換える。
+        """
+        mid = self.mids.get("@1")
+        if mid is None:
+            return  # まだデータが無い
+
+        spread = float(mid) - float(self.config.get("target_mid", 30.0))
+        threshold = self.config.get("spread_threshold", 0.5)
+        if abs(spread) >= threshold:
+            logger.info("EVALUATE: spread=%.4f → SIGNAL!", spread)
