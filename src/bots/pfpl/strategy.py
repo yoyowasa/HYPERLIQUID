@@ -1,6 +1,6 @@
 # src/bots/pfpl/strategy.py
 from __future__ import annotations
-
+import os
 import logging
 from typing import Any
 import asyncio
@@ -22,8 +22,10 @@ class PFPLStrategy:
 
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config
-        self.mids: dict[str, str] = {}  # ★ 追加：最新ミッドを保持
-        self.http = HTTPClient(base_url="https://api.hyperliquid.xyz")
+        self.mids: dict[str, str] = {}
+        # ★ API キーは config or 環境変数から取得
+        api_key = config.get("api_key") or os.getenv("HL_API_KEY")
+        self.http = HTTPClient(base_url="https://api.hyperliquid.xyz", api_key=api_key)
         logger.info("PFPLStrategy initialised with %s", config)
 
     async def on_depth_update(self, depth: dict[str, Any]) -> None:  # noqa: D401
@@ -58,7 +60,20 @@ class PFPLStrategy:
             side = "BUY" if spread < 0 else "SELL"
             asyncio.create_task(self.place_order(side, 0.01))  # ★追加
 
-    # ─────────────── 注文 Stub ────────────────
-    async def place_order(self, side: str, size: float) -> None:
-        """現状はログだけ。後で本物の注文 API を呼ぶ。"""
-        logger.info("PLACE_ORDER: %s %.4f", side.upper(), size)
+    # ─────────────── 注文 ここを実装 ────────────────
+    async def place_order(self, side: str, size: float) -> None:  # noqa: D401
+        """
+        実際に /order エンドポイントへ POST。
+        Hyperliquid の標準 Market 成行注文フォーマットに合わせる。
+        """
+        payload = {
+            "market": "@1",  # BTC/USDC の例。必要に応じて config へ
+            "type": "market",
+            "side": side.lower(),  # "buy" / "sell"
+            "size": size,
+        }
+        try:
+            resp = await self.http.post("order", payload)
+            logger.info("ORDER OK: %s", resp)
+        except Exception as e:  # noqa: BLE001
+            logger.error("ORDER FAIL: %s", e)
