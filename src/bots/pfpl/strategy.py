@@ -24,7 +24,7 @@ class PFPLStrategy:
         self.config = config
         self.mids: dict[str, str] = {}
         # ★ API キーは config or 環境変数から取得
-        api_key = config.get("api_key") or os.getenv("HL_API_KEY")
+        api_key = os.getenv("HL_API_KEY")
         self.http = HTTPClient(base_url="https://api.hyperliquid.xyz", api_key=api_key)
         logger.info("PFPLStrategy initialised with %s", config)
 
