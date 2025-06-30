@@ -56,10 +56,15 @@ class WSClient:
         self._ws = await websockets.connect(self.url, ping_interval=None)
         asyncio.create_task(self._listen())   # 受信ループを常駐
 
-    async def _listen(self) -> None:          # ★新規メソッド
+
+    async def _listen(self) -> None:
         assert self._ws
-        async for msg in self._ws:
-            self.on_message(json.loads(msg))
+        try:
+            async for msg in self._ws:
+                self.on_message(json.loads(msg))
+        except websockets.ConnectionClosedError:
+            # 1000 (Normal Closure) などは無視して静かに終了
+            pass
 
     async def subscribe(self, feed_type: str) -> None:
         """
