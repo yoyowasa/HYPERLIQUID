@@ -55,14 +55,19 @@ class WSClient:
         """1 回つないで受信メッセージを表示するだけ（自動再接続なし）"""
         async with websockets.connect(self.url, ping_interval=None) as ws:
             self._ws = ws
-            msg = await ws.recv()  # 何か 1 つ受信してみる
-            print("WS first message:", msg)
 
-    async def subscribe(
-        self, channel: str, params: dict[str, Any] | None = None
-    ) -> None:  # noqa: D401
-        """購読（後で実装）"""
-        pass
+    async def subscribe(self, feed_type: str) -> None:
+        """
+        Hyperliquid 公式仕様に従って購読メッセージを送信する。
+        例: await ws.subscribe("allMids")
+        """
+        assert self._ws, "connect() を先に呼んでください"
+        msg = {
+            "method": "subscribe",
+            "subscription": {"type": feed_type},
+        }
+        await self._ws.send(json.dumps(msg))
+
 
     async def close(self) -> None:
         if self._ws:
