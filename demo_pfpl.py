@@ -2,6 +2,7 @@ import anyio
 from hl_core.api import WSClient
 from bots.pfpl import PFPLStrategy
 from dotenv import load_dotenv
+
 load_dotenv()
 
 strategy = PFPLStrategy(config={})
