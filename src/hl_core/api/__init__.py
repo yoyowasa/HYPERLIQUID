@@ -54,8 +54,7 @@ class WSClient:
     async def connect(self) -> None:
         """WS 接続し、受信ループをバックグラウンドで走らせる"""
         self._ws = await websockets.connect(self.url, ping_interval=None)
-        asyncio.create_task(self._listen())   # 受信ループを常駐
-
+        asyncio.create_task(self._listen())  # 受信ループを常駐
 
     async def _listen(self) -> None:
         assert self._ws
