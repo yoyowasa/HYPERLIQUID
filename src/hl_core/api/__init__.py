@@ -1,6 +1,6 @@
 # src/hl_core/api/__init__.py
 from __future__ import annotations
-
+import json
 import logging
 import httpx
 import websockets
