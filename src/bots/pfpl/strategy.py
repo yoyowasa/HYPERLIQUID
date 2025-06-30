@@ -21,7 +21,7 @@ class PFPLStrategy:
 
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config
-        self.mids: dict[str, str] = {}          # ★ 追加：最新ミッドを保持
+        self.mids: dict[str, str] = {}  # ★ 追加：最新ミッドを保持
         logger.info("PFPLStrategy initialised with %s", config)
 
     async def on_depth_update(self, depth: dict[str, Any]) -> None:  # noqa: D401
@@ -31,6 +31,7 @@ class PFPLStrategy:
     async def on_tick(self, tick: dict[str, Any]) -> None:  # noqa: D401
         """約定ティック更新時に呼ばれるコールバック（後で実装）"""
         pass
+
     # ───────────────────────── WS 受信フック ──────────────────────
     def on_message(self, data: dict[str, Any]) -> None:
         """
