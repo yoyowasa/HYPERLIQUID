@@ -1,4 +1,6 @@
-import json, anyio, websockets
+import json
+import anyio
+import websockets
 
 
 async def main():
