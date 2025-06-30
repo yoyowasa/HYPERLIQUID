@@ -21,6 +21,7 @@ class PFPLStrategy:
 
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config
+        self.mids: dict[str, str] = {}          # ★ 追加：最新ミッドを保持
         logger.info("PFPLStrategy initialised with %s", config)
 
     async def on_depth_update(self, depth: dict[str, Any]) -> None:  # noqa: D401
@@ -30,3 +31,14 @@ class PFPLStrategy:
     async def on_tick(self, tick: dict[str, Any]) -> None:  # noqa: D401
         """約定ティック更新時に呼ばれるコールバック（後で実装）"""
         pass
+    # ───────────────────────── WS 受信フック ──────────────────────
+    def on_message(self, data: dict[str, Any]) -> None:
+        """
+        WSClient から渡されるメッセージを処理するフック。
+        ここでは `allMids` チャンネルの @1（BTC?）ミッドだけログに出す。
+        """
+        if data.get("channel") == "allMids":
+            mids = data["data"]["mids"]
+            self.mids.update(mids)
+            mid1 = mids.get("@1")
+            logger.info("on_message mid@1=%s", mid1)
