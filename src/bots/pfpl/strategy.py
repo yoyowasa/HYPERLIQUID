@@ -49,6 +49,11 @@ class PFPLStrategy:
 
         # meta info
         meta = self.exchange.info.meta()
+        # テストネットには minSizeUsd が無い場合がある → フォールバック
+        min_usd_map: dict[str, str] = meta.get("minSizeUsd", {})  # 本番
+        if not min_usd_map:  # テストネット
+            min_usd_map = {"ETH": "10"}  # デフォルト USD 10
+
         self.min_usd = Decimal(meta["minSizeUsd"]["ETH"])  # 最小発注 USD
         self.tick = Decimal(meta["universe"]["ETH"]["pxTick"])
 
