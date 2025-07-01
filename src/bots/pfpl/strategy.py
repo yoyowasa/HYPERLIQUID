@@ -13,7 +13,6 @@ from hl_core.utils.logger import setup_logger
 
 # 既存 import 群の最後あたりに追加
 from hyperliquid.exchange import Exchange
-from hyperliquid.utils import constants
 from eth_account.account import Account
 
 setup_logger(bot_name="pfpl")  # ← Bot 切替時はここだけ変える
@@ -35,20 +34,16 @@ class PFPLStrategy:
             raise RuntimeError("HL_ACCOUNT_ADDR / HL_API_SECRET が未設定")
 
         # Hyperliquid SDK
+        # Hyperliquid SDK
         self.wallet = Account.from_key(self.secret)
         base_url = (
-            "https://api.hyperliquid-testnet.xyz"  # ← テストネット REST/WS 共通
+            "https://api.hyperliquid-testnet.xyz"  # テストネット
             if config.get("testnet")
-            else "https://api.hyperliquid.xyz"
+            else "https://api.hyperliquid.xyz"  # メインネット
         )
         self.exchange = Exchange(
-            base_url,
-            self.wallet,
-            (
-                constants.MAINNET_API_URL
-                if not config.get("testnet")
-                else constants.TESTNET_API_URL
-            ),
+            base_url,  # ① base_url（文字列）
+            self.wallet,  # ② wallet（LocalAccount）
             account_address=self.account,
         )
 
