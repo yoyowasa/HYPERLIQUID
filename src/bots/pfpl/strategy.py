@@ -65,9 +65,10 @@ class PFPLStrategy:
         self.order_usd = Decimal(config.get("order_usd", 10))
         self.max_pos = Decimal(config.get("max_position_usd", 100))
 
-        # state
-        self.last_side: str | None = None
-        self.last_ts: float = 0.0
+        # state ---------------------------------------------------------------
+        self.last_side: str | None = None          # 直前に出したサイド
+        self.last_ts: float = 0.0                  # 直前発注の UNIX 秒
+        self.pos_usd: Decimal = Decimal("0")       # 現在ポジション USD
 
         logger.info("PFPLStrategy initialised with %s", config)
 
@@ -78,10 +79,23 @@ class PFPLStrategy:
             return
         self.mids = msg["data"]["mids"]
         self.evaluate()
+        # --- 受信データから現在ポジション USD を更新 ---
+        acct = self.exchange.info.account(self.account)
+        self.pos_usd = Decimal(acct["marginSummary"]["totalValue"])  # 現物で十分
+
 
     # ---------------------------------------------------------------- evaluate
 
     def evaluate(self) -> None:
+        now = time.time()
+        # --- クールダウン ---
+        if now - self.last_ts < self.cooldown:
+            return  # まだクールダウン中
+
+        # --- ポジション上限 ---
+        if abs(self.pos_usd) >= self.max_pos:
+            return  # 上限到達
+
         mid = Decimal(self.mids.get("@1", "0"))
         fair = Decimal(self.mids.get("@10", "0"))  # ダミー: 本来は別 feed
         spread = fair - mid
@@ -124,6 +138,9 @@ class PFPLStrategy:
                 limit_px=1e9 if is_buy else 1e-9,
                 order_type={"limit": {"tif": "Ioc"}},
                 reduce_only=False,
+                self.last_ts = time.time()
+                self.last_side = side
+
             )
             logger.info("ORDER RESP: %s", resp)
         except Exception as exc:
