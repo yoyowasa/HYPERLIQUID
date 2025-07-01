@@ -52,6 +52,7 @@ class WSClient:
         self.url = url
         self.reconnect = reconnect  # 自動再接続フラグ
         self.retry_sec = retry_sec  # 再接続までの待機秒
+        self._subs: list[str] = []
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         # Strategy などが上書きするフック
         self.on_message: Callable[[dict[str, Any]], Awaitable[None] | None] = (
@@ -70,6 +71,12 @@ class WSClient:
                 ) as ws:
                     self._ws = ws
                     logger.info("WS connected")
+                    for ch in self._subs:
+                        await self._ws.send(
+                            json.dumps(
+                                {"method": "subscribe", "subscription": {"type": ch}}
+                            )
+                        )
                     await self._listen()  # 切断までブロック
             except (websockets.ConnectionClosed, ConnectionError) as exc:
                 logger.warning("WS disconnected (exception): %s", exc)
@@ -96,6 +103,7 @@ class WSClient:
         await self._ws.send(
             json.dumps({"method": "subscribe", "subscription": {"type": feed_type}})
         )
+        self._subs.append(feed_type)
 
     async def close(self) -> None:
         if self._ws:
