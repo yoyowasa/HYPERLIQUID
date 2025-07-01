@@ -42,8 +42,8 @@ class PFPLStrategy:
             else "https://api.hyperliquid.xyz"
         )
         self.exchange = Exchange(
-            self.wallet,
             base_url,
+            self.wallet,
             (
                 constants.MAINNET_API_URL
                 if not config.get("testnet")
