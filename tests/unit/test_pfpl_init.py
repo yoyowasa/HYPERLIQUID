@@ -1,5 +1,6 @@
 from bots.pfpl import PFPLStrategy
 
+
 def test_init(monkeypatch):
     # ダミー鍵を環境変数にセット
     monkeypatch.setenv("HL_ACCOUNT_ADDR", "0xTEST")
