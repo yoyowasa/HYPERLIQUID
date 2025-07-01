@@ -55,10 +55,9 @@ class PFPLStrategy:
         if not min_usd_map:
             logger.warning("minSizeUsd not present in meta; defaulting to USD 10")
             min_usd_map = {"ETH": "10"}  # ← 必要なら YAML で上書き可
-
         self.min_usd = Decimal(min_usd_map["ETH"])
-
-        self.tick = Decimal(meta["universe"]["ETH"]["pxTick"])
+        uni_eth = next(asset for asset in meta["universe"] if asset["name"] == "ETH")
+        self.tick = Decimal(uni_eth["pxTick"])
 
         # params
         self.cooldown = float(config.get("cooldown_sec", 1.0))
