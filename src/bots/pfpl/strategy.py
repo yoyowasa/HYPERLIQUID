@@ -57,7 +57,8 @@ class PFPLStrategy:
             min_usd_map = {"ETH": "10"}  # ← 必要なら YAML で上書き可
         self.min_usd = Decimal(min_usd_map["ETH"])
         uni_eth = next(asset for asset in meta["universe"] if asset["name"] == "ETH")
-        self.tick = Decimal(uni_eth["pxTick"])
+        tick_raw = uni_eth.get("pxTick", uni_eth.get("pxTickSize", "0.01"))
+        self.tick = Decimal(tick_raw)
 
         # params
         self.cooldown = float(config.get("cooldown_sec", 1.0))
