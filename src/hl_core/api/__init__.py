@@ -6,6 +6,7 @@ import httpx
 import websockets
 import asyncio
 from typing import Awaitable, Callable, Any, Optional
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,8 +50,8 @@ class WSClient:
         retry_sec: float = 3.0,
     ) -> None:
         self.url = url
-        self.reconnect = reconnect          # 自動再接続フラグ
-        self.retry_sec = retry_sec          # 再接続までの待機秒
+        self.reconnect = reconnect  # 自動再接続フラグ
+        self.retry_sec = retry_sec  # 再接続までの待機秒
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         # Strategy などが上書きするフック
         self.on_message: Callable[[dict[str, Any]], Awaitable[None] | None] = (
@@ -83,9 +84,7 @@ class WSClient:
     async def subscribe(self, feed_type: str) -> None:
         if self._ws:
             await self._ws.send(
-                json.dumps(
-                    {"method": "subscribe", "subscription": {"type": feed_type}}
-                )
+                json.dumps({"method": "subscribe", "subscription": {"type": feed_type}})
             )
 
     async def close(self) -> None:
