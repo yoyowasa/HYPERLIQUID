@@ -83,10 +83,16 @@ class WSClient:
                 self.on_message(json.loads(msg))
 
     async def subscribe(self, feed_type: str) -> None:
-        if self._ws:
-            await self._ws.send(
-                json.dumps({"method": "subscribe", "subscription": {"type": feed_type}})
+        """接続済みなら購読メッセージを送る。未接続・切断時はスキップ。"""
+        if not self._ws or self._ws.closed:
+            logger.warning("WS not connected; skip subscribe(%s)", feed_type)
+            return
+
+        await self._ws.send(
+            json.dumps(
+                {"method": "subscribe", "subscription": {"type": feed_type}}
             )
+        )
 
     async def close(self) -> None:
         if self._ws:
