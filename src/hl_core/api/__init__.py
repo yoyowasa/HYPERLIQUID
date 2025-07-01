@@ -5,8 +5,7 @@ import logging
 import httpx
 import websockets
 import asyncio
-from typing import Any, Optional
-
+from typing import Awaitable, Callable, Any, Optional
 logger = logging.getLogger(__name__)
 
 
@@ -42,44 +41,57 @@ class HTTPClient:
 
 
 class WSClient:
-    """
-    Hyperliquid WebSocket ラッパ（雛形）
-    """
-
-    def __init__(self, url: str, reconnect: bool = True) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        reconnect: bool = False,
+        retry_sec: float = 3.0,
+    ) -> None:
         self.url = url
-        self.reconnect = reconnect
+        self.reconnect = reconnect          # 自動再接続フラグ
+        self.retry_sec = retry_sec          # 再接続までの待機秒
+        self._ws: Optional[websockets.WebSocketClientProtocol] = None
+        # Strategy などが上書きするフック
+        self.on_message: Callable[[dict[str, Any]], Awaitable[None] | None] = (
+            lambda _m: None
+        )
         logger.debug("WSClient initialised: %s", self.url)
 
     async def connect(self) -> None:
-        """WS 接続し、受信ループをバックグラウンドで走らせる"""
-        self._ws = await websockets.connect(self.url, ping_interval=None)
-        asyncio.create_task(self._listen())  # 受信ループを常駐
+        """接続して listen。reconnect=True なら切断時に自動再接続。"""
+        while True:
+            try:
+                async with websockets.connect(self.url, ping_interval=None) as ws:
+                    self._ws = ws
+                    logger.info("WS connected")
+                    await self._listen()  # 切断までブロック
+            except (websockets.ConnectionClosed, ConnectionError) as exc:
+                logger.warning("WS disconnected: %s", exc)
+                if not self.reconnect:
+                    raise
+                logger.info("Reconnecting in %.1f s…", self.retry_sec)
+                await asyncio.sleep(self.retry_sec)
+            else:  # 正常終了
+                break
 
     async def _listen(self) -> None:
-        assert self._ws
-        try:
-            async for msg in self._ws:
+        async for msg in self._ws:  # type: ignore[operator]
+            if self.on_message:
                 self.on_message(json.loads(msg))
-        except websockets.ConnectionClosedError:
-            # 1000 (Normal Closure) などは無視して静かに終了
-            pass
 
     async def subscribe(self, feed_type: str) -> None:
-        """
-        Hyperliquid 公式仕様に従って購読メッセージを送信する。
-        例: await ws.subscribe("allMids")
-        """
-        assert self._ws, "connect() を先に呼んでください"
-        msg = {
-            "method": "subscribe",
-            "subscription": {"type": feed_type},
-        }
-        await self._ws.send(json.dumps(msg))
+        if self._ws:
+            await self._ws.send(
+                json.dumps(
+                    {"method": "subscribe", "subscription": {"type": feed_type}}
+                )
+            )
 
     async def close(self) -> None:
         if self._ws:
             await self._ws.close()
+            logger.info("WS closed")
 
 
 __all__ = ["HTTPClient", "WSClient"]

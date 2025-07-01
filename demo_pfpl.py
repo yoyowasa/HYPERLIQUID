@@ -9,7 +9,7 @@ strategy = PFPLStrategy(config={})
 
 
 async def main() -> None:
-    ws = WSClient(url="wss://api.hyperliquid.xyz/ws", reconnect=False)
+    ws = WSClient("wss://api.hyperliquid.xyz/ws", reconnect=True)
     ws.on_message = strategy.on_message  # ← Strategy の hook を差し込む
     await ws.connect()
     await ws.subscribe("allMids")
