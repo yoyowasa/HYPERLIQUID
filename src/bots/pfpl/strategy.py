@@ -28,10 +28,12 @@ class PFPLStrategy:
         self.mids: dict[str, str] = {}
         # ★ 環境変数から公開アドレスと秘密鍵を取得
         self.account = os.getenv("HL_ACCOUNT_ADDR")
-        self.secret  = os.getenv("HL_API_SECRET")
+        self.secret = os.getenv("HL_API_SECRET")
         if not (self.account and self.secret):
             raise RuntimeError("HL_ACCOUNT_ADDR / HL_API_SECRET が未設定")
-        self.http = HTTPClient(base_url="https://api.hyperliquid.xyz", api_key=self.account)
+        self.http = HTTPClient(
+            base_url="https://api.hyperliquid.xyz", api_key=self.account
+        )
         logger.info("PFPLStrategy initialised with %s", config)
 
     async def on_depth_update(self, depth: dict[str, Any]) -> None:  # noqa: D401
@@ -70,9 +72,9 @@ class PFPLStrategy:
     # ─── 署名付きで実注文 (テストネット推奨) ───
     async def place_order(self, side: str, size: float) -> None:
         order = {
-            "market": "@1",            # BTC/USDC の例
+            "market": "@1",  # BTC/USDC の例
             "type": "market",
-            "side": side.lower(),      # "buy" / "sell"
+            "side": side.lower(),  # "buy" / "sell"
             "size": size,
             "account": self.account,
         }
