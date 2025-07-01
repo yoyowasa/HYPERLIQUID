@@ -4,7 +4,9 @@ import os
 import logging
 from typing import Any
 import asyncio
-import hmac, hashlib, json
+import hmac
+import hashlib
+import json
 from hl_core.api import HTTPClient
 from hl_core.utils.logger import setup_logger
 
@@ -29,7 +31,7 @@ class PFPLStrategy:
         self.secret  = os.getenv("HL_API_SECRET")
         if not (self.account and self.secret):
             raise RuntimeError("HL_ACCOUNT_ADDR / HL_API_SECRET が未設定")
-        self.http = HTTPClient(base_url="https://api.hyperliquid.xyz", api_key=api_key)
+        self.http = HTTPClient(base_url="https://api.hyperliquid.xyz", api_key=self.account)
         logger.info("PFPLStrategy initialised with %s", config)
 
     async def on_depth_update(self, depth: dict[str, Any]) -> None:  # noqa: D401
