@@ -84,7 +84,7 @@ class WSClient:
 
     async def subscribe(self, feed_type: str) -> None:
         """接続済みなら購読メッセージを送る。未接続・切断時はスキップ。"""
-        if not self._ws or self._ws.closed:
+        if not self._ws or getattr(self._ws, "closed", True):
             logger.warning("WS not connected; skip subscribe(%s)", feed_type)
             return
 
