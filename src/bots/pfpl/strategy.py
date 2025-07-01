@@ -7,6 +7,7 @@ import asyncio
 import hmac
 import hashlib
 import json
+from time import time
 from hl_core.api import HTTPClient
 from hl_core.utils.logger import setup_logger
 
@@ -34,6 +35,9 @@ class PFPLStrategy:
         self.http = HTTPClient(
             base_url="https://api.hyperliquid.xyz", api_key=self.account
         )
+        self.last_side: str | None = None  # ★直前サイド
+        self.last_ts: float = 0.0  # ★直前タイムスタンプ
+        self.cooldown = float(config.get("cooldown_sec", 1.0))
         logger.info("PFPLStrategy initialised with %s", config)
 
     async def on_depth_update(self, depth: dict[str, Any]) -> None:  # noqa: D401
@@ -66,6 +70,13 @@ class PFPLStrategy:
         threshold = self.config.get("spread_threshold", 0.5)
         if abs(spread) >= threshold:
             side = "BUY" if spread < 0 else "SELL"
+            # ── ★ 連続発注抑制 ───────────────────────────
+            now = time()
+            if side == self.last_side and (now - self.last_ts) < self.cooldown:
+                logger.debug("skip duplicate %s", side)
+                return
+            self.last_side = side
+            self.last_ts = now
             asyncio.create_task(self.place_order(side, 0.01))  # ★追加
 
     # ─────────────── 注文 ここを実装 ────────────────
