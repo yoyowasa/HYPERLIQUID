@@ -4,6 +4,7 @@ import os
 import logging
 from typing import Any
 import asyncio
+import hmac, hashlib, json
 from hl_core.api import HTTPClient
 from hl_core.utils.logger import setup_logger
 
@@ -23,8 +24,11 @@ class PFPLStrategy:
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config
         self.mids: dict[str, str] = {}
-        # ★ API キーは config or 環境変数から取得
-        api_key = os.getenv("HL_API_KEY")
+        # ★ 環境変数から公開アドレスと秘密鍵を取得
+        self.account = os.getenv("HL_ACCOUNT_ADDR")
+        self.secret  = os.getenv("HL_API_SECRET")
+        if not (self.account and self.secret):
+            raise RuntimeError("HL_ACCOUNT_ADDR / HL_API_SECRET が未設定")
         self.http = HTTPClient(base_url="https://api.hyperliquid.xyz", api_key=api_key)
         logger.info("PFPLStrategy initialised with %s", config)
 
@@ -61,19 +65,24 @@ class PFPLStrategy:
             asyncio.create_task(self.place_order(side, 0.01))  # ★追加
 
     # ─────────────── 注文 ここを実装 ────────────────
-    async def place_order(self, side: str, size: float) -> None:  # noqa: D401
-        """
-        実際に /order エンドポイントへ POST。
-        Hyperliquid の標準 Market 成行注文フォーマットに合わせる。
-        """
-        payload = {
-            "market": "@1",  # BTC/USDC の例。必要に応じて config へ
+    # ─── 署名付きで実注文 (テストネット推奨) ───
+    async def place_order(self, side: str, size: float) -> None:
+        order = {
+            "market": "@1",            # BTC/USDC の例
             "type": "market",
-            "side": side.lower(),  # "buy" / "sell"
+            "side": side.lower(),      # "buy" / "sell"
             "size": size,
+            "account": self.account,
         }
+        order["signature"] = self._sign(order)
+
         try:
-            resp = await self.http.post("order", payload)
+            resp = await self.http.post("exchange", order)
             logger.info("ORDER OK: %s", resp)
         except Exception as e:  # noqa: BLE001
             logger.error("ORDER FAIL: %s", e)
+
+    def _sign(self, payload: dict[str, Any]) -> str:
+        """API Wallet Secret で HMAC-SHA256 署名（例）"""
+        msg = json.dumps(payload, separators=(",", ":")).encode()
+        return hmac.new(self.secret.encode(), msg, hashlib.sha256).hexdigest()
