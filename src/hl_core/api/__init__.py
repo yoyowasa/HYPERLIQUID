@@ -89,9 +89,7 @@ class WSClient:
             return
 
         await self._ws.send(
-            json.dumps(
-                {"method": "subscribe", "subscription": {"type": feed_type}}
-            )
+            json.dumps({"method": "subscribe", "subscription": {"type": feed_type}})
         )
 
     async def close(self) -> None:
