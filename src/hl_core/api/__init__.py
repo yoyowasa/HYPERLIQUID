@@ -50,18 +50,17 @@ class WSClient:
         retry_sec: float = 3.0,
     ) -> None:
         self.url = url
-        self.reconnect = reconnect  # 自動再接続フラグ
-        self.retry_sec = retry_sec  # 再接続までの待機秒
-        self._subs: list[str] = []
+        self.reconnect = reconnect
+        self.retry_sec = retry_sec
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
-        # Strategy などが上書きするフック
+        self._subs: list[str] = []  # ★購読チャンネル保持
         self.on_message: Callable[[dict[str, Any]], Awaitable[None] | None] = (
             lambda _m: None
         )
         logger.debug("WSClient initialised: %s", self.url)
 
     async def connect(self) -> None:
-        """接続して listen。reconnect=True なら常に再接続を試みる。"""
+        """接続し listen。reconnect=True なら常に再接続 & re‑subscribe。"""
         while True:
             try:
                 async with websockets.connect(
@@ -71,17 +70,17 @@ class WSClient:
                 ) as ws:
                     self._ws = ws
                     logger.info("WS connected")
+                    # ★再接続直後に購読を復元
                     for ch in self._subs:
                         await self._ws.send(
                             json.dumps(
                                 {"method": "subscribe", "subscription": {"type": ch}}
                             )
                         )
-                    await self._listen()  # 切断までブロック
+                    await self._listen()
             except (websockets.ConnectionClosed, ConnectionError) as exc:
-                logger.warning("WS disconnected (exception): %s", exc)
+                logger.warning("WS disconnected: %s", exc)
 
-            # ここまで来た時点で接続は閉じている（正常 or 例外）
             if not self.reconnect:
                 logger.info("reconnect=False → exit")
                 break
@@ -95,15 +94,15 @@ class WSClient:
                 self.on_message(json.loads(msg))
 
     async def subscribe(self, feed_type: str) -> None:
-        """接続済みなら購読メッセージを送る。未接続・切断時はスキップ。"""
+        """未接続時はスキップ; 接続後 self._subs へ記録"""
         if not self._ws or getattr(self._ws, "closed", True):
             logger.warning("WS not connected; skip subscribe(%s)", feed_type)
             return
-
         await self._ws.send(
             json.dumps({"method": "subscribe", "subscription": {"type": feed_type}})
         )
-        self._subs.append(feed_type)
+        if feed_type not in self._subs:
+            self._subs.append(feed_type)  # ★記録
 
     async def close(self) -> None:
         if self._ws:
