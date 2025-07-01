@@ -28,11 +28,11 @@ async def main() -> None:
     strategy = strategy_cls(
         config={"testnet": args.testnet, "cooldown_sec": args.cooldown}
     )
-    await ws.subscribe("allMids")
     from hl_core.api import WSClient
 
     ws = WSClient("wss://api.hyperliquid.xyz/ws", reconnect=True)
     ws.on_message = strategy.on_message
+    await ws.subscribe("allMids")
 
     try:
         await ws.connect()
