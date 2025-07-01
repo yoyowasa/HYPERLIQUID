@@ -50,11 +50,14 @@ class PFPLStrategy:
         # meta info
         meta = self.exchange.info.meta()
         # テストネットには minSizeUsd が無い場合がある → フォールバック
-        min_usd_map: dict[str, str] = meta.get("minSizeUsd", {})  # 本番
-        if not min_usd_map:  # テストネット
-            min_usd_map = {"ETH": "10"}  # デフォルト USD 10
+        # minSizeUsd が Testnet には無い場合がある → フォールバック
+        min_usd_map: dict[str, str] = meta.get("minSizeUsd", {})
+        if not min_usd_map:
+            logger.warning("minSizeUsd not present in meta; defaulting to USD 10")
+            min_usd_map = {"ETH": "10"}  # ← 必要なら YAML で上書き可
 
-        self.min_usd = Decimal(meta["minSizeUsd"]["ETH"])  # 最小発注 USD
+        self.min_usd = Decimal(min_usd_map["ETH"])
+
         self.tick = Decimal(meta["universe"]["ETH"]["pxTick"])
 
         # params
