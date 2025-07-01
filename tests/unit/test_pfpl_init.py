@@ -1,4 +1,3 @@
-import os
 from bots.pfpl import PFPLStrategy
 
 def test_init(monkeypatch):
