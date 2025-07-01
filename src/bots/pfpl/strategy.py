@@ -138,10 +138,9 @@ class PFPLStrategy:
                 limit_px=1e9 if is_buy else 1e-9,
                 order_type={"limit": {"tif": "Ioc"}},
                 reduce_only=False,
-                self.last_ts = time.time()
-                self.last_side = side
-
             )
+            self.last_ts = time.time()
+            self.last_side = side
             logger.info("ORDER RESP: %s", resp)
         except Exception as exc:
             logger.error("ORDER FAIL: %s", exc)
