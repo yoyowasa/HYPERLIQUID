@@ -8,8 +8,13 @@ import hmac
 import hashlib
 import json
 from time import time
-from hl_core.api import HTTPClient
+from decimal import Decimal
 from hl_core.utils.logger import setup_logger
+
+# 既存 import 群の最後あたりに追加
+from hyperliquid.exchange import Exchange
+from hyperliquid.utils import constants
+from eth_account.account import Account
 
 setup_logger(bot_name="pfpl")  # ← Bot 切替時はここだけ変える
 
@@ -17,85 +22,109 @@ logger = logging.getLogger(__name__)
 
 
 class PFPLStrategy:
-    """
-    Price-Feed Price Lag (PFPL) ボットの最小骨格。
-
-    - on_depth_update / on_tick は後で実装
-    - config (dict) を受け取り、パラメータを保持
-    """
+    """Price‑Fair‑Price‑Lag bot"""
 
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config
         self.mids: dict[str, str] = {}
-        # ★ 環境変数から公開アドレスと秘密鍵を取得
+
+        # env keys
         self.account = os.getenv("HL_ACCOUNT_ADDR")
         self.secret = os.getenv("HL_API_SECRET")
         if not (self.account and self.secret):
             raise RuntimeError("HL_ACCOUNT_ADDR / HL_API_SECRET が未設定")
-        self.http = HTTPClient(
-            base_url="https://api.hyperliquid.xyz", api_key=self.account
+
+        # Hyperliquid SDK
+        self.wallet = Account.from_key(self.secret)
+        base_url = (
+            "https://api.hyperliquid-testnet.xyz"  # ← テストネット REST/WS 共通
+            if config.get("testnet")
+            else "https://api.hyperliquid.xyz"
         )
-        self.last_side: str | None = None  # ★直前サイド
-        self.last_ts: float = 0.0  # ★直前タイムスタンプ
+        self.exchange = Exchange(
+            self.wallet,
+            base_url,
+            (
+                constants.MAINNET_API_URL
+                if not config.get("testnet")
+                else constants.TESTNET_API_URL
+            ),
+            account_address=self.account,
+        )
+
+        # meta info
+        meta = self.exchange.info.meta()
+        self.min_usd = Decimal(meta["minSizeUsd"]["ETH"])  # 最小発注 USD
+        self.tick = Decimal(meta["universe"]["ETH"]["pxTick"])
+
+        # params
         self.cooldown = float(config.get("cooldown_sec", 1.0))
+        self.order_usd = Decimal(config.get("order_usd", 10))
+        self.max_pos = Decimal(config.get("max_position_usd", 100))
+
+        # state
+        self.last_side: str | None = None
+        self.last_ts: float = 0.0
+
         logger.info("PFPLStrategy initialised with %s", config)
 
-    async def on_depth_update(self, depth: dict[str, Any]) -> None:  # noqa: D401
-        """OrderBook 更新時に呼ばれるコールバック（後で実装）"""
-        pass
+    # ------------------------------------------------------------------ WS hook
 
-    async def on_tick(self, tick: dict[str, Any]) -> None:  # noqa: D401
-        """約定ティック更新時に呼ばれるコールバック（後で実装）"""
-        pass
-
-    # ───────────────────────── WS 受信フック ──────────────────────
-    def on_message(self, data: dict[str, Any]) -> None:
-        """
-        WSClient から渡されるメッセージを処理するフック。
-        ここでは `allMids` チャンネルの @1（BTC?）ミッドだけログに出す。
-        """
-        if data.get("channel") == "allMids":
-            mids = data["data"]["mids"]
-            self.mids.update(mids)
-            mid1 = mids.get("@1")
-            logger.info("on_message mid@1=%s", mid1)
-            self.evaluate()
-
-    # ───────────────────────── シグナル判定 ──────────────────────
-    def evaluate(self) -> None:
-        mid = self.mids.get("@1")
-        if mid is None:
+    def on_message(self, msg: dict[str, Any]) -> None:
+        if msg.get("channel") != "allMids":
             return
-        spread = float(mid) - float(self.config.get("target_mid", 30.0))
-        threshold = self.config.get("spread_threshold", 0.5)
-        if abs(spread) >= threshold:
-            side = "BUY" if spread < 0 else "SELL"
-            # ── ★ 連続発注抑制 ───────────────────────────
-            now = time()
-            if side == self.last_side and (now - self.last_ts) < self.cooldown:
-                logger.debug("skip duplicate %s", side)
-                return
-            self.last_side = side
-            self.last_ts = now
-            asyncio.create_task(self.place_order(side, 0.01))  # ★追加
+        self.mids = msg["data"]["mids"]
+        self.evaluate()
 
-    # ─────────────── 注文 ここを実装 ────────────────
-    # ─── 署名付きで実注文 (テストネット推奨) ───
+    # ---------------------------------------------------------------- evaluate
+
+    def evaluate(self) -> None:
+        mid = Decimal(self.mids.get("@1", "0"))
+        fair = Decimal(self.mids.get("@10", "0"))  # ダミー: 本来は別 feed
+        spread = fair - mid
+        threshold = Decimal("0.01")
+
+        if abs(spread) < threshold:
+            return
+
+        side = "BUY" if spread < 0 else "SELL"
+
+        # duplicate suppress
+        now = time.time()
+        if side == self.last_side and now - self.last_ts < self.cooldown:
+            return
+        self.last_side, self.last_ts = side, now
+
+        # USD→サイズ計算 & フィルタ
+        size = (self.order_usd / mid).quantize(self.tick)
+        if size * mid < self.min_usd:
+            logger.debug("skip: %s USD < minSizeUsd", size * mid)
+            return
+
+        # ポジション超過チェック
+        pos = Decimal(self.exchange.position()["size"]) * mid
+        if pos + size * mid > self.max_pos:
+            logger.warning("skip: pos %.2f > max %.2f", pos, self.max_pos)
+            return
+
+        asyncio.create_task(self.place_order(side, float(size)))
+
+    # ---------------------------------------------------------------- order
+
     async def place_order(self, side: str, size: float) -> None:
-        order = {
-            "market": "@1",  # BTC/USDC の例
-            "type": "market",
-            "side": side.lower(),  # "buy" / "sell"
-            "size": size,
-            "account": self.account,
-        }
-        order["signature"] = self._sign(order)
-
+        is_buy = side == "BUY"
         try:
-            resp = await self.http.post("exchange", order)
-            logger.info("ORDER OK: %s", resp)
-        except Exception as e:  # noqa: BLE001
-            logger.error("ORDER FAIL: %s", e)
+            resp = self.exchange.order(
+                name="ETH",
+                is_buy=is_buy,
+                sz=size,
+                limit_px=1e9 if is_buy else 1e-9,
+                order_type={"limit": {"tif": "Ioc"}},
+                reduce_only=False,
+            )
+            logger.info("ORDER RESP: %s", resp)
+        except Exception as exc:
+            logger.error("ORDER FAIL: %s", exc)
 
     def _sign(self, payload: dict[str, Any]) -> str:
         """API Wallet Secret で HMAC-SHA256 署名（例）"""
