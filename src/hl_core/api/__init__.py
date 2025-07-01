@@ -63,15 +63,19 @@ class WSClient:
         """接続してメッセージを listen。reconnect=True なら自動再接続。"""
         while True:
             try:
-                async with websockets.connect(self.url, ping_interval=None) as ws:
+                async with websockets.connect(
+                    self.url,
+                    ping_interval=20,  # ★ 20 秒おきに ping を送信
+                    ping_timeout=10,  #    pong が 10 秒以内に無いと切る
+                ) as ws:
                     self._ws = ws
                     logger.info("WS connected")
-                    await self._listen()  # 切断されるまでブロック
+                    await self._listen()  # 切断までブロック
             except (websockets.ConnectionClosed, ConnectionError) as exc:
                 logger.warning("WS disconnected: %s", exc)
                 if not self.reconnect:
-                    logger.info("reconnect=False → そのまま終了")
-                    break  # ← 例外を上げずに終了
+                    logger.info("reconnect=False → 終了")
+                    break
                 logger.info("Reconnecting in %.1f s…", self.retry_sec)
                 await asyncio.sleep(self.retry_sec)
             else:  # 正常に with ブロックを抜けた場合
