@@ -42,8 +42,8 @@ class PFPLStrategy:
             else "https://api.hyperliquid.xyz"  # メインネット
         )
         self.exchange = Exchange(
-            base_url,  # ① base_url（文字列）
-            self.wallet,  # ② wallet（LocalAccount）
+            self.wallet,  # ① wallet (LocalAccount)
+            base_url,  # ② base_url 文字列
             account_address=self.account,
         )
 
