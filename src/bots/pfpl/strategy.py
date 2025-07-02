@@ -104,6 +104,10 @@ class PFPLStrategy:
             return
 
         side = "BUY" if spread < 0 else "SELL"
+        # --- 直前と同じサイドなら発注を抑制 -----------------------------
+        if side == self.last_side:
+            logger.debug("same side as previous (%s) → skip", side)
+            return
 
         # duplicate suppress
         now = time.time()
