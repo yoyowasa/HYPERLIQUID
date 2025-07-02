@@ -132,6 +132,7 @@ class PFPLStrategy:
     # ---------------------------------------------------------------- order
 
     async def place_order(self, side: str, size: float) -> None:
+        is_buy = side == "BUY"
         MAX_RETRY = 3
         for attempt in range(1, MAX_RETRY + 1):  # ← ここから
             try:
