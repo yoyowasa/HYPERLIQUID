@@ -132,21 +132,29 @@ class PFPLStrategy:
     # ---------------------------------------------------------------- order
 
     async def place_order(self, side: str, size: float) -> None:
-        is_buy = side == "BUY"
-        try:
-            resp = self.exchange.order(
-                name="ETH",
-                is_buy=is_buy,
-                sz=size,
-                limit_px=1e9 if is_buy else 1e-9,
-                order_type={"limit": {"tif": "Ioc"}},
-                reduce_only=False,
-            )
-            self.last_ts = time.time()
-            self.last_side = side
-            logger.info("ORDER RESP: %s", resp)
-        except Exception as exc:
-            logger.error("ORDER FAIL: %s", exc)
+        MAX_RETRY = 3
+        for attempt in range(1, MAX_RETRY + 1):  # ← ここから
+            try:
+                resp = self.exchange.order(
+                    name="ETH",
+                    is_buy=is_buy,
+                    sz=size,
+                    limit_px=1e9 if is_buy else 1e-9,
+                    order_type={"limit": {"tif": "Ioc"}},
+                    reduce_only=False,
+                )
+                if resp.get("status") != "ok":  # SDK 正常判定
+                    raise RuntimeError(f"order failed: {resp}")
+                # --- 成功処理 ---
+                self.last_ts = time.time()
+                self.last_side = side
+                logger.info("ORDER RESP: %s", resp)
+                return  # 成功で抜ける
+            except Exception as exc:
+                logger.error("ORDER ERR (%d/%d): %s", attempt, MAX_RETRY, exc)
+                if attempt == MAX_RETRY:
+                    return  # 最後でも失敗なら諦める
+                await asyncio.sleep(0.5 * attempt)
 
     def _sign(self, payload: dict[str, Any]) -> str:
         """API Wallet Secret で HMAC-SHA256 署名（例）"""
