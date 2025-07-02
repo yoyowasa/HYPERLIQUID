@@ -11,7 +11,10 @@ from hl_core.utils.logger import setup_logger
 load_dotenv()
 
 # logger
-setup_logger("runner")
+setup_logger(
+    "runner",
+    discord_webhook=getenv("DISCORD_WEBHOOK"),  # 追記
+)
 logger = logging.getLogger(__name__)
 
 
