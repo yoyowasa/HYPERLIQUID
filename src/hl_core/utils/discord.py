@@ -1,4 +1,7 @@
-import logging, httpx, asyncio, json, os
+import logging
+import httpx
+import asyncio
+
 
 class DiscordHandler(logging.Handler):
     """ERROR 以上を Discord に POST"""
@@ -13,7 +16,9 @@ class DiscordHandler(logging.Handler):
             await self._client.post(self.webhook, json={"content": content})
         except Exception as exc:  # noqa: BLE001
             # Discord 送信失敗はローカル WARNING に留める
-            logging.getLogger("hl_core.utils.discord").warning("discord post fail: %s", exc)
+            logging.getLogger("hl_core.utils.discord").warning(
+                "discord post fail: %s", exc
+            )
 
     def emit(self, record: logging.LogRecord) -> None:  # noqa: D401
         msg = self.format(record)
