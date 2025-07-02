@@ -2,3 +2,12 @@
 target_symbol: ETH-PERP
 order_size: 0.01        # ロット
 spread_threshold: 0.05  # %
+# ── 売買判定 ─────────────────────────────
+threshold: "0.01"          # |fair-mid| ≥ 0.01 のとき発注
+
+# ── ポジション／発注サイズ ───────────────
+order_usd: 10              # 1 回の発注 USD
+max_position_usd: 100      # 最大建玉 USD
+
+# ── その他 ─────────────────────────────
+cooldown_sec: 1.0          # 発注後クールダウン

@@ -10,6 +10,8 @@ import json
 from time import time
 from decimal import Decimal
 from hl_core.utils.logger import setup_logger
+from pathlib import Path
+import yaml
 
 # 既存 import 群の最後あたりに追加
 from hyperliquid.exchange import Exchange
@@ -24,7 +26,13 @@ class PFPLStrategy:
     """Price‑Fair‑Price‑Lag bot"""
 
     def __init__(self, config: dict[str, Any]) -> None:
-        self.config = config
+        # --- YAML 取り込み ------------------------------------------------
+        yml_path = Path(__file__).with_name("config.yaml")
+        yaml_conf: dict[str, Any] = {}
+        if yml_path.exists():
+            with yml_path.open(encoding="utf-8") as f:
+                yaml_conf = yaml.safe_load(f) or {}
+        self.config = {**yaml_conf, **config}
         self.mids: dict[str, str] = {}
 
         # env keys
@@ -61,9 +69,9 @@ class PFPLStrategy:
         self.tick = Decimal(tick_raw)
 
         # params
-        self.cooldown = float(config.get("cooldown_sec", 1.0))
-        self.order_usd = Decimal(config.get("order_usd", 10))
-        self.max_pos = Decimal(config.get("max_position_usd", 100))
+        self.cooldown = float(self.config.get("cooldown_sec", 1.0))
+        self.order_usd = Decimal(self.config.get("order_usd", 10))
+        self.max_pos = Decimal(self.config.get("max_position_usd", 100))
 
         # state ---------------------------------------------------------------
         self.last_side: str | None = None  # 直前に出したサイド
@@ -98,7 +106,7 @@ class PFPLStrategy:
         mid = Decimal(self.mids.get("@1", "0"))
         fair = Decimal(self.mids.get("@10", "0"))  # ダミー: 本来は別 feed
         spread = fair - mid
-        threshold = Decimal("0.01")
+        threshold = Decimal(self.config.get("threshold", "0.01"))  # ★
 
         if abs(spread) < threshold:
             return
