@@ -3,7 +3,7 @@ import argparse
 import asyncio
 import logging
 from importlib import import_module
-
+from asyncio import create_task, wait_for, Event
 from dotenv import load_dotenv
 from hl_core.utils.logger import setup_logger
 
@@ -32,11 +32,23 @@ async def main() -> None:
 
     ws = WSClient("wss://api.hyperliquid.xyz/ws", reconnect=True)
     ws.on_message = strategy.on_message
-    await ws.connect()  # ① 先に接続して受信ループを開始
+
+    # ① 受信ループをバックグラウンドで開始
+    connect_task = create_task(ws.connect())
+
+    # ② 最大 5 秒だけ接続完了を待つ
+    try:
+        await wait_for(connect_task, timeout=5)
+    except asyncio.TimeoutError:
+        # まだ接続中でも OK。以降で subscribe する
+        pass
+
+    # ③ 接続が確立した（または確立途中）の状態で購読送信
     await ws.subscribe("allMids")
 
+    # ④ 常駐
     try:
-        await ws.connect()
+        await Event().wait()
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
     finally:
