@@ -66,9 +66,9 @@ class PFPLStrategy:
         self.max_pos = Decimal(config.get("max_position_usd", 100))
 
         # state ---------------------------------------------------------------
-        self.last_side: str | None = None          # 直前に出したサイド
-        self.last_ts: float = 0.0                  # 直前発注の UNIX 秒
-        self.pos_usd: Decimal = Decimal("0")       # 現在ポジション USD
+        self.last_side: str | None = None  # 直前に出したサイド
+        self.last_ts: float = 0.0  # 直前発注の UNIX 秒
+        self.pos_usd: Decimal = Decimal("0")  # 現在ポジション USD
 
         logger.info("PFPLStrategy initialised with %s", config)
 
@@ -82,7 +82,6 @@ class PFPLStrategy:
         # --- 受信データから現在ポジション USD を更新 ---
         acct = self.exchange.info.account(self.account)
         self.pos_usd = Decimal(acct["marginSummary"]["totalValue"])  # 現物で十分
-
 
     # ---------------------------------------------------------------- evaluate
 
