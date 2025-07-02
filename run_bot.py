@@ -32,6 +32,7 @@ async def main() -> None:
 
     ws = WSClient("wss://api.hyperliquid.xyz/ws", reconnect=True)
     ws.on_message = strategy.on_message
+    await ws.connect()  # ① 先に接続して受信ループを開始
     await ws.subscribe("allMids")
 
     try:
