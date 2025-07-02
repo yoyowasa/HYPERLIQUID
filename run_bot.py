@@ -41,7 +41,7 @@ async def main() -> None:
     create_task(ws.connect())  # 非同期で接続開始
 
     # --- ★ 接続完了を待つループ -----------------------------
-    while not (ws._ws and ws._ws.open):  # open になるまで待機
+    while not (ws._ws and not getattr(ws._ws, "closed", False)):
         await anyio.sleep(0.1)  # 0.1 秒スリープ
     # --------------------------------------------------------
 
