@@ -7,6 +7,7 @@ from asyncio import create_task, Event
 from dotenv import load_dotenv
 from hl_core.utils.logger import setup_logger
 from os import getenv
+import anyio
 
 # env
 load_dotenv()
