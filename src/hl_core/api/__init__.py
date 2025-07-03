@@ -125,19 +125,22 @@ class WSClient:
         await self._ready.wait()
 
     async def subscribe(self, feed_type: str) -> None:
-        """購読（接続済なら即送信／未接続ならキューに積む）"""
-        if feed_type not in self._subs:
-            self._subs.append(feed_type)
-        if self._ws and not getattr(self._ws, "closed", False):
-            await self._ws.send(
-                json.dumps({"method": "subscribe", "subscription": {"type": feed_type}})
-            )
-        else:
-            logger.warning("WS not connected; skip subscribe(%s)", feed_type)
+        """一度登録すれば `_subs` に残り、再接続時に自動で復元される。"""
+        self._subs.add(feed_type)
 
-    async def close(self) -> None:
-        if self._ws and not getattr(self._ws, "closed", False):
-            await self._ws.close()
+        # まだ接続前、あるいは一度閉じたソケットなら今は送信せず復元待ち
+        if not self._ws or getattr(self._ws, "closed", True):
+            logger.warning("WS not connected; skip subscribe(%s)", feed_type)
+            return
+
+        await self._ws.send(
+            json.dumps(
+                {
+                    "method": "subscribe",
+                    "subscription": {"type": feed_type},
+                }
+            )
+        )
 
 
 __all__ = ["HTTPClient", "WSClient"]
