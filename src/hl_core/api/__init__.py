@@ -50,6 +50,7 @@ class WSClient:
         self.retry_sec = retry_sec
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._subs: set[str] = set()  # ← list → set に戻す
+        self._hb_task: asyncio.Task | None = None
         self.on_message: Callable[[dict[str, Any]], Awaitable[None] | None] = (
             lambda _m: None
         )
@@ -126,6 +127,13 @@ class WSClient:
         )
         self._subs.add(feed_type)  # ← set なので add
         logger.debug("Subscribed %s", feed_type)
+
+    async def close(self) -> None:
+        if self._hb_task:  # ← ガードを追加
+            self._hb_task.cancel()
+        if self._ws and not self._ws.closed:
+            await self._ws.close()
+        logger.info("WS closed")
 
 
 __all__ = ["HTTPClient", "WSClient"]
