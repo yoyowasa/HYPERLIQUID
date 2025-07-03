@@ -44,26 +44,15 @@ class HTTPClient:
 
 
 class WSClient:
-    def __init__(
-        self,
-        url: str,
-        *,
-        reconnect: bool = False,
-        retry_sec: float = 3.0,
-    ) -> None:
+    def __init__(self, url: str, reconnect: bool = False, retry_sec: float = 3.0):
         self.url = url
         self.reconnect = reconnect
         self.retry_sec = retry_sec
         self._ws: websockets.WebSocketClientProtocol | None = None
-
-        # --- 追加 ---
-        self._ready = asyncio.Event()  # open を待つため
-        self._hb_task: asyncio.Task | None = None  # Heartbeat task
-
-        # 購読リスト
-        self._subs: list[str] = []
-        # hook
-        self.on_message = lambda _msg: None
+        self._subs: set[str] = set()  # ← list → set に戻す
+        self.on_message: Callable[[dict[str, Any]], Awaitable[None] | None] = (
+            lambda _m: None
+        )
 
     async def connect(self) -> None:
         """接続し listen を開始。切断されたら自動再接続（reconnect=True の場合）"""
@@ -125,22 +114,18 @@ class WSClient:
         await self._ready.wait()
 
     async def subscribe(self, feed_type: str) -> None:
-        """一度登録すれば `_subs` に残り、再接続時に自動で復元される。"""
-        self._subs.add(feed_type)
-
-        # まだ接続前、あるいは一度閉じたソケットなら今は送信せず復元待ち
-        if not self._ws or getattr(self._ws, "closed", True):
+        if not self._ws or self._ws.closed:
             logger.warning("WS not connected; skip subscribe(%s)", feed_type)
             return
 
+        if feed_type in self._subs:  # 既に購読済みなら何もしない
+            return
+
         await self._ws.send(
-            json.dumps(
-                {
-                    "method": "subscribe",
-                    "subscription": {"type": feed_type},
-                }
-            )
+            json.dumps({"method": "subscribe", "subscription": {"type": feed_type}})
         )
+        self._subs.add(feed_type)  # ← set なので add
+        logger.debug("Subscribed %s", feed_type)
 
 
 __all__ = ["HTTPClient", "WSClient"]
