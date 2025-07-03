@@ -7,7 +7,7 @@ import websockets
 import asyncio
 import anyio
 import contextlib
-from typing import Awaitable, Callable, Any, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
