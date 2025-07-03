@@ -44,17 +44,25 @@ class HTTPClient:
 
 
 class WSClient:
+    # ── 1. __init__ ─────────────────────────────────────────────
     def __init__(self, url: str, reconnect: bool = False, retry_sec: float = 3.0):
         self.url = url
         self.reconnect = reconnect
         self.retry_sec = retry_sec
+
         self._ws: websockets.WebSocketClientProtocol | None = None
-        self._subs: set[str] = set()  # ← list → set に戻す
+        self._subs: set[str] = set()  # set に統一
         self._hb_task: asyncio.Task | None = None
+
+        # コールバック（デフォルトは no-op）
         self.on_message: Callable[[dict[str, Any]], Awaitable[None] | None] = (
             lambda _m: None
         )
 
+        # 接続状態を示すフラグ（asyncio.Event）
+        self._ready: asyncio.Event = asyncio.Event()
+
+    # ── 2. connect ──────────────────────────────────────────────
     async def connect(self) -> None:
         """接続し listen を開始。切断されたら自動再接続（reconnect=True の場合）"""
         while True:
@@ -66,7 +74,7 @@ class WSClient:
                 ) as ws:
                     self._ws = ws
                     logger.info("WS connected")
-                    self._ready.set()  # ★ open 通知
+                    self._ready.set()  # ★ open を通知
 
                     # Heartbeat を 30 s ごとに送る
                     self._hb_task = asyncio.create_task(self._heartbeat())
@@ -88,51 +96,40 @@ class WSClient:
                     with contextlib.suppress(Exception):
                         await self._hb_task
                     self._hb_task = None
-                self._ready.clear()
+                self._ready.clear()  # ★ close を通知
 
             if not self.reconnect:
                 break
             await anyio.sleep(self.retry_sec)
 
-    async def _heartbeat(self) -> None:
-        """CloudFront idle-timeout 回避用のダミー Text を送信"""
-        try:
-            while True:
-                await anyio.sleep(30)
-                if self._ws and not getattr(self._ws, "closed", False):
-                    await self._ws.send('{"type":"hb"}')
-        except asyncio.CancelledError:
-            pass
-
-    async def _listen(self) -> None:
-        async for msg in self._ws:  # type: ignore[operator]
-            self.on_message(json.loads(msg))
-
-    # -- 公開 API ----------------------------------------------------------
-
+    # ── 3. wait_ready ───────────────────────────────────────────
     async def wait_ready(self) -> None:
         """WS が open になるまで待機"""
         await self._ready.wait()
 
+    # ── 4. subscribe ────────────────────────────────────────────
     async def subscribe(self, feed_type: str) -> None:
-        if not self._ws or self._ws.closed:
-            logger.warning("WS not connected; skip subscribe(%s)", feed_type)
+        # まだ接続完了していない場合は待つ
+        if not self._ready.is_set():
+            logger.warning("WS not ready; skip subscribe(%s)", feed_type)
             return
 
-        if feed_type in self._subs:  # 既に購読済みなら何もしない
-            return
+        if feed_type in self._subs:
+            return  # 既に購読済み
 
         await self._ws.send(
             json.dumps({"method": "subscribe", "subscription": {"type": feed_type}})
         )
-        self._subs.add(feed_type)  # ← set なので add
+        self._subs.add(feed_type)
         logger.debug("Subscribed %s", feed_type)
 
+    # ── 5. close ────────────────────────────────────────────────
     async def close(self) -> None:
-        if self._hb_task:  # ← ガードを追加
+        if self._hb_task:
             self._hb_task.cancel()
-        if self._ws and not self._ws.closed:
+        if self._ws and not getattr(self._ws, "closed", False):
             await self._ws.close()
+        self._ready.clear()
         logger.info("WS closed")
 
 
