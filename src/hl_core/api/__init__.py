@@ -5,6 +5,7 @@ import logging
 import httpx
 import websockets
 import asyncio
+import anyio
 from typing import Awaitable, Callable, Any, Optional
 
 logger = logging.getLogger(__name__)
