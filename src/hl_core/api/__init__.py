@@ -60,33 +60,53 @@ class WSClient:
         logger.debug("WSClient initialised: %s", self.url)
 
     async def connect(self) -> None:
-        """接続し listen。reconnect=True なら常に再接続 & re‑subscribe。"""
+        """接続して listen を開始。切断時は自動再接続。"""
+        self._hb_task: asyncio.Task | None = None  # Heartbeat タスク
         while True:
             try:
                 async with websockets.connect(
                     self.url,
-                    ping_interval=20,
+                    ping_interval=20,  # → CloudFront 推奨値
                     ping_timeout=10,
                 ) as ws:
                     self._ws = ws
                     logger.info("WS connected")
-                    # ★再接続直後に購読を復元
+
+                    # 30 s ごとにダミー Text を送る Heartbeat を開始
+                    self._hb_task = asyncio.create_task(self._heartbeat())
+
+                    # 直前の購読を復元
                     for ch in self._subs:
                         await self._ws.send(
                             json.dumps(
                                 {"method": "subscribe", "subscription": {"type": ch}}
                             )
                         )
-                    await self._listen()
-            except (websockets.ConnectionClosed, ConnectionError) as exc:
+
+                    await self._listen()  # ← 切断までブロック
+            except Exception as exc:
                 logger.warning("WS disconnected: %s", exc)
+            finally:
+                if self._hb_task:  # Heartbeat 停止
+                    self._hb_task.cancel()
+                    with contextlib.suppress(Exception):
+                        await self._hb_task
+                    self._hb_task = None
+                self._ready.clear()
 
             if not self.reconnect:
-                logger.info("reconnect=False → exit")
                 break
+            await anyio.sleep(self.retry_sec)
 
-            logger.info("Reconnecting in %.1f s…", self.retry_sec)
-            await asyncio.sleep(self.retry_sec)
+    async def _heartbeat(self) -> None:
+        """CloudFront idle-timeout を回避するダミー送信"""
+        try:
+            while True:
+                await anyio.sleep(30)
+                if self._ws and not getattr(self._ws, "closed", False):
+                    await self._ws.send('{"type":"hb"}')
+        except asyncio.CancelledError:
+            pass
 
     async def _listen(self) -> None:
         async for msg in self._ws:  # type: ignore[operator]
