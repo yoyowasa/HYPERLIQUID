@@ -3,7 +3,7 @@ import argparse
 import asyncio
 import logging
 from importlib import import_module
-from asyncio import create_task, Event
+from asyncio import Event
 from dotenv import load_dotenv
 from hl_core.utils.logger import setup_logger
 from os import getenv
@@ -38,7 +38,7 @@ async def main() -> None:
     ws = WSClient("wss://api.hyperliquid.xyz/ws", reconnect=True)
     ws.on_message = strategy.on_message
 
-    create_task(ws.connect())  # 非同期で接続開始
+    asyncio.create_task(ws.connect())  # 非同期で接続開始
 
     # --- ★ 接続完了を待つループ -----------------------------
     while not (ws._ws and not getattr(ws._ws, "closed", False)):

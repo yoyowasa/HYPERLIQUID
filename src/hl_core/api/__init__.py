@@ -6,6 +6,7 @@ import httpx
 import websockets
 import asyncio
 import anyio
+import contextlib
 from typing import Awaitable, Callable, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -53,30 +54,34 @@ class WSClient:
         self.url = url
         self.reconnect = reconnect
         self.retry_sec = retry_sec
-        self._ws: Optional[websockets.WebSocketClientProtocol] = None
-        self._subs: list[str] = []  # ★購読チャンネル保持
-        self.on_message: Callable[[dict[str, Any]], Awaitable[None] | None] = (
-            lambda _m: None
-        )
-        logger.debug("WSClient initialised: %s", self.url)
+        self._ws: websockets.WebSocketClientProtocol | None = None
+
+        # --- 追加 ---
+        self._ready = asyncio.Event()  # open を待つため
+        self._hb_task: asyncio.Task | None = None  # Heartbeat task
+
+        # 購読リスト
+        self._subs: list[str] = []
+        # hook
+        self.on_message = lambda _msg: None
 
     async def connect(self) -> None:
-        """接続して listen を開始。切断時は自動再接続。"""
-        self._hb_task: asyncio.Task | None = None  # Heartbeat タスク
+        """接続し listen を開始。切断されたら自動再接続（reconnect=True の場合）"""
         while True:
             try:
                 async with websockets.connect(
                     self.url,
-                    ping_interval=20,  # → CloudFront 推奨値
+                    ping_interval=20,
                     ping_timeout=10,
                 ) as ws:
                     self._ws = ws
                     logger.info("WS connected")
+                    self._ready.set()  # ★ open 通知
 
-                    # 30 s ごとにダミー Text を送る Heartbeat を開始
+                    # Heartbeat を 30 s ごとに送る
                     self._hb_task = asyncio.create_task(self._heartbeat())
 
-                    # 直前の購読を復元
+                    # 過去の購読を復元
                     for ch in self._subs:
                         await self._ws.send(
                             json.dumps(
@@ -84,7 +89,7 @@ class WSClient:
                             )
                         )
 
-                    await self._listen()  # ← 切断までブロック
+                    await self._listen()  # 切断までブロック
             except Exception as exc:
                 logger.warning("WS disconnected: %s", exc)
             finally:
@@ -100,7 +105,7 @@ class WSClient:
             await anyio.sleep(self.retry_sec)
 
     async def _heartbeat(self) -> None:
-        """CloudFront idle-timeout を回避するダミー送信"""
+        """CloudFront idle-timeout 回避用のダミー Text を送信"""
         try:
             while True:
                 await anyio.sleep(30)
@@ -111,24 +116,28 @@ class WSClient:
 
     async def _listen(self) -> None:
         async for msg in self._ws:  # type: ignore[operator]
-            if self.on_message:
-                self.on_message(json.loads(msg))
+            self.on_message(json.loads(msg))
+
+    # -- 公開 API ----------------------------------------------------------
+
+    async def wait_ready(self) -> None:
+        """WS が open になるまで待機"""
+        await self._ready.wait()
 
     async def subscribe(self, feed_type: str) -> None:
-        """未接続時はスキップ; 接続後 self._subs へ記録"""
-        if not self._ws or getattr(self._ws, "closed", True):
-            logger.warning("WS not connected; skip subscribe(%s)", feed_type)
-            return
-        await self._ws.send(
-            json.dumps({"method": "subscribe", "subscription": {"type": feed_type}})
-        )
+        """購読（接続済なら即送信／未接続ならキューに積む）"""
         if feed_type not in self._subs:
-            self._subs.append(feed_type)  # ★記録
+            self._subs.append(feed_type)
+        if self._ws and not getattr(self._ws, "closed", False):
+            await self._ws.send(
+                json.dumps({"method": "subscribe", "subscription": {"type": feed_type}})
+            )
+        else:
+            logger.warning("WS not connected; skip subscribe(%s)", feed_type)
 
     async def close(self) -> None:
-        if self._ws:
+        if self._ws and not getattr(self._ws, "closed", False):
             await self._ws.close()
-            logger.info("WS closed")
 
 
 __all__ = ["HTTPClient", "WSClient"]
