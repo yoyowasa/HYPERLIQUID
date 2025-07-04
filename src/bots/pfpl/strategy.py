@@ -83,22 +83,38 @@ class PFPLStrategy:
         logger.info("PFPLStrategy initialised with %s", config)
 
     # ------------------------------------------------------------------ WS hook
-    # PFPLStrategy 内のどこか（__init__ の下あたり）に追加
+    # ① ────────────────────────────────────────────────────────────
     async def _refresh_position(self) -> None:
-        """現在の総ポジション USD を self.pos_usd に反映"""
-        state = self.exchange.info.user_state(self.account)  # ← ここが SDK の正式 API
-        pos_usd = Decimal(state["marginSummary"]["totalPositionUsd"])
-        self.pos_usd = pos_usd  # 例: ロング=＋ / ショート=− の値が入る
+        """
+        現在の総ポジション（USD 建て）を self.pos_usd に反映する。
 
+        Hyperliquid SDK:
+            state = exchange.info.user_state(addr)
+            state["marginSummary"]["totalPositionUsd"] に数値が入る
+        """
+        state = self.exchange.info.user_state(self.account)
+        self.pos_usd = Decimal(state["marginSummary"]["totalPositionUsd"])
+
+    # ② ────────────────────────────────────────────────────────────
     def on_message(self, msg: dict[str, Any]) -> None:
+        """
+        allMids チャネルを受信するたびに
+        1) mid 情報を更新
+        2) 売買判定 evaluate()
+        3) ポジション情報を最新化 (_refresh_position)
+        """
         if msg.get("channel") != "allMids":
             return
+
         self.mids = msg["data"]["mids"]
+
+        # 売買ロジック
         self.evaluate()
-        # --- 受信データから現在ポジション USD を更新 ---
-        # --- After  -----------------------------------
-        # state = self.exchange.info.user_state(self.account)
-        # collateral_usd = Decimal(state["marginSummary"]["accountValue"])
+
+        # ポジション更新（await 必要ない設計なら同期呼び出しでも可）
+        # ここは asyncio.create_task(...) で fire-and-forget にしておくと
+        # on_message をブロックしない。
+        asyncio.create_task(self._refresh_position())
 
     # ---------------------------------------------------------------- evaluate
 
