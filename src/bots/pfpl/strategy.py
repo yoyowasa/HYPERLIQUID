@@ -7,7 +7,7 @@ import asyncio
 import hmac
 import hashlib
 import json
-from time import time
+import time
 from decimal import Decimal
 from hl_core.utils.logger import setup_logger
 from pathlib import Path
@@ -77,10 +77,17 @@ class PFPLStrategy:
         self.last_side: str | None = None  # 直前に出したサイド
         self.last_ts: float = 0.0  # 直前発注の UNIX 秒
         self.pos_usd: Decimal = Decimal("0")  # 現在ポジション USD
+        await self._refresh_position()
 
         logger.info("PFPLStrategy initialised with %s", config)
 
     # ------------------------------------------------------------------ WS hook
+    # PFPLStrategy 内のどこか（__init__ の下あたり）に追加
+    async def _refresh_position(self) -> None:
+        """現在の総ポジション USD を self.pos_usd に反映"""
+        state = self.exchange.info.user_state(self.account)  # ← ここが SDK の正式 API
+        pos_usd = Decimal(state["marginSummary"]["totalPositionUsd"])
+        self.pos_usd = pos_usd  # 例: ロング=＋ / ショート=− の値が入る
 
     def on_message(self, msg: dict[str, Any]) -> None:
         if msg.get("channel") != "allMids":
@@ -88,8 +95,9 @@ class PFPLStrategy:
         self.mids = msg["data"]["mids"]
         self.evaluate()
         # --- 受信データから現在ポジション USD を更新 ---
-        acct = self.exchange.info.account(self.account)
-        self.pos_usd = Decimal(acct["marginSummary"]["totalValue"])  # 現物で十分
+        # --- After  -----------------------------------
+        state = self.exchange.info.user_state(self.account)
+        collateral_usd = Decimal(state["marginSummary"]["accountValue"])
 
     # ---------------------------------------------------------------- evaluate
 
@@ -130,6 +138,17 @@ class PFPLStrategy:
             return
 
         # ポジション超過チェック
+        # --- After  -----------------------------------
+        state = self.exchange.info.user_state(self.account)
+        eth_pos = next(
+            (p for p in state["perpPositions"] if p["position"]["coin"] == "ETH"),
+            None,
+        )
+        pos = (
+            Decimal(eth_pos["position"]["sz"]) * mid  # ← size × mid = USD 建玉
+            if eth_pos
+            else Decimal("0")
+        )
         pos = Decimal(self.exchange.position()["size"]) * mid
         if pos + size * mid > self.max_pos:
             logger.warning("skip: pos %.2f > max %.2f", pos, self.max_pos)
@@ -141,8 +160,17 @@ class PFPLStrategy:
 
     async def place_order(self, side: str, size: float) -> None:
         is_buy = side == "BUY"
+
+        # ── ① Dry-run 判定 ───────────────────────────────
+        if self.config.get("dry_run"):
+            logger.info("[DRY-RUN] %s %.4f", side, size)
+            self.last_ts = time.time()
+            self.last_side = side
+            return
+        # ──────────────────────────────────────────────
+
         MAX_RETRY = 3
-        for attempt in range(1, MAX_RETRY + 1):  # ← ここから
+        for attempt in range(1, MAX_RETRY + 1):
             try:
                 resp = self.exchange.order(
                     name="ETH",
@@ -152,18 +180,16 @@ class PFPLStrategy:
                     order_type={"limit": {"tif": "Ioc"}},
                     reduce_only=False,
                 )
-                if resp.get("status") != "ok":  # SDK 正常判定
-                    raise RuntimeError(f"order failed: {resp}")
-                # --- 成功処理 ---
+                logger.info("ORDER OK (try %d): %s", attempt, resp)
                 self.last_ts = time.time()
                 self.last_side = side
-                logger.info("ORDER RESP: %s", resp)
-                return  # 成功で抜ける
+                break  # 成功したら抜ける
             except Exception as exc:
-                logger.error("ORDER ERR (%d/%d): %s", attempt, MAX_RETRY, exc)
+                logger.error("ORDER FAIL (try %d/%d): %s", attempt, MAX_RETRY, exc)
                 if attempt == MAX_RETRY:
-                    return  # 最後でも失敗なら諦める
-                await asyncio.sleep(0.5 * attempt)
+                    logger.error("GIVE UP after %d retries", MAX_RETRY)
+                else:
+                    await anyio.sleep(0.5)  # 少し待ってリトライ
 
     def _sign(self, payload: dict[str, Any]) -> str:
         """API Wallet Secret で HMAC-SHA256 署名（例）"""
