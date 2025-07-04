@@ -62,6 +62,25 @@ class WSClient:
         # 接続状態を示すフラグ（asyncio.Event）
         self._ready: asyncio.Event = asyncio.Event()
 
+    # ─────────────────────────────────────────────────────────────
+    async def _heartbeat(self) -> None:
+        """
+        30 秒ごとにダミー ping を送信して CloudFront のアイドル
+        タイムアウト（約 60 s）を回避する。
+        """
+        try:
+            while True:
+                # Python 3.13 なので anyio.sleep が素直に使える
+                await anyio.sleep(30)
+                # self._ws がまだ生きていれば送信
+                if self._ws and not getattr(self._ws, "closed", False):
+                    await self._ws.send('{"type":"hb"}')
+        except asyncio.CancelledError:
+            # connect() 側で self._hb_task.cancel() されたときに抜ける
+            pass
+
+    # ─────────────────────────────────────────────────────────────
+
     # ── 2. connect ──────────────────────────────────────────────
     async def connect(self) -> None:
         """接続し listen を開始。切断されたら自動再接続（reconnect=True の場合）"""
@@ -122,6 +141,26 @@ class WSClient:
         )
         self._subs.add(feed_type)
         logger.debug("Subscribed %s", feed_type)
+
+    # ─────────────────────────────────────────────────────────────
+    async def _listen(self) -> None:
+        """
+        サーバーから届く WebSocket メッセージを
+        JSON デコードして on_message フックへ渡す。
+        """
+        async for raw in self._ws:  # noqa: E501  type: ignore[operator]
+            try:
+                msg = json.loads(raw)
+            except Exception as exc:
+                logger.warning("WS message decode error: %s (%s)", exc, raw[:120])
+                continue
+
+            # ユーザー定義フック（同期でも async でも OK）
+            cb_ret = self.on_message(msg)
+            if asyncio.iscoroutine(cb_ret):
+                await cb_ret
+
+    # ─────────────────────────────────────────────────────────────
 
     # ── 5. close ────────────────────────────────────────────────
     async def close(self) -> None:
