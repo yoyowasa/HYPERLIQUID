@@ -97,8 +97,8 @@ class PFPLStrategy:
         self.evaluate()
         # --- 受信データから現在ポジション USD を更新 ---
         # --- After  -----------------------------------
-        state = self.exchange.info.user_state(self.account)
-
+        # state = self.exchange.info.user_state(self.account)
+        # collateral_usd = Decimal(state["marginSummary"]["accountValue"])
 
     # ---------------------------------------------------------------- evaluate
 
