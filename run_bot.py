@@ -25,8 +25,7 @@ async def main() -> None:
     parser.add_argument("bot", help="bot folder name (e.g., pfpl)")
     parser.add_argument("--testnet", action="store_true", help="use testnet URL")
     parser.add_argument("--cooldown", type=float, default=1.0, help="cooldown sec")
-    parser.add_argument("--dry-run", action="store_true",
-                    help="発注せずログだけ出す")
+    parser.add_argument("--dry-run", action="store_true", help="発注せずログだけ出す")
     args = parser.parse_args()
 
     # ★ ここで .env を読み分け
@@ -37,7 +36,11 @@ async def main() -> None:
     mod = import_module(f"bots.{args.bot}.strategy")
     strategy_cls = getattr(mod, "PFPLStrategy")
     strategy = strategy_cls(
-        config={"testnet": args.testnet, "cooldown_sec": args.cooldown, "dry_run": args.dry_run,  }
+        config={
+            "testnet": args.testnet,
+            "cooldown_sec": args.cooldown,
+            "dry_run": args.dry_run,
+        }
     )
     from hl_core.api import WSClient
 
