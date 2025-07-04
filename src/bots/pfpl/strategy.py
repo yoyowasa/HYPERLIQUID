@@ -84,19 +84,18 @@ class PFPLStrategy:
 
     # ------------------------------------------------------------------ WS hook
     # ① ────────────────────────────────────────────────────────────
+    # 同ファイル ── _refresh_position 本体
     async def _refresh_position(self) -> None:
-        """
-        現在の総ポジション（USD 建て）を self.pos_usd に反映する。
-
-        Hyperliquid SDK:
-            state = exchange.info.user_state(addr)
-            state["marginSummary"]["totalPositionUsd"] に数値が入る
-        """
+        """現在の総ポジション USD を self.pos_usd に反映"""
         state = self.exchange.info.user_state(self.account)
-        self.pos_usd = Decimal(state["marginSummary"]["totalPositionUsd"])
+        # Testnet には totalPositionUsd が無い場合がある
+        pos_usd_str = state.get("marginSummary", {}).get(
+            "totalPositionUsd"
+        ) or state.get("marginSummary", {}).get("positionValueUsd", "0")
+        self.pos_usd = Decimal(pos_usd_str)
 
     # ② ────────────────────────────────────────────────────────────
-    def on_message(self, msg: dict[str, Any]) -> None:
+    async def on_message(self, msg: dict[str, Any]) -> None:
         """
         allMids チャネルを受信するたびに
         1) mid 情報を更新
@@ -114,7 +113,7 @@ class PFPLStrategy:
         # ポジション更新（await 必要ない設計なら同期呼び出しでも可）
         # ここは asyncio.create_task(...) で fire-and-forget にしておくと
         # on_message をブロックしない。
-        asyncio.create_task(self._refresh_position())
+        await self._refresh_position()
 
     # ---------------------------------------------------------------- evaluate
 
