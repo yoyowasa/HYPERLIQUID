@@ -12,6 +12,7 @@ from decimal import Decimal
 from hl_core.utils.logger import setup_logger
 from pathlib import Path
 import yaml
+import anyio
 
 # 既存 import 群の最後あたりに追加
 from hyperliquid.exchange import Exchange
@@ -77,7 +78,7 @@ class PFPLStrategy:
         self.last_side: str | None = None  # 直前に出したサイド
         self.last_ts: float = 0.0  # 直前発注の UNIX 秒
         self.pos_usd: Decimal = Decimal("0")  # 現在ポジション USD
-        await self._refresh_position()
+        self._refresh_position()
 
         logger.info("PFPLStrategy initialised with %s", config)
 
