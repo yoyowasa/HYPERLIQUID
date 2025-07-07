@@ -1,10 +1,11 @@
 # ── 市場設定 ─────────────────────────────
+mode: both           # abs / pct / both / either
 testnet: false              # ← true: testnet / false: mainnet
 target_symbol: "ETH-PERP"
 fair_feed: "@10"            # "@10" や "oracle" など 現在の適正価格（fair price）の情報をどこから取るか
-spread_threshold: 0.01      # 相対（%）での歪み検知。
+spread_threshold: 0.05      # 相対（%）での歪み検知。
 # ── 売買判定 ─────────────────────────────
-threshold: "0.01"           # 絶対値（USD）での歪み検知
+threshold: "1.0"           # 絶対値（USD）での歪み検知
 # threshold_pct: 0.03       # ％指定に切り替える場合はこちらを採用
 cooldown_sec: 1.0           # 連続発注のクールダウン
 max_order_per_sec: 3        # 1秒あたり最大発注数
@@ -12,7 +13,7 @@ max_order_per_sec: 3        # 1秒あたり最大発注数
 # ── ポジション／発注サイズ ───────────────
 order_usd: 10               # 1回の発注 USD
 max_position_usd: 100       # 総エクスポージャ上限
-min_usd: 10                 # 取得失敗時のフォールバック
+min_usd: 5                 # 取得失敗時のフォールバック
 
 # ── 運用・デバッグ ───────────────────────
 dry_run: false              # true: 約定せずログだけ

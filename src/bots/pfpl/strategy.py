@@ -13,7 +13,6 @@ from hl_core.utils.logger import setup_logger
 from pathlib import Path
 import yaml
 import anyio
-
 # 既存 import 群の最後あたりに追加
 from hyperliquid.exchange import Exchange
 from eth_account.account import Account
@@ -221,35 +220,47 @@ class PFPLStrategy:
     async def place_order(self, side: str, size: float) -> None:
         is_buy = side == "BUY"
 
-        # ── ① Dry-run 判定 ───────────────────────────────
+        # ---------- ① Dry‑run 判定 ----------
         if self.config.get("dry_run"):
             logger.info("[DRY-RUN] %s %.4f", side, size)
-            self.last_ts = time.time()
+            self.last_ts  = time.time()
             self.last_side = side
             return
-        # ──────────────────────────────────────────────
+        # ------------------------------------
+
+        # ---------- ② 指値価格を計算 ----------
+        #   ε = price_buffer_pct (％表記)   ← config.yaml で調整可
+        eps_pct  = float(self.config.get("price_buffer_pct", 2.0))  # 既定 2 %
+        mid      = float(self.mids.get("@1", "0") or 0)             # failsafe 0
+        if mid == 0:
+            logger.warning("mid price unknown → skip order")
+            return
+
+        factor   = 1.0 + eps_pct / 100.0
+        limit_px = mid * factor if is_buy else mid / factor
+        # -------------------------------------
 
         MAX_RETRY = 3
         for attempt in range(1, MAX_RETRY + 1):
             try:
                 resp = self.exchange.order(
-                    name="ETH",
+                    coin="ETH",
                     is_buy=is_buy,
                     sz=size,
-                    limit_px=1e9 if is_buy else 1e-9,
-                    order_type={"limit": {"tif": "Ioc"}},
+                    limit_px=limit_px,
+                    order_type={"limit": {"tif": "Ioc"}},   # IOC 指定
                     reduce_only=False,
                 )
                 logger.info("ORDER OK (try %d): %s", attempt, resp)
-                self.last_ts = time.time()
+                self.last_ts  = time.time()
                 self.last_side = side
-                break  # 成功したら抜ける
+                break                                           # 成功したら抜ける
             except Exception as exc:
                 logger.error("ORDER FAIL (try %d/%d): %s", attempt, MAX_RETRY, exc)
                 if attempt == MAX_RETRY:
                     logger.error("GIVE UP after %d retries", MAX_RETRY)
                 else:
-                    await anyio.sleep(0.5)  # 少し待ってリトライ
+                    await anyio.sleep(0.5)
 
     def _sign(self, payload: dict[str, Any]) -> str:
         """API Wallet Secret で HMAC-SHA256 署名（例）"""
