@@ -143,7 +143,7 @@ class PFPLStrategy:
 
     # ---------------------------------------------------------------- evaluate
 
-# src/bots/pfpl/strategy.py
+    # src/bots/pfpl/strategy.py
     def evaluate(self) -> None:
         now = time.time()
 
@@ -156,16 +156,16 @@ class PFPLStrategy:
             return
 
         # ── ミッド／フェア取得 ────────────────────
-        mid  = Decimal(self.mids.get("@1", "0"))
+        mid = Decimal(self.mids.get("@1", "0"))
         fair = Decimal(self.mids.get(self.fair_feed, "0"))
         if mid == 0 or fair == 0:
-            return                                    # データ欠損
+            return  # データ欠損
 
-        spread_abs = (fair - mid).copy_abs()          # 絶対 USD 差
+        spread_abs = (fair - mid).copy_abs()  # 絶対 USD 差
         spread_pct = (spread_abs / mid) * Decimal("100")  # ％差
 
         # ── コンフィグしきい値 ────────────────────
-        abs_th = Decimal(self.config.get("threshold", "0"))
+
         pct_th = Decimal(str(self.config.get("spread_threshold_pct", 0)))
 
         # ★ 今は “%” だけ判定
@@ -192,7 +192,6 @@ class PFPLStrategy:
             return
 
         asyncio.create_task(self.place_order(side, float(size)))
-
 
         # クールダウン用のタイムスタンプとサイドを更新
         self.last_side, self.last_ts = side, now
