@@ -143,75 +143,56 @@ class PFPLStrategy:
 
     # ---------------------------------------------------------------- evaluate
 
-    # ------------------------------------------------------------------ price check
-    async def _ensure_position(self) -> None:
-        if self.pos_usd == 0:
-            await self._refresh_position()
-
-    # ── src/bots/pfpl/strategy.py ──
+# src/bots/pfpl/strategy.py
     def evaluate(self) -> None:
         now = time.time()
 
-        # ── クールダウン ─────────────────────────────
+        # ── クールダウン ─────────────────────────
         if now - self.last_ts < self.cooldown:
             return
 
-        # ── ポジション上限 ───────────────────────────
+        # ── 最大ポジション超過チェック ────────────
         if abs(self.pos_usd) >= self.max_pos:
             return
 
-        mid = Decimal(self.mids.get("@1", "0"))
+        # ── ミッド／フェア取得 ────────────────────
+        mid  = Decimal(self.mids.get("@1", "0"))
         fair = Decimal(self.mids.get(self.fair_feed, "0"))
-        spread = fair - mid
+        if mid == 0 or fair == 0:
+            return                                    # データ欠損
 
-        thr_abs = Decimal(self.config.get("threshold", "0.01"))
-        thr_rate = Decimal(self.config.get("spread_threshold", "0.0")) / Decimal("100")
+        spread_abs = (fair - mid).copy_abs()          # 絶対 USD 差
+        spread_pct = (spread_abs / mid) * Decimal("100")  # ％差
 
-        if abs(spread) < thr_abs and abs(spread) / mid < thr_rate:
-            return  # どちらも下回る
+        # ── コンフィグしきい値 ────────────────────
+        abs_th = Decimal(self.config.get("threshold", "0"))
+        pct_th = Decimal(str(self.config.get("spread_threshold_pct", 0)))
 
-        side = "BUY" if spread < 0 else "SELL"
-
-        # 直前と同じサイドをクールダウン内で出さない
-        if side == self.last_side and now - self.last_ts < self.cooldown:
-            logger.debug("same side (%s) during cooldown -> skip", side)
+        # ★ 今は “%” だけ判定
+        if spread_pct < pct_th:
             return
 
-        # 1 回の発注サイズ (USD→ETH)
+        side = "BUY" if fair < mid else "SELL"
+
+        # ── 連続同サイド抑制 ──────────────────
+        if side == self.last_side:
+            logger.debug("same side as previous (%s) → skip", side)
+            return
+
+        # ── 発注サイズ計算 ──────────────────────
         size = (self.order_usd / mid).quantize(self.tick)
         if size * mid < self.min_usd:
-            logger.debug("size %.4f < minSizeUsd, skip", size * mid)
+            logger.debug("size %.4f USD < minSizeUsd, skip", size * mid)
             return
 
-        # ── 現在ポジションを再取得して上限チェック ──
-        try:
-            state = self.exchange.info.user_state(self.account)
-            perp_pos = next(
-                (
-                    p
-                    for p in state.get("perpPositions", [])
-                    if p["position"]["coin"] == "ETH"
-                ),
-                None,
-            )
-            pos_usd = (
-                Decimal(perp_pos["position"]["sz"])
-                * Decimal(perp_pos["position"]["entryPx"])
-                if perp_pos
-                else Decimal("0")
-            )
-        except Exception as exc:
-            logger.warning("user_state failed: %s", exc)
-            pos_usd = self.pos_usd  # 最後に取れた値で代用
-
-        if abs(pos_usd) + size * mid > self.max_pos:
-            logger.warning(
-                "skip: pos %.2f > max %.2f", pos_usd + size * mid, self.max_pos
-            )
+        # ── 現在ポジ更新 & 上限チェック ──────────
+        asyncio.create_task(self._refresh_position())
+        if self.pos_usd + (size * mid if side == "BUY" else -size * mid) > self.max_pos:
+            logger.warning("pos %.2f > max %.2f, skip", self.pos_usd, self.max_pos)
             return
 
-        # ── 発注（dry-run は place_order 内で判定） ──
         asyncio.create_task(self.place_order(side, float(size)))
+
 
         # クールダウン用のタイムスタンプとサイドを更新
         self.last_side, self.last_ts = side, now
