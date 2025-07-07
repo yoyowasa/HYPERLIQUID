@@ -90,22 +90,25 @@ class PFPLStrategy:
 
         logger.info("PFPLStrategy initialised with %s", config)
 
-    # ------------------------------------------------------------------ WS hook
     # ── src/bots/pfpl/strategy.py ──
     async def _refresh_position(self) -> None:
-        """現在の ETH-PERP 建玉 USD を self.pos_usd に反映"""
+        """
+        現在の ETH-PERP 建玉 USD を self.pos_usd に反映。
+        perpPositions が無い口座でも落ちない。
+        """
         try:
             state = self.exchange.info.user_state(self.account)
 
-            # 🔽 ここを防御的に
+            # ―― ETH の perp 建玉を抽出（無い場合は None）
             perp_pos = next(
                 (
                     p
-                    for p in state.get("perpPositions", [])  # ★① get(..., [])
+                    for p in state.get("perpPositions", [])  # ← 🔑 get(..., [])
                     if p["position"]["coin"] == "ETH"
                 ),
                 None,
             )
+
             usd = (
                 Decimal(perp_pos["position"]["sz"])
                 * Decimal(perp_pos["position"]["entryPx"])
@@ -113,7 +116,8 @@ class PFPLStrategy:
                 else Decimal("0")
             )
             self.pos_usd = usd
-        except Exception as exc:  # ★② 何かあっても WS を落とさない
+            logger.debug("pos_usd refreshed: %.2f", usd)
+        except Exception as exc:  # ← ここで握りつぶす
             logger.warning("refresh_position failed: %s", exc)
 
     # ② ────────────────────────────────────────────────────────────
