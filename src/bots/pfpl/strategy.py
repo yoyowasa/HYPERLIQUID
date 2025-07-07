@@ -148,74 +148,73 @@ class PFPLStrategy:
         if self.pos_usd == 0:
             await self._refresh_position()
 
+    # ── src/bots/pfpl/strategy.py ──
     def evaluate(self) -> None:
-        """mid と fair の乖離を評価し、発注の要否を決定する"""
-        asyncio.create_task(self._ensure_position())
-
         now = time.time()
 
-        # ---------- クールダウン ----------
+        # ── クールダウン ─────────────────────────────
         if now - self.last_ts < self.cooldown:
             return
 
-        # ---------- ポジション上限 ----------
+        # ── ポジション上限 ───────────────────────────
         if abs(self.pos_usd) >= self.max_pos:
             return
 
-        # ---------- 価格・スプレッド計算 ----------
         mid = Decimal(self.mids.get("@1", "0"))
-        fair = Decimal(
-            self.mids.get(self.fair_feed, "0")
-        )  # self.fair_feed は __init__ で "@"10 等を設定
-        if mid == 0 or fair == 0:
-            return  # データ不足
+        fair = Decimal(self.mids.get(self.fair_feed, "0"))
+        spread = fair - mid
 
-        spread_abs = abs(fair - mid)
-        spread_pct = abs((fair - mid) / mid) * 100  # %
+        thr_abs = Decimal(self.config.get("threshold", "0.01"))
+        thr_rate = Decimal(self.config.get("spread_threshold", "0.0")) / Decimal("100")
 
-        # ---------- 判定ロジック ----------
-        mode = self.config.get("mode", "both")  # abs / pct / both / either
-        abs_thr = Decimal(self.config.get("threshold", "1"))
-        pct_thr = Decimal(str(self.config.get("spread_threshold", 0.05)))
+        if abs(spread) < thr_abs and abs(spread) / mid < thr_rate:
+            return  # どちらも下回る
 
-        should_trade = {
-            "abs": spread_abs >= abs_thr,
-            "pct": spread_pct >= pct_thr,
-            "both": spread_abs >= abs_thr and spread_pct >= pct_thr,
-            "either": spread_abs >= abs_thr or spread_pct >= pct_thr,
-        }.get(mode, False)
+        side = "BUY" if spread < 0 else "SELL"
 
-        if not should_trade:
+        # 直前と同じサイドをクールダウン内で出さない
+        if side == self.last_side and now - self.last_ts < self.cooldown:
+            logger.debug("same side (%s) during cooldown -> skip", side)
             return
 
-        side = "BUY" if (fair - mid) < 0 else "SELL"
-
-        # ---------- 直前と同じサイド抑制 ----------
-        if side == self.last_side:
-            logger.debug("same side as previous (%s) → skip", side)
-            return
-
-        # ---------- 発注サイズ計算 ----------
+        # 1 回の発注サイズ (USD→ETH)
         size = (self.order_usd / mid).quantize(self.tick)
         if size * mid < self.min_usd:
-            logger.debug("skip: %.2f USD < minSizeUsd", size * mid)
+            logger.debug("size %.4f < minSizeUsd, skip", size * mid)
             return
 
-        # ---------- 現在ポジション取得 ----------
-        state = self.exchange.info.user_state(self.account)
-        eth_pos = next(
-            (p for p in state["perpPositions"] if p["position"]["coin"] == "ETH"), None
-        )
-        pos_usd = Decimal(eth_pos["position"]["sz"]) * mid if eth_pos else Decimal("0")
+        # ── 現在ポジションを再取得して上限チェック ──
+        try:
+            state = self.exchange.info.user_state(self.account)
+            perp_pos = next(
+                (
+                    p
+                    for p in state.get("perpPositions", [])
+                    if p["position"]["coin"] == "ETH"
+                ),
+                None,
+            )
+            pos_usd = (
+                Decimal(perp_pos["position"]["sz"])
+                * Decimal(perp_pos["position"]["entryPx"])
+                if perp_pos
+                else Decimal("0")
+            )
+        except Exception as exc:
+            logger.warning("user_state failed: %s", exc)
+            pos_usd = self.pos_usd  # 最後に取れた値で代用
 
-        if abs(pos_usd + (size * mid) * (1 if side == "BUY" else -1)) > self.max_pos:
-            logger.warning("skip: pos %.2f > max %.2f", pos_usd, self.max_pos)
+        if abs(pos_usd) + size * mid > self.max_pos:
+            logger.warning(
+                "skip: pos %.2f > max %.2f", pos_usd + size * mid, self.max_pos
+            )
             return
 
-        # ---------- 発注 ----------
+        # ── 発注（dry-run は place_order 内で判定） ──
         asyncio.create_task(self.place_order(side, float(size)))
-        self.last_side = side
-        self.last_ts = now
+
+        # クールダウン用のタイムスタンプとサイドを更新
+        self.last_side, self.last_ts = side, now
 
     # ---------------------------------------------------------------- order
 
