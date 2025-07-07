@@ -74,25 +74,47 @@ class PFPLStrategy:
         self.order_usd = Decimal(self.config.get("order_usd", 10))
         self.max_pos = Decimal(self.config.get("max_position_usd", 100))
 
+        self.fair_feed = self.config.get("fair_feed", "@10")  # デフォルト @10
+
         # state ---------------------------------------------------------------
         self.last_side: str | None = None  # 直前に出したサイド
         self.last_ts: float = 0.0  # 直前発注の UNIX 秒
         self.pos_usd: Decimal = Decimal("0")  # 現在ポジション USD
-        self._refresh_position()
+        # 🔽 起動ループがあればバックグラウンドで最新化
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._refresh_position())
+        except RuntimeError:
+            # まだイベントループが無い（pytest 収集中など）→後で evaluate() から取る
+            pass
 
         logger.info("PFPLStrategy initialised with %s", config)
 
     # ------------------------------------------------------------------ WS hook
-    # ① ────────────────────────────────────────────────────────────
-    # 同ファイル ── _refresh_position 本体
+    # ── src/bots/pfpl/strategy.py ──
     async def _refresh_position(self) -> None:
-        """現在の総ポジション USD を self.pos_usd に反映"""
-        state = self.exchange.info.user_state(self.account)
-        # Testnet には totalPositionUsd が無い場合がある
-        pos_usd_str = state.get("marginSummary", {}).get(
-            "totalPositionUsd"
-        ) or state.get("marginSummary", {}).get("positionValueUsd", "0")
-        self.pos_usd = Decimal(pos_usd_str)
+        """現在の ETH-PERP 建玉 USD を self.pos_usd に反映"""
+        try:
+            state = self.exchange.info.user_state(self.account)
+
+            # 🔽 ここを防御的に
+            perp_pos = next(
+                (
+                    p
+                    for p in state.get("perpPositions", [])  # ★① get(..., [])
+                    if p["position"]["coin"] == "ETH"
+                ),
+                None,
+            )
+            usd = (
+                Decimal(perp_pos["position"]["sz"])
+                * Decimal(perp_pos["position"]["entryPx"])
+                if perp_pos
+                else Decimal("0")
+            )
+            self.pos_usd = usd
+        except Exception as exc:  # ★② 何かあっても WS を落とさない
+            logger.warning("refresh_position failed: %s", exc)
 
     # ② ────────────────────────────────────────────────────────────
     async def on_message(self, msg: dict[str, Any]) -> None:
@@ -117,60 +139,79 @@ class PFPLStrategy:
 
     # ---------------------------------------------------------------- evaluate
 
+    # ------------------------------------------------------------------ price check
+    async def _ensure_position(self) -> None:
+        if self.pos_usd == 0:
+            await self._refresh_position()
+
     def evaluate(self) -> None:
+        """mid と fair の乖離を評価し、発注の要否を決定する"""
+        asyncio.create_task(self._ensure_position())
+
         now = time.time()
-        # --- クールダウン ---
+
+        # ---------- クールダウン ----------
         if now - self.last_ts < self.cooldown:
-            return  # まだクールダウン中
-
-        # --- ポジション上限 ---
-        if abs(self.pos_usd) >= self.max_pos:
-            return  # 上限到達
-
-        mid = Decimal(self.mids.get("@1", "0"))
-        fair = Decimal(self.mids.get("@10", "0"))  # ダミー: 本来は別 feed
-        spread = fair - mid
-        threshold = Decimal(self.config.get("threshold", "0.01"))  # ★
-
-        if abs(spread) < threshold:
             return
 
-        side = "BUY" if spread < 0 else "SELL"
-        # --- 直前と同じサイドなら発注を抑制 -----------------------------
+        # ---------- ポジション上限 ----------
+        if abs(self.pos_usd) >= self.max_pos:
+            return
+
+        # ---------- 価格・スプレッド計算 ----------
+        mid = Decimal(self.mids.get("@1", "0"))
+        fair = Decimal(
+            self.mids.get(self.fair_feed, "0")
+        )  # self.fair_feed は __init__ で "@"10 等を設定
+        if mid == 0 or fair == 0:
+            return  # データ不足
+
+        spread_abs = abs(fair - mid)
+        spread_pct = abs((fair - mid) / mid) * 100  # %
+
+        # ---------- 判定ロジック ----------
+        mode = self.config.get("mode", "both")  # abs / pct / both / either
+        abs_thr = Decimal(self.config.get("threshold", "1"))
+        pct_thr = Decimal(str(self.config.get("spread_threshold", 0.05)))
+
+        should_trade = {
+            "abs": spread_abs >= abs_thr,
+            "pct": spread_pct >= pct_thr,
+            "both": spread_abs >= abs_thr and spread_pct >= pct_thr,
+            "either": spread_abs >= abs_thr or spread_pct >= pct_thr,
+        }.get(mode, False)
+
+        if not should_trade:
+            return
+
+        side = "BUY" if (fair - mid) < 0 else "SELL"
+
+        # ---------- 直前と同じサイド抑制 ----------
         if side == self.last_side:
             logger.debug("same side as previous (%s) → skip", side)
             return
 
-        # duplicate suppress
-        now = time.time()
-        if side == self.last_side and now - self.last_ts < self.cooldown:
-            return
-        self.last_side, self.last_ts = side, now
-
-        # USD→サイズ計算 & フィルタ
+        # ---------- 発注サイズ計算 ----------
         size = (self.order_usd / mid).quantize(self.tick)
         if size * mid < self.min_usd:
-            logger.debug("skip: %s USD < minSizeUsd", size * mid)
+            logger.debug("skip: %.2f USD < minSizeUsd", size * mid)
             return
 
-        # ポジション超過チェック
-        # --- After  -----------------------------------
+        # ---------- 現在ポジション取得 ----------
         state = self.exchange.info.user_state(self.account)
         eth_pos = next(
-            (p for p in state["perpPositions"] if p["position"]["coin"] == "ETH"),
-            None,
+            (p for p in state["perpPositions"] if p["position"]["coin"] == "ETH"), None
         )
-        pos = (
-            Decimal(eth_pos["position"]["sz"]) * mid  # ← size × mid = USD 建玉
-            if eth_pos
-            else Decimal("0")
-        )
-        pos = Decimal(self.exchange.position()["size"]) * mid
-        if pos + size * mid > self.max_pos:
-            logger.warning("skip: pos %.2f > max %.2f", pos, self.max_pos)
+        pos_usd = Decimal(eth_pos["position"]["sz"]) * mid if eth_pos else Decimal("0")
+
+        if abs(pos_usd + (size * mid) * (1 if side == "BUY" else -1)) > self.max_pos:
+            logger.warning("skip: pos %.2f > max %.2f", pos_usd, self.max_pos)
             return
 
+        # ---------- 発注 ----------
         asyncio.create_task(self.place_order(side, float(size)))
+        self.last_side = side
+        self.last_ts = now
 
     # ---------------------------------------------------------------- order
 

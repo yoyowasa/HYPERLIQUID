@@ -26,6 +26,9 @@ async def main() -> None:
     parser.add_argument("--testnet", action="store_true", help="use testnet URL")
     parser.add_argument("--cooldown", type=float, default=1.0, help="cooldown sec")
     parser.add_argument("--dry-run", action="store_true", help="発注せずログだけ出す")
+    parser.add_argument(
+        "--order_usd", type=float, default=10, help="order size in USD per trade"
+    )
     args = parser.parse_args()
 
     # ★ ここで .env を読み分け
@@ -40,6 +43,7 @@ async def main() -> None:
             "testnet": args.testnet,
             "cooldown_sec": args.cooldown,
             "dry_run": args.dry_run,
+            "order_usd": args.order_usd,
         }
     )
     from hl_core.api import WSClient
