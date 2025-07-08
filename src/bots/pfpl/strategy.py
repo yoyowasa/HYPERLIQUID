@@ -38,7 +38,7 @@ class PFPLStrategy:
 
         # ── 環境変数キー ────────────────────────────────
         self.account = os.getenv("HL_ACCOUNT_ADDR")
-        self.secret  = os.getenv("HL_API_SECRET")
+        self.secret = os.getenv("HL_API_SECRET")
         if not (self.account and self.secret):
             raise RuntimeError("HL_ACCOUNT_ADDR / HL_API_SECRET が未設定")
 
@@ -59,15 +59,13 @@ class PFPLStrategy:
         meta = self.exchange.info.meta()
 
         # min_usd
-        if (min_usd_cfg := self.config.get("min_usd")):
+        if min_usd_cfg := self.config.get("min_usd"):
             self.min_usd = Decimal(str(min_usd_cfg))
             logger.info("min_usd override from config: USD %.2f", self.min_usd)
         else:
             min_usd_map: dict[str, str] = meta.get("minSizeUsd", {})
             self.min_usd = (
-                Decimal(min_usd_map["ETH"])
-                if "ETH" in min_usd_map
-                else Decimal("1")
+                Decimal(min_usd_map["ETH"]) if "ETH" in min_usd_map else Decimal("1")
             )
             if "ETH" not in min_usd_map:
                 logger.warning("minSizeUsd missing ➜ fallback USD 1")
@@ -80,13 +78,13 @@ class PFPLStrategy:
         # ── Bot パラメータ ──────────────────────────────
         self.cooldown = float(self.config.get("cooldown_sec", 1.0))
         self.order_usd = Decimal(self.config.get("order_usd", 10))
-        self.max_pos   = Decimal(self.config.get("max_position_usd", 100))
+        self.max_pos = Decimal(self.config.get("max_position_usd", 100))
         self.fair_feed = self.config.get("fair_feed", "indexPrices")
 
         # ── 内部ステート ────────────────────────────────
         self.last_side: str | None = None
-        self.last_ts:   float = 0.0
-        self.pos_usd    = Decimal("0")
+        self.last_ts: float = 0.0
+        self.pos_usd = Decimal("0")
 
         # 非同期でポジション初期化
         try:
@@ -127,31 +125,33 @@ class PFPLStrategy:
             logger.warning("refresh_position failed: %s", exc)
 
     # ② ────────────────────────────────────────────────────────────
-    async def on_message(self, msg: dict[str, Any]) -> None:
+    # ------------------------------------------------------------------ WS hook
+    def on_message(self, msg: dict[str, Any]) -> None:
         """
-        allMids チャネルを受信するたびに
-        1) mid 情報を更新
-        2) 売買判定 evaluate()
-        3) ポジション情報を最新化 (_refresh_position)
+        allMids で板 mid、indexPrices で公正価格を取り込み
+        → 両方そろったタイミングで evaluate()
         """
-        if msg.get("channel") != "allMids":
+        ch = msg.get("channel")
+        if ch == "allMids":  # 板中央価格
+            mids = msg["data"]["mids"]
+            if "@1" in mids:  # ETH-PERP の mid
+                self.mid = Decimal(mids["@1"])
+        elif ch == self.fair_feed:  # 公正価格フィード
+            pxs = msg["data"]["pxs"]
+            if "ETH" in pxs:
+                self.fair = Decimal(pxs["ETH"])
+        else:
             return
 
-        self.mids = msg["data"]["mids"]
-
-        # 売買ロジック
-        self.evaluate()
-
-        # ポジション更新（await 必要ない設計なら同期呼び出しでも可）
-        # ここは asyncio.create_task(...) で fire-and-forget にしておくと
-        # on_message をブロックしない。
-        await self._refresh_position()
+        # mid と fair が両方得られていれば評価
+        if self.mid and self.fair:
+            self.evaluate()
 
     # ---------------------------------------------------------------- evaluate
 
     # src/bots/pfpl/strategy.py
     # ------------------------------------------------------------------ Tick loop
-    def evaluate(self) -> None:               # ← まるごと置き換え
+    def evaluate(self) -> None:  # ← まるごと置き換え
         now = time.time()
 
         # ── クールダウン ─────────────────────────────────────
@@ -163,16 +163,16 @@ class PFPLStrategy:
             return
 
         # ── データ取り出し ──────────────────────────────────
-        mid   = Decimal(self.mids.get("@1", "0"))          # 現在値
-        fair  = Decimal(self.mids.get(self.fair_feed, "0"))  # フェア値
+        mid = Decimal(self.mids.get("@1", "0"))  # 現在値
+        fair = Decimal(self.mids.get(self.fair_feed, "0"))  # フェア値
         if mid == 0 or fair == 0:
             return
 
-        spread = fair - mid                      # 絶対差（USD）
-        pct    = abs(spread) / mid * Decimal("100")   # 乖離率（％）
+        spread = fair - mid  # 絶対差（USD）
+        pct = abs(spread) / mid * Decimal("100")  # 乖離率（％）
 
         # ── しきい値判定 ------------------------------------------------
-        abs_th = Decimal(str(self.config.get("threshold", "0")))        # USD
+        abs_th = Decimal(str(self.config.get("threshold", "0")))  # USD
         pct_th = Decimal(str(self.config.get("spread_threshold_pct", 0)))  # %
 
         hit_abs = abs_th > 0 and abs(spread) >= abs_th
@@ -197,12 +197,13 @@ class PFPLStrategy:
 
         # ── 最大ポジション超過チェック ─────────────────────
         if abs(self.pos_usd + size * mid) > self.max_pos:
-            logger.debug("pos %.2f would exceed max %.2f → skip", self.pos_usd, self.max_pos)
+            logger.debug(
+                "pos %.2f would exceed max %.2f → skip", self.pos_usd, self.max_pos
+            )
             return
 
         # ── 発注 ────────────────────────────────────────
         asyncio.create_task(self.place_order(side, float(size)))
-
 
     # ---------------------------------------------------------------- order
 

@@ -51,14 +51,16 @@ async def main() -> None:
     ws = WSClient("wss://api.hyperliquid.xyz/ws", reconnect=True)
     ws.on_message = strategy.on_message
 
+    await ws.wait_ready()  # open まで待機
+    await ws.subscribe("allMids")  # mid
+    await ws.subscribe("indexPrices")  # ★ fair
+
     asyncio.create_task(ws.connect())  # 非同期で接続開始
 
     # --- ★ 接続完了を待つループ -----------------------------
     while not (ws._ws and not getattr(ws._ws, "closed", False)):
         await anyio.sleep(0.1)  # 0.1 秒スリープ
     # --------------------------------------------------------
-
-    await ws.subscribe("allMids")  # ★ ここで購読を送信
 
     try:
         await Event().wait()  # 常駐
