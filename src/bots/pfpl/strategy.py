@@ -151,58 +151,65 @@ class PFPLStrategy:
 
     # src/bots/pfpl/strategy.py
     # ------------------------------------------------------------------ Tick loop
-    def evaluate(self) -> None:  # ← まるごと置き換え
+    # ─────────────────────────────────────────────────────────────
+    def evaluate(self) -> None:
         now = time.time()
 
-        # ── クールダウン ─────────────────────────────────────
+        # ① クールダウン判定
         if now - self.last_ts < self.cooldown:
             return
 
-        # ── 最大ポジション USD ───────────────────────────────
+        # ② 最大建玉判定
         if abs(self.pos_usd) >= self.max_pos:
             return
 
-        # ── データ取り出し ──────────────────────────────────
-        mid = Decimal(self.mids.get("@1", "0"))  # 現在値
-        fair = Decimal(self.mids.get(self.fair_feed, "0"))  # フェア値
+        # ③ 必要データ取得
+        mid  = Decimal(self.mids.get("@1", "0"))
+        fair = Decimal(self.mids.get(self.fair_feed, "0"))
         if mid == 0 or fair == 0:
+            return  # データが揃っていない
+
+        abs_diff = abs(fair - mid)                       # USD 差
+        pct_diff = abs_diff / mid * Decimal("100")       # 乖離率 %
+
+        # ④ 閾値判定
+        th_abs = Decimal(str(self.config.get("threshold",  "1.0")))   # USD
+        th_pct = Decimal(str(self.config.get("threshold_pct", "0.05")))  # %
+        mode   = self.config.get("mode", "both")  # both / either
+
+        if mode == "abs":
+            if abs_diff < th_abs:
+                return
+        elif mode == "pct":
+            if pct_diff < th_pct:
+                return
+        elif mode == "either":
+            if abs_diff < th_abs and pct_diff < th_pct:
+                return
+        else:   # default = both
+            if abs_diff < th_abs or pct_diff < th_pct:
+                return
+
+        # ⑤ 発注サイド決定
+        side = "BUY" if fair < mid else "SELL"
+
+        # ⑥ 連続同方向防止
+        if side == self.last_side and now - self.last_ts < self.cooldown:
             return
 
-        spread = fair - mid  # 絶対差（USD）
-        pct = abs(spread) / mid * Decimal("100")  # 乖離率（％）
-
-        # ── しきい値判定 ------------------------------------------------
-        abs_th = Decimal(str(self.config.get("threshold", "0")))  # USD
-        pct_th = Decimal(str(self.config.get("spread_threshold_pct", 0)))  # %
-
-        hit_abs = abs_th > 0 and abs(spread) >= abs_th
-        hit_pct = pct_th > 0 and pct >= pct_th
-
-        # どちらかを満たせばトリガー（OR 条件）
-        if not (hit_abs or hit_pct):
-            return
-
-        side = "BUY" if spread < 0 else "SELL"
-
-        # ── 連続同方向抑制 ────────────────────────────────
-        if side == self.last_side:
-            logger.debug("same side as previous (%s) → skip", side)
-            return
-
-        # ── 発注サイズ計算（USD → lot） ─────────────────────
+        # ⑦ 発注サイズ計算
         size = (self.order_usd / mid).quantize(self.tick)
         if size * mid < self.min_usd:
-            logger.debug("size %.4f (< min USD %.2f) → skip", size, self.min_usd)
+            logger.debug("size %.4f USD %.2f < min_usd %.2f → skip",
+                         size, size*mid, self.min_usd)
             return
 
-        # ── 最大ポジション超過チェック ─────────────────────
-        if abs(self.pos_usd + size * mid) > self.max_pos:
-            logger.debug(
-                "pos %.2f would exceed max %.2f → skip", self.pos_usd, self.max_pos
-            )
+        # ⑧ 建玉超過チェック
+        if abs(self.pos_usd + (size*mid if side=="BUY" else -size*mid)) > self.max_pos:
+            logger.debug("pos_limit %.2f USD 超過 → skip", self.max_pos)
             return
 
-        # ── 発注 ────────────────────────────────────────
+        # ⑨ 発注
         asyncio.create_task(self.place_order(side, float(size)))
 
     # ---------------------------------------------------------------- order
