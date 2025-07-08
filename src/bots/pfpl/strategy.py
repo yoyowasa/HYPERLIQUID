@@ -27,7 +27,7 @@ class PFPLStrategy:
     """Price‑Fair‑Price‑Lag bot"""
 
     def __init__(self, config: dict[str, Any]) -> None:
-        # --- YAML 取り込み ------------------------------------------------
+        # ── YAML + CLI マージ ─────────────────────────────
         yml_path = Path(__file__).with_name("config.yaml")
         yaml_conf: dict[str, Any] = {}
         if yml_path.exists():
@@ -36,59 +36,65 @@ class PFPLStrategy:
         self.config = {**yaml_conf, **config}
         self.mids: dict[str, str] = {}
 
-        # env keys
+        # ── 環境変数キー ────────────────────────────────
         self.account = os.getenv("HL_ACCOUNT_ADDR")
-        self.secret = os.getenv("HL_API_SECRET")
+        self.secret  = os.getenv("HL_API_SECRET")
         if not (self.account and self.secret):
             raise RuntimeError("HL_ACCOUNT_ADDR / HL_API_SECRET が未設定")
 
-        # Hyperliquid SDK
-        # Hyperliquid SDK
+        # ── Hyperliquid SDK 初期化 ──────────────────────
         self.wallet = Account.from_key(self.secret)
         base_url = (
-            "https://api.hyperliquid-testnet.xyz"  # テストネット
-            if config.get("testnet")
-            else "https://api.hyperliquid.xyz"  # メインネット
+            "https://api.hyperliquid-testnet.xyz"
+            if self.config.get("testnet")
+            else "https://api.hyperliquid.xyz"
         )
         self.exchange = Exchange(
-            self.wallet,  # ① wallet (LocalAccount)
-            base_url,  # ② base_url 文字列
+            self.wallet,
+            base_url,
             account_address=self.account,
         )
 
-        # meta info
+        # ── meta 情報から tick / min_usd 決定 ───────────
         meta = self.exchange.info.meta()
-        # テストネットには minSizeUsd が無い場合がある → フォールバック
-        # minSizeUsd が Testnet には無い場合がある → フォールバック
-        min_usd_map: dict[str, str] = meta.get("minSizeUsd", {})
-        if not min_usd_map:
-            logger.warning("minSizeUsd not present in meta; defaulting to USD 10")
-            min_usd_map = {"ETH": "10"}  # ← 必要なら YAML で上書き可
-        self.min_usd = Decimal(min_usd_map["ETH"])
-        uni_eth = next(asset for asset in meta["universe"] if asset["name"] == "ETH")
-        tick_raw = uni_eth.get("pxTick", uni_eth.get("pxTickSize", "0.01"))
+
+        # min_usd
+        if (min_usd_cfg := self.config.get("min_usd")):
+            self.min_usd = Decimal(str(min_usd_cfg))
+            logger.info("min_usd override from config: USD %.2f", self.min_usd)
+        else:
+            min_usd_map: dict[str, str] = meta.get("minSizeUsd", {})
+            self.min_usd = (
+                Decimal(min_usd_map["ETH"])
+                if "ETH" in min_usd_map
+                else Decimal("1")
+            )
+            if "ETH" not in min_usd_map:
+                logger.warning("minSizeUsd missing ➜ fallback USD 1")
+
+        # tick
+        uni_eth = next(u for u in meta["universe"] if u["name"] == "ETH")
+        tick_raw = uni_eth.get("pxTick") or uni_eth.get("pxTickSize", "0.01")
         self.tick = Decimal(tick_raw)
 
-        # params
+        # ── Bot パラメータ ──────────────────────────────
         self.cooldown = float(self.config.get("cooldown_sec", 1.0))
         self.order_usd = Decimal(self.config.get("order_usd", 10))
-        self.max_pos = Decimal(self.config.get("max_position_usd", 100))
+        self.max_pos   = Decimal(self.config.get("max_position_usd", 100))
+        self.fair_feed = self.config.get("fair_feed", "indexPrices")
 
-        self.fair_feed = self.config.get("fair_feed", "@10")  # デフォルト @10
+        # ── 内部ステート ────────────────────────────────
+        self.last_side: str | None = None
+        self.last_ts:   float = 0.0
+        self.pos_usd    = Decimal("0")
 
-        # state ---------------------------------------------------------------
-        self.last_side: str | None = None  # 直前に出したサイド
-        self.last_ts: float = 0.0  # 直前発注の UNIX 秒
-        self.pos_usd: Decimal = Decimal("0")  # 現在ポジション USD
-        # 🔽 起動ループがあればバックグラウンドで最新化
+        # 非同期でポジション初期化
         try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._refresh_position())
+            asyncio.get_running_loop().create_task(self._refresh_position())
         except RuntimeError:
-            # まだイベントループが無い（pytest 収集中など）→後で evaluate() から取る
-            pass
+            pass  # pytest 収集時など、イベントループが無い場合
 
-        logger.info("PFPLStrategy initialised with %s", config)
+        logger.info("PFPLStrategy initialised with %s", self.config)
 
     # ── src/bots/pfpl/strategy.py ──
     async def _refresh_position(self) -> None:
@@ -144,57 +150,59 @@ class PFPLStrategy:
     # ---------------------------------------------------------------- evaluate
 
     # src/bots/pfpl/strategy.py
-    def evaluate(self) -> None:
+    # ------------------------------------------------------------------ Tick loop
+    def evaluate(self) -> None:               # ← まるごと置き換え
         now = time.time()
 
-        # ── クールダウン ─────────────────────────
+        # ── クールダウン ─────────────────────────────────────
         if now - self.last_ts < self.cooldown:
             return
 
-        # ── 最大ポジション超過チェック ────────────
+        # ── 最大ポジション USD ───────────────────────────────
         if abs(self.pos_usd) >= self.max_pos:
             return
 
-        # ── ミッド／フェア取得 ────────────────────
-        mid = Decimal(self.mids.get("@1", "0"))
-        fair = Decimal(self.mids.get(self.fair_feed, "0"))
+        # ── データ取り出し ──────────────────────────────────
+        mid   = Decimal(self.mids.get("@1", "0"))          # 現在値
+        fair  = Decimal(self.mids.get(self.fair_feed, "0"))  # フェア値
         if mid == 0 or fair == 0:
-            return  # データ欠損
-
-        spread_abs = (fair - mid).copy_abs()  # 絶対 USD 差
-        spread_pct = (spread_abs / mid) * Decimal("100")  # ％差
-
-        # ── コンフィグしきい値 ────────────────────
-
-        pct_th = Decimal(str(self.config.get("spread_threshold_pct", 0)))
-
-        # ★ 今は “%” だけ判定
-        if spread_pct < pct_th:
             return
 
-        side = "BUY" if fair < mid else "SELL"
+        spread = fair - mid                      # 絶対差（USD）
+        pct    = abs(spread) / mid * Decimal("100")   # 乖離率（％）
 
-        # ── 連続同サイド抑制 ──────────────────
+        # ── しきい値判定 ------------------------------------------------
+        abs_th = Decimal(str(self.config.get("threshold", "0")))        # USD
+        pct_th = Decimal(str(self.config.get("spread_threshold_pct", 0)))  # %
+
+        hit_abs = abs_th > 0 and abs(spread) >= abs_th
+        hit_pct = pct_th > 0 and pct >= pct_th
+
+        # どちらかを満たせばトリガー（OR 条件）
+        if not (hit_abs or hit_pct):
+            return
+
+        side = "BUY" if spread < 0 else "SELL"
+
+        # ── 連続同方向抑制 ────────────────────────────────
         if side == self.last_side:
             logger.debug("same side as previous (%s) → skip", side)
             return
 
-        # ── 発注サイズ計算 ──────────────────────
+        # ── 発注サイズ計算（USD → lot） ─────────────────────
         size = (self.order_usd / mid).quantize(self.tick)
         if size * mid < self.min_usd:
-            logger.debug("size %.4f USD < minSizeUsd, skip", size * mid)
+            logger.debug("size %.4f (< min USD %.2f) → skip", size, self.min_usd)
             return
 
-        # ── 現在ポジ更新 & 上限チェック ──────────
-        asyncio.create_task(self._refresh_position())
-        if self.pos_usd + (size * mid if side == "BUY" else -size * mid) > self.max_pos:
-            logger.warning("pos %.2f > max %.2f, skip", self.pos_usd, self.max_pos)
+        # ── 最大ポジション超過チェック ─────────────────────
+        if abs(self.pos_usd + size * mid) > self.max_pos:
+            logger.debug("pos %.2f would exceed max %.2f → skip", self.pos_usd, self.max_pos)
             return
 
+        # ── 発注 ────────────────────────────────────────
         asyncio.create_task(self.place_order(side, float(size)))
 
-        # クールダウン用のタイムスタンプとサイドを更新
-        self.last_side, self.last_ts = side, now
 
     # ---------------------------------------------------------------- order
 
