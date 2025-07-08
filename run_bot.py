@@ -32,6 +32,12 @@ async def main() -> None:
     parser.add_argument("--threshold", type=float, help="absolute USD threshold")
     parser.add_argument("--threshold_pct", type=float, help="percentage threshold (%)")
     parser.add_argument(
+        "--mode",
+        choices=["abs", "pct", "both", "either"],
+        default="both",
+        help="abs / pct 判定モード",
+    )
+    parser.add_argument(
         "--log_level", default=None, help="logger level (DEBUG / INFO / …)"
     )
 
@@ -52,6 +58,7 @@ async def main() -> None:
             "order_usd": args.order_usd,
             "threshold": args.threshold,
             "threshold_pct": args.threshold_pct,
+            "mode": args.mode,
             "log_level": args.log_level,
         }
     )
