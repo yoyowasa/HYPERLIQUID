@@ -29,6 +29,12 @@ async def main() -> None:
     parser.add_argument(
         "--order_usd", type=float, default=10, help="order size in USD per trade"
     )
+    parser.add_argument("--threshold", type=float, help="absolute USD threshold")
+    parser.add_argument("--threshold_pct", type=float, help="percentage threshold (%)")
+    parser.add_argument(
+        "--log_level", default=None, help="logger level (DEBUG / INFO / …)"
+    )
+
     args = parser.parse_args()
 
     # ★ ここで .env を読み分け
@@ -44,6 +50,9 @@ async def main() -> None:
             "cooldown_sec": args.cooldown,
             "dry_run": args.dry_run,
             "order_usd": args.order_usd,
+            "threshold": args.threshold,
+            "threshold_pct": args.threshold_pct,
+            "log_level": args.log_level,
         }
     )
     from hl_core.api import WSClient
