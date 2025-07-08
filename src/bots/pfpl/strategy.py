@@ -164,18 +164,18 @@ class PFPLStrategy:
             return
 
         # ③ 必要データ取得
-        mid  = Decimal(self.mids.get("@1", "0"))
+        mid = Decimal(self.mids.get("@1", "0"))
         fair = Decimal(self.mids.get(self.fair_feed, "0"))
         if mid == 0 or fair == 0:
             return  # データが揃っていない
 
-        abs_diff = abs(fair - mid)                       # USD 差
-        pct_diff = abs_diff / mid * Decimal("100")       # 乖離率 %
+        abs_diff = abs(fair - mid)  # USD 差
+        pct_diff = abs_diff / mid * Decimal("100")  # 乖離率 %
 
         # ④ 閾値判定
-        th_abs = Decimal(str(self.config.get("threshold",  "1.0")))   # USD
+        th_abs = Decimal(str(self.config.get("threshold", "1.0")))  # USD
         th_pct = Decimal(str(self.config.get("threshold_pct", "0.05")))  # %
-        mode   = self.config.get("mode", "both")  # both / either
+        mode = self.config.get("mode", "both")  # both / either
 
         if mode == "abs":
             if abs_diff < th_abs:
@@ -186,7 +186,7 @@ class PFPLStrategy:
         elif mode == "either":
             if abs_diff < th_abs and pct_diff < th_pct:
                 return
-        else:   # default = both
+        else:  # default = both
             if abs_diff < th_abs or pct_diff < th_pct:
                 return
 
@@ -200,12 +200,19 @@ class PFPLStrategy:
         # ⑦ 発注サイズ計算
         size = (self.order_usd / mid).quantize(self.tick)
         if size * mid < self.min_usd:
-            logger.debug("size %.4f USD %.2f < min_usd %.2f → skip",
-                         size, size*mid, self.min_usd)
+            logger.debug(
+                "size %.4f USD %.2f < min_usd %.2f → skip",
+                size,
+                size * mid,
+                self.min_usd,
+            )
             return
 
         # ⑧ 建玉超過チェック
-        if abs(self.pos_usd + (size*mid if side=="BUY" else -size*mid)) > self.max_pos:
+        if (
+            abs(self.pos_usd + (size * mid if side == "BUY" else -size * mid))
+            > self.max_pos
+        ):
             logger.debug("pos_limit %.2f USD 超過 → skip", self.max_pos)
             return
 
