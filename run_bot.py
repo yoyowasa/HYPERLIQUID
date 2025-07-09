@@ -86,7 +86,7 @@ async def main() -> None:
     ws.on_message = fanout
     asyncio.create_task(ws.connect())
     await ws.wait_ready()
-    for feed in {"allMids", "indexPrices","oraclePrices"}:  # 乖離検出 feed
+    for feed in {"allMids", "indexPrices", "oraclePrices"}:  # 乖離検出 feed
         await ws.subscribe(feed)
 
     await asyncio.Event().wait()  # 常駐

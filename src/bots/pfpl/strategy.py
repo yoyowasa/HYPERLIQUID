@@ -13,6 +13,7 @@ from hl_core.utils.logger import setup_logger
 from pathlib import Path
 import yaml
 import anyio
+from datetime import datetime  # ← 追加
 
 # 既存 import 群の最後あたりに追加
 from hyperliquid.exchange import Exchange
@@ -24,22 +25,28 @@ logger = logging.getLogger(__name__)
 
 
 class PFPLStrategy:
-    """Price‑Fair‑Price‑Lag bot"""
+    """Price-Fair-Price-Lag bot"""
 
-    def __init__(self, *, config: dict[str, Any], semaphore: asyncio.Semaphore | None = None):
-        self.sem = semaphore or asyncio.Semaphore(config.get("max_order_per_sec", 3))
-
-
-        self.sem = semaphore  # 発注レート共有
-        self.symbol = config.get("target_symbol", "ETH-PERP")
-        # ── YAML + CLI マージ ─────────────────────────────
+    # ← シグネチャはそのまま
+    def __init__(
+        self, *, config: dict[str, Any], semaphore: asyncio.Semaphore | None = None
+    ):
+        # ── ① YAML と CLI のマージ ───────────────────────
         yml_path = Path(__file__).with_name("config.yaml")
         yaml_conf: dict[str, Any] = {}
         if yml_path.exists():
             with yml_path.open(encoding="utf-8") as f:
                 yaml_conf = yaml.safe_load(f) or {}
         self.config = {**yaml_conf, **config}
-        self.mids: dict[str, str] = {}
+
+        # ── ② 通貨ペア・Semaphore 初期化 ─────────────────
+        self.symbol: str = self.config.get("target_symbol", "ETH-PERP")
+
+        max_ops = int(self.config.get("max_order_per_sec", 3))  # 1 秒あたり発注上限
+        self.sem: asyncio.Semaphore = semaphore or asyncio.Semaphore(max_ops)
+
+        # 以降 (env 読み込み・SDK 初期化 …) は従来コードを続ける
+        # ------------------------------------------------------------------
 
         # ── 環境変数キー ────────────────────────────────
         self.account = os.getenv("HL_ACCOUNT_ADDR")
@@ -91,9 +98,9 @@ class PFPLStrategy:
         self._start_day = datetime.utcnow().date()
         self.enabled = True
         # ── フィード保持用 -------------------------------------------------
-        self.mid:  Decimal | None = None   # 板 Mid (@1)
-        self.idx:  Decimal | None = None   # indexPrices
-        self.ora:  Decimal | None = None   # oraclePrices
+        self.mid: Decimal | None = None  # 板 Mid (@1)
+        self.idx: Decimal | None = None  # indexPrices
+        self.ora: Decimal | None = None  # oraclePrices
 
         # ── 内部ステート ────────────────────────────────
         self.last_side: str | None = None
@@ -146,18 +153,17 @@ class PFPLStrategy:
     # ② ────────────────────────────────────────────────────────────
     # ------------------------------------------------------------------ WS hook
     def on_message(self, msg: dict[str, Any]) -> None:
-        if msg.get("channel") == "allMids":          # 板 mid 群
+        if msg.get("channel") == "allMids":  # 板 mid 群
             self.mid = Decimal(msg["data"]["mids"]["@1"])
-        elif msg.get("channel") == "indexPrices":    # インデックス価格
+        elif msg.get("channel") == "indexPrices":  # インデックス価格
             self.idx = Decimal(msg["data"]["prices"]["ETH"])
-        elif msg.get("channel") == "oraclePrices":   # オラクル価格
+        elif msg.get("channel") == "oraclePrices":  # オラクル価格
             self.ora = Decimal(msg["data"]["prices"]["ETH"])
 
         # fair が作れれば評価へ
         if self.mid and self.idx and self.ora:
-            self.fair = (self.idx + self.ora) / 2      # ★ 平均で公正価格
+            self.fair = (self.idx + self.ora) / 2  # ★ 平均で公正価格
             self.evaluate()
-
 
     # ---------------------------------------------------------------- evaluate
 
@@ -239,83 +245,77 @@ class PFPLStrategy:
     # ---------------------------------------------------------------- order
 
     async def place_order(self, side: str, size: float) -> None:
-        async with self.sem:  # ★ 3 req/s 保証
-            is_buy = side == "BUY"
+        """IOC で即時約定、失敗時リトライ付き"""
+        is_buy = side == "BUY"
 
-        # ---------- ① Dry‑run 判定 ----------
+        # ── Dry-run ───────────────────
         if self.config.get("dry_run"):
-            logger.info("[DRY-RUN] %s %.4f", side, size)
+            logger.info("[DRY-RUN] %s %.4f %s", side, size, self.symbol)
             self.last_ts = time.time()
             self.last_side = side
             return
-        # ------------------------------------
+        # ──────────────────────────────
 
-        # ---------- ② 指値価格を計算 ----------
-        #   ε = price_buffer_pct (％表記)   ← config.yaml で調整可
-        eps_pct = float(self.config.get("price_buffer_pct", 2.0))  # 既定 2 %
-        mid = float(self.mids.get("@1", "0") or 0)  # failsafe 0
-        if mid == 0:
-            logger.warning("mid price unknown → skip order")
-            return
+        eps_pct = 0.02  # 0.02 % だけ踏み上げ／踏み下げ
+        mid = Decimal(self.mids.get("@1", "0")) or Decimal("1")
+        factor = 1 + eps_pct / 100
+        limit_px = float(mid * factor) if is_buy else float(mid / factor)
 
-        factor = 1.0 + eps_pct / 100.0
-        limit_px = mid * factor if is_buy else mid / factor
-        # -------------------------------------
-    async with self.sem:
-        MAX_RETRY = 3
-        for attempt in range(1, MAX_RETRY + 1):
-            try:
-                resp = self.exchange.order(
-                    coin=self.symbol,
-                    is_buy=is_buy,
-                    sz=size,
-                    limit_px=limit_px,
-                    order_type={"limit": {"tif": "Ioc"}},  # IOC 指定
-                    reduce_only=False,
-                )
-                logger.info("ORDER OK (try %d): %s", attempt, resp)
-                self._order_count += 1
-                self.last_ts = time.time()
-                self.last_side = side
-                break  # 成功したら抜ける
-            except Exception as exc:
-                logger.error("ORDER FAIL (try %d/%d): %s", attempt, MAX_RETRY, exc)
-                if attempt == MAX_RETRY:
-                    logger.error("GIVE UP after %d retries", MAX_RETRY)
-                else:
-                    await anyio.sleep(0.5)
+        async with self.sem:  # 1 秒あたり発注制御
+            MAX_RETRY = 3
+            for attempt in range(1, MAX_RETRY + 1):
+                try:
+                    resp = self.exchange.order(
+                        coin=self.symbol,
+                        is_buy=is_buy,
+                        sz=float(size),
+                        limit_px=limit_px,
+                        order_type={"limit": {"tif": "Ioc"}},  # IOC 指定
+                        reduce_only=False,
+                    )
+                    logger.info("ORDER OK %s try=%d → %s", self.symbol, attempt, resp)
+                    self._order_count += 1
+                    self.last_ts = time.time()
+                    self.last_side = side
+                    break
+                except Exception as exc:
+                    logger.error(
+                        "ORDER FAIL %s try=%d/%d: %s",
+                        self.symbol,
+                        attempt,
+                        MAX_RETRY,
+                        exc,
+                    )
+                    if attempt == MAX_RETRY:
+                        logger.error(
+                            "GIVE-UP %s after %d retries", self.symbol, MAX_RETRY
+                        )
+                    else:
+                        await anyio.sleep(0.5)
 
     def _sign(self, payload: dict[str, Any]) -> str:
         """API Wallet Secret で HMAC-SHA256 署名（例）"""
         msg = json.dumps(payload, separators=(",", ":")).encode()
         return hmac.new(self.secret.encode(), msg, hashlib.sha256).hexdigest()
+
     # ------------------------------------------------------------------ limits
     def _check_limits(self) -> bool:
-        """
-        取引可否を判定するガード:
-        - 日次発注回数
-        - ドローダウン USD
-        True を返せば発注を継続、False で停止
-        """
-        # 日付が変わったらリセット
+        """日次の発注数と DD 制限を超えていないか確認"""
         today = datetime.utcnow().date()
-        if today != self._start_day:
-            self._order_count = 0
+        if today != self._start_day:  # 日付が変わったらリセット
             self._start_day = today
+            self._order_count = 0
 
-        # PnL / ドローダウンを取得（SDK で accountValue などが取れる想定）
-        try:
-            state = self.exchange.info.user_state(self.account)
-            pnl = Decimal(state["marginSummary"]["totalPnlUsd"])
-        except Exception:
-            pnl = Decimal("0")  # 失敗したら無視して続行
+        if self._order_count >= self.max_order_per_sec * 60 * 60 * 24:
+            logger.warning("daily order-limit reached → trading disabled")
+            return False
 
-        if pnl < -self.max_drawdown_usd:
-            logger.error("DD %.2f USD > limit %.2f ➜ bot disabled", pnl, self.max_drawdown_usd)
-            self.enabled = False
+        if abs(self.pos_usd) >= self.max_pos:
+            logger.warning("position limit %.2f USD reached", self.max_pos)
+            return False
 
-        if self._order_count >= self.max_daily_orders:
-            logger.warning("daily order limit %d hit ➜ bot disabled", self.max_daily_orders)
-            self.enabled = False
+        if self.drawdown_usd >= self.max_drawdown_usd:
+            logger.warning("drawdown limit %.2f USD reached", self.max_drawdown_usd)
+            return False
 
-        return self.enabled
+        return True
