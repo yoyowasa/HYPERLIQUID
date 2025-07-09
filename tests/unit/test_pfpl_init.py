@@ -1,6 +1,5 @@
 # tests/unit/test_pfpl_init.py
 from asyncio import Semaphore
-import os
 from bots.pfpl import PFPLStrategy
 
 
