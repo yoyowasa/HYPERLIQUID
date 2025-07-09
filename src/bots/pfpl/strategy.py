@@ -27,7 +27,7 @@ class PFPLStrategy:
     """Price‑Fair‑Price‑Lag bot"""
 
     def __init__(self, config: dict[str, Any], semaphore: asyncio.Semaphore):
-        self.sem = semaphore              # 発注レート共有
+        self.sem = semaphore  # 発注レート共有
         self.symbol = config.get("target_symbol", "ETH-PERP")
         # ── YAML + CLI マージ ─────────────────────────────
         yml_path = Path(__file__).with_name("config.yaml")
@@ -139,12 +139,12 @@ class PFPLStrategy:
         mids 辞書を更新し、価格差がそろったら evaluate() を呼ぶ。
         """
         ch = msg.get("channel")
-        if ch == "allMids":                     # 板中心価格フィード
+        if ch == "allMids":  # 板中心価格フィード
             self.mids.update(msg["data"]["mids"])
             # ETH の mid は常に @1 キーに入る
             self.mids["@1"] = msg["data"]["mids"].get("@1", "0")
 
-        elif ch == self.fair_feed:              # 公正価格フィード
+        elif ch == self.fair_feed:  # 公正価格フィード
             # 例: indexPrices → {"pxs": {"ETH": "2975.1", ...}}
             pxs = msg["data"]["pxs"]
             self.mids[self.fair_feed] = pxs["ETH"]
@@ -152,7 +152,6 @@ class PFPLStrategy:
         # ── mid と fair がそろったら評価 ───────────────────
         if "@1" in self.mids and self.fair_feed in self.mids:
             self.evaluate()
-
 
     # ---------------------------------------------------------------- evaluate
 
@@ -176,7 +175,6 @@ class PFPLStrategy:
         if mid == 0 or fair == 0:
             return  # データが揃っていない
 
-        spread = fair - mid
         abs_diff = abs(fair - mid)  # USD 差
         pct_diff = abs_diff / mid * Decimal("100")  # 乖離率 %
 
@@ -230,7 +228,7 @@ class PFPLStrategy:
     # ---------------------------------------------------------------- order
 
     async def place_order(self, side: str, size: float) -> None:
-        async with self.sem:              # ★ 3 req/s 保証
+        async with self.sem:  # ★ 3 req/s 保証
             is_buy = side == "BUY"
 
         # ---------- ① Dry‑run 判定 ----------

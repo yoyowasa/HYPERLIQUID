@@ -3,13 +3,13 @@ import argparse
 import asyncio
 import logging
 from importlib import import_module
-from asyncio import Event
-from dotenv import load_dotenv, find_dotenv
-from hl_core.utils.logger import setup_logger
 from os import getenv
-import anyio
 from pathlib import Path
+
+from dotenv import load_dotenv
+
 from hl_core.api import WSClient
+from hl_core.utils.logger import setup_logger
 
 
 # env
@@ -24,25 +24,26 @@ logger = logging.getLogger(__name__)
 
 SEMA = asyncio.Semaphore(3)  # 発注 3 req/s 共有
 
+
 def load_pair_yaml(path: str | None) -> dict[str, dict]:
     if not path:
         return {}
     import yaml
-    with Path(path).open('r', encoding='utf-8') as f:
+
+    with Path(path).open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
+
 
 async def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("bot", help="bot folder name (e.g., pfpl)")
-    p.add_argument("--symbols", default="ETH-PERP",
-                   help="comma separated list (max 3)")
+    p.add_argument("--symbols", default="ETH-PERP", help="comma separated list (max 3)")
     p.add_argument("--pair_cfg", help="YAML to override per‑pair params")
     # ─ 共通オプション ─
     p.add_argument("--testnet", action="store_true")
     p.add_argument("--cooldown", type=float, default=1.0)
     p.add_argument("--dry-run", action="store_true")
-    p.add_argument("--log_level", default="INFO",
-                   choices=["DEBUG", "INFO", "WARNING"])
+    p.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING"])
     args = p.parse_args()
 
     logging.basicConfig(level=args.log_level)
@@ -56,8 +57,11 @@ async def main() -> None:
 
     # WS 生成（1 本）
     ws = WSClient(
-        "wss://api.hyperliquid-testnet.xyz/ws" if args.testnet
-        else "wss://api.hyperliquid.xyz/ws",
+        (
+            "wss://api.hyperliquid-testnet.xyz/ws"
+            if args.testnet
+            else "wss://api.hyperliquid.xyz/ws"
+        ),
         reconnect=True,
     )
 
@@ -81,10 +85,11 @@ async def main() -> None:
     ws.on_message = fanout
     asyncio.create_task(ws.connect())
     await ws.wait_ready()
-    for feed in {"allMids", "indexPrices"}:          # 乖離検出 feed
+    for feed in {"allMids", "indexPrices"}:  # 乖離検出 feed
         await ws.subscribe(feed)
 
     await asyncio.Event().wait()  # 常駐
+
 
 if __name__ == "__main__":
     asyncio.run(main())
