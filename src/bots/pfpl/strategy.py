@@ -26,7 +26,12 @@ logger = logging.getLogger(__name__)
 class PFPLStrategy:
     """Price‑Fair‑Price‑Lag bot"""
 
-    def __init__(self, config: dict[str, Any], semaphore: asyncio.Semaphore):
+    def __init__(
+        self,
+        config: dict[str, Any],
+        semaphore: anyio.Semaphore | None = None,  # ← ★デフォルトを用意
+    ) -> None:
+
         self.sem = semaphore  # 発注レート共有
         self.symbol = config.get("target_symbol", "ETH-PERP")
         # ── YAML + CLI マージ ─────────────────────────────
