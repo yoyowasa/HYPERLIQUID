@@ -1,4 +1,5 @@
-from bots.pfpl import PFPLStrategy
+from asyncio import Semaphore
+PFPLStrategy(config={}, semaphore=Semaphore(1))
 
 
 def test_init(monkeypatch):

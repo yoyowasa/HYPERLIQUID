@@ -4,15 +4,21 @@ ETH-PERP:
   threshold_pct: 0.05
   order_usd: 10
   max_position_usd: 200
+  max_daily_orders: 800
+  max_drawdown_usd: 150
 
 SOL-PERP:
   threshold: 0.15
   threshold_pct: 0.08
   order_usd: 8
   max_position_usd: 150
+  max_daily_orders: 800
+  max_drawdown_usd: 150
 
 BTC-PERP:
   threshold: 8           # USD
   threshold_pct: 0.04
   order_usd: 25
   max_position_usd: 500
+  max_daily_orders: 800
+  max_drawdown_usd: 150

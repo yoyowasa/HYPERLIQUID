@@ -26,11 +26,9 @@ logger = logging.getLogger(__name__)
 class PFPLStrategy:
     """Price‑Fair‑Price‑Lag bot"""
 
-    def __init__(
-        self,
-        config: dict[str, Any],
-        semaphore: anyio.Semaphore | None = None,  # ← ★デフォルトを用意
-    ) -> None:
+    def __init__(self, *, config: dict[str, Any], semaphore: asyncio.Semaphore | None = None):
+        self.sem = semaphore or asyncio.Semaphore(config.get("max_order_per_sec", 3))
+
 
         self.sem = semaphore  # 発注レート共有
         self.symbol = config.get("target_symbol", "ETH-PERP")
@@ -87,6 +85,15 @@ class PFPLStrategy:
         self.order_usd = Decimal(self.config.get("order_usd", 10))
         self.max_pos = Decimal(self.config.get("max_position_usd", 100))
         self.fair_feed = self.config.get("fair_feed", "indexPrices")
+        self.max_daily_orders = int(self.config.get("max_daily_orders", 500))
+        self.max_drawdown_usd = Decimal(self.config.get("max_drawdown_usd", 100))
+        self._order_count = 0
+        self._start_day = datetime.utcnow().date()
+        self.enabled = True
+        # ── フィード保持用 -------------------------------------------------
+        self.mid:  Decimal | None = None   # 板 Mid (@1)
+        self.idx:  Decimal | None = None   # indexPrices
+        self.ora:  Decimal | None = None   # oraclePrices
 
         # ── 内部ステート ────────────────────────────────
         self.last_side: str | None = None
@@ -139,24 +146,18 @@ class PFPLStrategy:
     # ② ────────────────────────────────────────────────────────────
     # ------------------------------------------------------------------ WS hook
     def on_message(self, msg: dict[str, Any]) -> None:
-        """
-        WebSocket から届く生 JSON を受け取り、
-        mids 辞書を更新し、価格差がそろったら evaluate() を呼ぶ。
-        """
-        ch = msg.get("channel")
-        if ch == "allMids":  # 板中心価格フィード
-            self.mids.update(msg["data"]["mids"])
-            # ETH の mid は常に @1 キーに入る
-            self.mids["@1"] = msg["data"]["mids"].get("@1", "0")
+        if msg.get("channel") == "allMids":          # 板 mid 群
+            self.mid = Decimal(msg["data"]["mids"]["@1"])
+        elif msg.get("channel") == "indexPrices":    # インデックス価格
+            self.idx = Decimal(msg["data"]["prices"]["ETH"])
+        elif msg.get("channel") == "oraclePrices":   # オラクル価格
+            self.ora = Decimal(msg["data"]["prices"]["ETH"])
 
-        elif ch == self.fair_feed:  # 公正価格フィード
-            # 例: indexPrices → {"pxs": {"ETH": "2975.1", ...}}
-            pxs = msg["data"]["pxs"]
-            self.mids[self.fair_feed] = pxs["ETH"]
-
-        # ── mid と fair がそろったら評価 ───────────────────
-        if "@1" in self.mids and self.fair_feed in self.mids:
+        # fair が作れれば評価へ
+        if self.mid and self.idx and self.ora:
+            self.fair = (self.idx + self.ora) / 2      # ★ 平均で公正価格
             self.evaluate()
+
 
     # ---------------------------------------------------------------- evaluate
 
@@ -164,8 +165,13 @@ class PFPLStrategy:
     # ------------------------------------------------------------------ Tick loop
     # ─────────────────────────────────────────────────────────────
     def evaluate(self) -> None:
+        # ── fair / mid がまだ揃っていないなら何もしない ─────────
+        if self.mid is None or self.fair is None:
+            return
         now = time.time()
-
+        # --- リスクガード ------------------
+        if not self._check_limits():
+            return
         # ① クールダウン判定
         if now - self.last_ts < self.cooldown:
             return
@@ -255,12 +261,12 @@ class PFPLStrategy:
         factor = 1.0 + eps_pct / 100.0
         limit_px = mid * factor if is_buy else mid / factor
         # -------------------------------------
-
+    async with self.sem:
         MAX_RETRY = 3
         for attempt in range(1, MAX_RETRY + 1):
             try:
                 resp = self.exchange.order(
-                    coin="ETH",
+                    coin=self.symbol,
                     is_buy=is_buy,
                     sz=size,
                     limit_px=limit_px,
@@ -268,6 +274,7 @@ class PFPLStrategy:
                     reduce_only=False,
                 )
                 logger.info("ORDER OK (try %d): %s", attempt, resp)
+                self._order_count += 1
                 self.last_ts = time.time()
                 self.last_side = side
                 break  # 成功したら抜ける
@@ -282,3 +289,33 @@ class PFPLStrategy:
         """API Wallet Secret で HMAC-SHA256 署名（例）"""
         msg = json.dumps(payload, separators=(",", ":")).encode()
         return hmac.new(self.secret.encode(), msg, hashlib.sha256).hexdigest()
+    # ------------------------------------------------------------------ limits
+    def _check_limits(self) -> bool:
+        """
+        取引可否を判定するガード:
+        - 日次発注回数
+        - ドローダウン USD
+        True を返せば発注を継続、False で停止
+        """
+        # 日付が変わったらリセット
+        today = datetime.utcnow().date()
+        if today != self._start_day:
+            self._order_count = 0
+            self._start_day = today
+
+        # PnL / ドローダウンを取得（SDK で accountValue などが取れる想定）
+        try:
+            state = self.exchange.info.user_state(self.account)
+            pnl = Decimal(state["marginSummary"]["totalPnlUsd"])
+        except Exception:
+            pnl = Decimal("0")  # 失敗したら無視して続行
+
+        if pnl < -self.max_drawdown_usd:
+            logger.error("DD %.2f USD > limit %.2f ➜ bot disabled", pnl, self.max_drawdown_usd)
+            self.enabled = False
+
+        if self._order_count >= self.max_daily_orders:
+            logger.warning("daily order limit %d hit ➜ bot disabled", self.max_daily_orders)
+            self.enabled = False
+
+        return self.enabled

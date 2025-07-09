@@ -22,6 +22,7 @@ setup_logger(
 )
 logger = logging.getLogger(__name__)
 
+MAX_ORDER_PER_SEC = 3
 SEMA = asyncio.Semaphore(3)  # 発注 3 req/s 共有
 
 
@@ -85,7 +86,7 @@ async def main() -> None:
     ws.on_message = fanout
     asyncio.create_task(ws.connect())
     await ws.wait_ready()
-    for feed in {"allMids", "indexPrices"}:  # 乖離検出 feed
+    for feed in {"allMids", "indexPrices","oraclePrices"}:  # 乖離検出 feed
         await ws.subscribe(feed)
 
     await asyncio.Event().wait()  # 常駐
