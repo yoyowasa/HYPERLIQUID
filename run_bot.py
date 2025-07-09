@@ -8,6 +8,9 @@ from dotenv import load_dotenv, find_dotenv
 from hl_core.utils.logger import setup_logger
 from os import getenv
 import anyio
+from pathlib import Path
+from hl_core.api import WSClient
+
 
 # env
 load_dotenv()
@@ -19,72 +22,69 @@ setup_logger(
 )
 logger = logging.getLogger(__name__)
 
+SEMA = asyncio.Semaphore(3)  # 発注 3 req/s 共有
+
+def load_pair_yaml(path: str | None) -> dict[str, dict]:
+    if not path:
+        return {}
+    import yaml
+    with Path(path).open('r', encoding='utf-8') as f:
+        return yaml.safe_load(f) or {}
 
 async def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("bot", help="bot folder name (e.g., pfpl)")
-    parser.add_argument("--testnet", action="store_true", help="use testnet URL")
-    parser.add_argument("--cooldown", type=float, default=1.0, help="cooldown sec")
-    parser.add_argument("--dry-run", action="store_true", help="発注せずログだけ出す")
-    parser.add_argument(
-        "--order_usd", type=float, default=10, help="order size in USD per trade"
-    )
-    parser.add_argument("--threshold", type=float, help="absolute USD threshold")
-    parser.add_argument("--threshold_pct", type=float, help="percentage threshold (%)")
-    parser.add_argument(
-        "--mode",
-        choices=["abs", "pct", "both", "either"],
-        default="both",
-        help="abs / pct 判定モード",
-    )
-    parser.add_argument(
-        "--log_level", default=None, help="logger level (DEBUG / INFO / …)"
+    p = argparse.ArgumentParser()
+    p.add_argument("bot", help="bot folder name (e.g., pfpl)")
+    p.add_argument("--symbols", default="ETH-PERP",
+                   help="comma separated list (max 3)")
+    p.add_argument("--pair_cfg", help="YAML to override per‑pair params")
+    # ─ 共通オプション ─
+    p.add_argument("--testnet", action="store_true")
+    p.add_argument("--cooldown", type=float, default=1.0)
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--log_level", default="INFO",
+                   choices=["DEBUG", "INFO", "WARNING"])
+    args = p.parse_args()
+
+    logging.basicConfig(level=args.log_level)
+
+    pair_params = load_pair_yaml(args.pair_cfg)
+    symbols = [s.strip() for s in args.symbols.split(",")][:3]
+
+    # 動的 import
+    strat_mod = import_module(f"bots.{args.bot}.strategy")
+    Strategy = getattr(strat_mod, "PFPLStrategy")
+
+    # WS 生成（1 本）
+    ws = WSClient(
+        "wss://api.hyperliquid-testnet.xyz/ws" if args.testnet
+        else "wss://api.hyperliquid.xyz/ws",
+        reconnect=True,
     )
 
-    args = parser.parse_args()
-
-    # ★ ここで .env を読み分け
-    env_file = ".env.test" if args.testnet else ".env"
-    load_dotenv(find_dotenv(env_file), override=False)
-
-    # dynamic import
-    mod = import_module(f"bots.{args.bot}.strategy")
-    strategy_cls = getattr(mod, "PFPLStrategy")
-    strategy = strategy_cls(
-        config={
+    strategies = []
+    for sym in symbols:
+        cfg = {
+            "target_symbol": sym,
             "testnet": args.testnet,
             "cooldown_sec": args.cooldown,
             "dry_run": args.dry_run,
-            "order_usd": args.order_usd,
-            "threshold": args.threshold,
-            "threshold_pct": args.threshold_pct,
-            "mode": args.mode,
-            "log_level": args.log_level,
+            **pair_params.get(sym, {}),
         }
-    )
-    from hl_core.api import WSClient
+        st = Strategy(config=cfg, semaphore=SEMA)  # ★ semaphore を渡す
+        strategies.append(st)
 
-    ws = WSClient("wss://api.hyperliquid.xyz/ws", reconnect=True)
-    ws.on_message = strategy.on_message
+    # WS → 全 Strategy へ配信
+    async def fanout(msg: dict):
+        for st in strategies:
+            st.on_message(msg)
 
-    await ws.wait_ready()  # open まで待機
-    await ws.subscribe("allMids")  # mid
-    await ws.subscribe("indexPrices")  # ★ fair
+    ws.on_message = fanout
+    asyncio.create_task(ws.connect())
+    await ws.wait_ready()
+    for feed in {"allMids", "indexPrices"}:          # 乖離検出 feed
+        await ws.subscribe(feed)
 
-    asyncio.create_task(ws.connect())  # 非同期で接続開始
-
-    # --- ★ 接続完了を待つループ -----------------------------
-    while not (ws._ws and not getattr(ws._ws, "closed", False)):
-        await anyio.sleep(0.1)  # 0.1 秒スリープ
-    # --------------------------------------------------------
-
-    try:
-        await Event().wait()  # 常駐
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user")
-    finally:
-        await ws.close()
-
+    await asyncio.Event().wait()  # 常駐
 
 if __name__ == "__main__":
     asyncio.run(main())

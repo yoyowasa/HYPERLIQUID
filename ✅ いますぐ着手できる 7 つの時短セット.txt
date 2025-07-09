@@ -1,0 +1,11 @@
+✅ いますぐ着手できる 7 つの時短セット
+所要	やること	1 回で済む設定／習慣
+5 分	エラーテンプレを作る – err_patch.txt	text\n【Traceback】\n{traceback}\n【要件】git patch＋原因1行\n【環境】Py 3.11 / Win11\n
+5 分	VS Code タスク登録（F6 でテスト＋ログ生成）	tasks.json に追加 ↓
+```jsonc\n{\n "label": "test&log",\n "command": "bash",\n "args": ["-c", "pytest -q 2>&1
+1 分	git apply エイリアス	PowerShell で
+Set-Alias gap 'git apply -'
+3 分	PR 小分け & URL 送付ルール	1 機能＝1 ブランチ → PR 作成 → …/pull/xx.diff をチャットに 1 行
+2 分	o3 用スレを 1 本に固定	“debug_o3” スレにまとめ投げ
+10 分	VS Code 拡張「Continue」導入	Marketplace → Install → サイドバーで Fix を試す
+10 分	pre-commit detect-secrets で鍵漏れ防止	bash\npip install detect-secrets\npre-commit install\n

@@ -26,7 +26,9 @@ logger = logging.getLogger(__name__)
 class PFPLStrategy:
     """Price‑Fair‑Price‑Lag bot"""
 
-    def __init__(self, config: dict[str, Any]) -> None:
+    def __init__(self, config: dict[str, Any], semaphore: asyncio.Semaphore):
+        self.sem = semaphore              # 発注レート共有
+        self.symbol = config.get("target_symbol", "ETH-PERP")
         # ── YAML + CLI マージ ─────────────────────────────
         yml_path = Path(__file__).with_name("config.yaml")
         yaml_conf: dict[str, Any] = {}
@@ -92,6 +94,11 @@ class PFPLStrategy:
         except RuntimeError:
             pass  # pytest 収集時など、イベントループが無い場合
 
+        # ─── ここから追加（ロガーをペアごとのファイルへも出力）────
+        h = logging.FileHandler(f"strategy_{self.symbol}.log", encoding="utf-8")
+        h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logging.getLogger().addHandler(h)
+
         logger.info("PFPLStrategy initialised with %s", self.config)
 
     # ── src/bots/pfpl/strategy.py ──
@@ -128,24 +135,24 @@ class PFPLStrategy:
     # ------------------------------------------------------------------ WS hook
     def on_message(self, msg: dict[str, Any]) -> None:
         """
-        allMids で板 mid、indexPrices で公正価格を取り込み
-        → 両方そろったタイミングで evaluate()
+        WebSocket から届く生 JSON を受け取り、
+        mids 辞書を更新し、価格差がそろったら evaluate() を呼ぶ。
         """
         ch = msg.get("channel")
-        if ch == "allMids":  # 板中央価格
-            mids = msg["data"]["mids"]
-            if "@1" in mids:  # ETH-PERP の mid
-                self.mid = Decimal(mids["@1"])
-        elif ch == self.fair_feed:  # 公正価格フィード
-            pxs = msg["data"]["pxs"]
-            if "ETH" in pxs:
-                self.fair = Decimal(pxs["ETH"])
-        else:
-            return
+        if ch == "allMids":                     # 板中心価格フィード
+            self.mids.update(msg["data"]["mids"])
+            # ETH の mid は常に @1 キーに入る
+            self.mids["@1"] = msg["data"]["mids"].get("@1", "0")
 
-        # mid と fair が両方得られていれば評価
-        if self.mid and self.fair:
+        elif ch == self.fair_feed:              # 公正価格フィード
+            # 例: indexPrices → {"pxs": {"ETH": "2975.1", ...}}
+            pxs = msg["data"]["pxs"]
+            self.mids[self.fair_feed] = pxs["ETH"]
+
+        # ── mid と fair がそろったら評価 ───────────────────
+        if "@1" in self.mids and self.fair_feed in self.mids:
             self.evaluate()
+
 
     # ---------------------------------------------------------------- evaluate
 
@@ -169,6 +176,7 @@ class PFPLStrategy:
         if mid == 0 or fair == 0:
             return  # データが揃っていない
 
+        spread = fair - mid
         abs_diff = abs(fair - mid)  # USD 差
         pct_diff = abs_diff / mid * Decimal("100")  # 乖離率 %
 
@@ -222,7 +230,8 @@ class PFPLStrategy:
     # ---------------------------------------------------------------- order
 
     async def place_order(self, side: str, size: float) -> None:
-        is_buy = side == "BUY"
+        async with self.sem:              # ★ 3 req/s 保証
+            is_buy = side == "BUY"
 
         # ---------- ① Dry‑run 判定 ----------
         if self.config.get("dry_run"):
