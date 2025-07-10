@@ -44,6 +44,8 @@ class PFPLStrategy:
                 "funding_close_buffer_secs", 120
             )
         )
+        # --- Order price offset percentage（デフォルト 0.0005 = 0.05 %）
+        self.eps_pct: float = float(self.config.get("eps_pct", 0.0005))
 
         # ── ② 通貨ペア・Semaphore 初期化 ─────────────────
         self.symbol: str = self.config.get("target_symbol", "ETH-PERP")
@@ -274,7 +276,15 @@ class PFPLStrategy:
 
     # ---------------------------------------------------------------- order
 
-    async def place_order(self, side: str, size: float) -> None:
+    async def place_order(
+        self,
+        side: str,
+        size: float,
+        *,
+        order_type: str = "limit",
+        limit_px: float | None = None,
+        **kwargs,
+    ) -> None:
         """IOC で即時約定、失敗時リトライ付き"""
         is_buy = side == "BUY"
 
@@ -289,7 +299,13 @@ class PFPLStrategy:
         eps_pct = 0.02  # 0.02 % だけ踏み上げ／踏み下げ
         mid = Decimal(self.mids.get("@1", "0")) or Decimal("1")
         factor = 1 + eps_pct / 100
-        limit_px = float(mid * factor) if is_buy else float(mid / factor)
+        # --- eps_pct を適用した価格補正 -------------------------------
+        if order_type == "limit":
+            limit_px = (
+                limit_px
+                if limit_px is not None
+                else self._price_with_offset(float(self.mid), side)
+            )
 
         async with self.sem:  # 1 秒あたり発注制御
             MAX_RETRY = 3
@@ -404,3 +420,17 @@ class PFPLStrategy:
             self.symbol,
             self.funding_close_buffer_secs,
         )
+
+    # ------------------------------------------------------------------
+    # Order-price helper
+    # ------------------------------------------------------------------
+    def _price_with_offset(self, base_px: float, side: str) -> float:
+        """
+        Shift `base_px` by eps_pct toward the favourable direction.
+
+        BUY  → base_px * (1 - eps_pct)   (より安く買う)
+        SELL → base_px * (1 + eps_pct)   (より高く売る)
+        """
+        if side.upper() == "BUY":
+            return base_px * (1 - self.eps_pct)
+        return base_px * (1 + self.eps_pct)
