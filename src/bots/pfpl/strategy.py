@@ -296,7 +296,6 @@ class PFPLStrategy:
             return
         # ──────────────────────────────
 
-
         # --- eps_pct を適用した価格補正 -------------------------------
         if order_type == "limit":
             limit_px = (
