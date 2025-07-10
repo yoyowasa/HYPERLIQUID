@@ -38,6 +38,12 @@ class PFPLStrategy:
             with yml_path.open(encoding="utf-8") as f:
                 yaml_conf = yaml.safe_load(f) or {}
         self.config = {**yaml_conf, **config}
+        # --- Funding 直前クローズ用バッファ秒数（デフォルト 120）
+        self.funding_close_buffer_secs: int = int(
+            getattr(self, "cfg", getattr(self, "config", {})).get(
+                "funding_close_buffer_secs", 120
+            )
+        )
 
         # ── ② 通貨ペア・Semaphore 初期化 ─────────────────
         self.symbol: str = self.config.get("target_symbol", "ETH-PERP")
@@ -106,7 +112,11 @@ class PFPLStrategy:
         self.last_side: str | None = None
         self.last_ts: float = 0.0
         self.pos_usd = Decimal("0")
-
+        # ★ Funding Guard 用
+        self.next_funding_ts: float | None = None  # 次回資金調達の UNIX 秒
+        self._funding_pause: bool = False  # True なら売買停止
+        self.next_funding_ts: int | None = None  # 直近 funding 予定 UNIX 秒
+        self._funding_pause: bool = False  # True: 売買停止中
         # 非同期でポジション初期化
         try:
             asyncio.get_running_loop().create_task(self._refresh_position())
@@ -153,17 +163,29 @@ class PFPLStrategy:
     # ② ────────────────────────────────────────────────────────────
     # ------------------------------------------------------------------ WS hook
     def on_message(self, msg: dict[str, Any]) -> None:
+        ch = msg.get("channel")
+
         if msg.get("channel") == "allMids":  # 板 mid 群
             self.mid = Decimal(msg["data"]["mids"]["@1"])
         elif msg.get("channel") == "indexPrices":  # インデックス価格
             self.idx = Decimal(msg["data"]["prices"]["ETH"])
         elif msg.get("channel") == "oraclePrices":  # オラクル価格
             self.ora = Decimal(msg["data"]["prices"]["ETH"])
+        elif msg.get("channel") == "fundingInfo":
+            # 取引所のレスポンス例: {"channel":"fundingInfo","data":{"nextFundingTime":1720597200}}
+            self.next_funding_ts = int(msg["data"]["nextFundingTime"])
 
         # fair が作れれば評価へ
         if self.mid and self.idx and self.ora:
             self.fair = (self.idx + self.ora) / 2  # ★ 平均で公正価格
             self.evaluate()
+        # ★ fundingInfo 追加 ------------------------------
+        if ch == "fundingInfo":
+            # 例: {"channel":"fundingInfo","data":{"ETH-PERP":{"nextFundingTime":1720528800}}}
+            info = msg["data"].get(self.symbol)
+            if info:
+                self.next_funding_ts = float(info["nextFundingTime"])
+                logger.debug("fundingInfo: next @ %s", self.next_funding_ts)
 
     # ---------------------------------------------------------------- evaluate
 
@@ -171,10 +193,18 @@ class PFPLStrategy:
     # ------------------------------------------------------------------ Tick loop
     # ─────────────────────────────────────────────────────────────
     def evaluate(self) -> None:
+        if not self._check_funding_window():
+            return
         # ── fair / mid がまだ揃っていないなら何もしない ─────────
         if self.mid is None or self.fair is None:
             return
         now = time.time()
+        # 0) --- Funding 直前クローズ判定 -----------------------------------
+        # 0) --- Funding 直前クローズ判定 -----------------------------------
+        if self._should_close_before_funding(now):
+            asyncio.create_task(self._close_all_positions())
+            return  # 今回の evaluate はここで終了
+
         # --- リスクガード ------------------
         if not self._check_limits():
             return
@@ -319,3 +349,58 @@ class PFPLStrategy:
             return False
 
         return True
+
+    def _check_funding_window(self) -> bool:
+        """
+        funding 直前・直後は True を返さず evaluate() を停止させる。
+        - 5 分前 〜 2 分後 を「危険窓」とする
+        """
+        if self.next_funding_ts is None:
+            return True  # fundingInfo 未取得なら通常運転
+
+        now = time.time()
+        before = 300  # 5 分前
+        after = 120  # 2 分後
+
+        in_window = self.next_funding_ts - before <= now <= self.next_funding_ts + after
+
+        if in_window and not self._funding_pause:
+            logger.info("⏳ Funding window ➜ 売買停止")
+            self._funding_pause = True
+        elif not in_window and self._funding_pause:
+            logger.info("✅ Funding passed ➜ 売買再開")
+            self._funding_pause = False
+
+        return not in_window
+
+    # ------------------------------------------------------------------
+    # Funding‑close helper
+    # ------------------------------------------------------------------
+    def _should_close_before_funding(self, now_ts: float) -> bool:
+        """Return True if we are within the configured buffer before funding."""
+        next_ts = getattr(self, "next_funding_ts", None)
+        if not next_ts:
+            return False
+        return now_ts > next_ts - self.funding_close_buffer_secs
+
+    async def _close_all_positions(self) -> None:
+        """Close every open position for this symbol."""
+        # --- 成行 IOC で反対サイドを投げる簡易版 ---
+        pos = await self.client.get_position(self.symbol)  # ← API に合わせて修正
+        if not pos or pos["size"] == 0:
+            return  # 持ち高なし
+        close_side = "SELL" if pos["size"] > 0 else "BUY"
+        await self.place_order(
+            side=close_side,
+            size=abs(pos["size"]),
+            order_type="market",
+            reduce_only=True,
+            comment="auto‑close‑before‑funding",
+        )
+        self.logger.info(
+            "⚡ Funding close: %s %s @ %s (buffer %s s)",
+            close_side,
+            abs(pos["size"]),
+            self.symbol,
+            self.funding_close_buffer_secs,
+        )

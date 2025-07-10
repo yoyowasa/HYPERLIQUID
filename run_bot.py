@@ -88,7 +88,7 @@ async def main() -> None:
     await ws.wait_ready()
     for feed in {"allMids", "indexPrices", "oraclePrices"}:  # 乖離検出 feed
         await ws.subscribe(feed)
-
+    await ws.subscribe("fundingInfo")
     await asyncio.Event().wait()  # 常駐
 
 

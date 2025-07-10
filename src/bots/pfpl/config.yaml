@@ -4,7 +4,7 @@ testnet: false             # true: testnet / false: mainnet
 target_symbol: "ETH-PERP"  # 取引するペア
 fair_feed: indexPrices     # fair price に用いるフィード
 spread_threshold: 0.05     # インデックス乖離率 (%)
-
+funding_close_buffer_secs: 120
 # ── 売買判定閾値 ───────────────────────────────
 threshold: 1.0             # 絶対値 (USD)
 threshold_pct: 0.03        # 割合 (%) ─ 上記 threshold と併用可
