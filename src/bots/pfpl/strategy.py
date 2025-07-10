@@ -296,9 +296,7 @@ class PFPLStrategy:
             return
         # ──────────────────────────────
 
-        eps_pct = 0.02  # 0.02 % だけ踏み上げ／踏み下げ
-        mid = Decimal(self.mids.get("@1", "0")) or Decimal("1")
-        factor = 1 + eps_pct / 100
+
         # --- eps_pct を適用した価格補正 -------------------------------
         if order_type == "limit":
             limit_px = (
