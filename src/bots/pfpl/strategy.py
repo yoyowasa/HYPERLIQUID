@@ -11,6 +11,7 @@ import time
 from decimal import Decimal
 from hl_core.utils.logger import setup_logger
 from pathlib import Path
+from logging.handlers import TimedRotatingFileHandler
 import yaml
 import anyio
 from datetime import datetime  # ← 追加
@@ -38,6 +39,7 @@ class PFPLStrategy:
             with yml_path.open(encoding="utf-8") as f:
                 yaml_conf = yaml.safe_load(f) or {}
         self.config = {**yaml_conf, **config}
+        self.meta: dict[str, Any] = {}
         # --- Funding 直前クローズ用バッファ秒数（デフォルト 120）
         self.funding_close_buffer_secs: int = int(
             getattr(self, "cfg", getattr(self, "config", {})).get(
@@ -46,6 +48,8 @@ class PFPLStrategy:
         )
         # --- Order price offset percentage（デフォルト 0.0005 = 0.05 %）
         self.eps_pct: float = float(self.config.get("eps_pct", 0.0005))
+        # --- Universe キャッシュ（meta["universe"] を 1 度だけパース）
+        self._universe: list[str] = []
 
         # ── ② 通貨ペア・Semaphore 初期化 ─────────────────
         self.symbol: str = self.config.get("target_symbol", "ETH-PERP")
@@ -91,9 +95,13 @@ class PFPLStrategy:
                 logger.warning("minSizeUsd missing ➜ fallback USD 1")
 
         # tick
-        uni_eth = next(u for u in meta["universe"] if u["name"] == "ETH")
-        tick_raw = uni_eth.get("pxTick") or uni_eth.get("pxTickSize", "0.01")
-        self.tick = Decimal(tick_raw)
+        uni_eth = next((u for u in self._get_universe() if u.get("name") == "ETH"), {})
+        tick_raw = (
+            uni_eth.get("pxTick")
+            or uni_eth.get("pxTickSize")
+            or "0.01"  # フォールバック
+        )
+
 
         # ── Bot パラメータ ──────────────────────────────
         self.cooldown = float(self.config.get("cooldown_sec", 1.0))
@@ -125,10 +133,16 @@ class PFPLStrategy:
         except RuntimeError:
             pass  # pytest 収集時など、イベントループが無い場合
 
-        # ─── ここから追加（ロガーをペアごとのファイルへも出力）────
-        h = logging.FileHandler(f"strategy_{self.symbol}.log", encoding="utf-8")
+        log_dir = Path(__file__).resolve().parents[3] / "logs" / "pfpl"
+        log_dir.mkdir(parents=True, exist_ok=True)  # フォルダ無ければ作る
+
+        log_file = log_dir / f"strategy_{self.symbol}.log"
+        h = TimedRotatingFileHandler(
+            log_file, when="midnight", backupCount=14, encoding="utf-8"
+        )
         h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         logging.getLogger().addHandler(h)
+
 
         logger.info("PFPLStrategy initialised with %s", self.config)
 
@@ -431,3 +445,31 @@ class PFPLStrategy:
         if side.upper() == "BUY":
             return base_px * (1 - self.eps_pct)
         return base_px * (1 + self.eps_pct)
+
+    # ------------------------------------------------------------------
+    # Universe helper
+    # ------------------------------------------------------------------
+    def _get_universe(self) -> list[str]:
+        """
+        Return cached universe list once.
+        Safe even when self.meta is None.
+        """
+        if self._universe:
+            return self._universe
+
+        # self.meta が無い、または None の場合に備える
+        meta_obj = getattr(self, "meta", None)
+        if not isinstance(meta_obj, dict):
+            meta_obj = {}
+
+        universe_raw = meta_obj.get("universe", "")
+
+        if isinstance(universe_raw, str):
+            # カンマ区切り文字列 → リスト
+            self._universe = [s.strip() for s in universe_raw.split(",") if s.strip()]
+        elif isinstance(universe_raw, (list, tuple, set)):
+            self._universe = list(universe_raw)
+        else:
+            self._universe = []
+
+        return self._universe

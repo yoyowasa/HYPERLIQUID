@@ -28,3 +28,6 @@ git commit -m "chore: bulk update after lint & format"
 
 # プッシュ
 git push
+
+Oh no! 💥 💔 💥これの時
+poetry run black .
