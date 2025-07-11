@@ -48,6 +48,9 @@ class PFPLStrategy:
         )
         # --- Order price offset percentage（デフォルト 0.0005 = 0.05 %）
         self.eps_pct: float = float(self.config.get("eps_pct", 0.0005))
+        # --- Minimum equity ratio guard（デフォルト 0.3 = 30%）
+        self.min_equity_ratio: float = float(self.config.get("min_equity_ratio", 0.3))
+
         # --- Universe キャッシュ（meta["universe"] を 1 度だけパース）
         self._universe: list[str] = []
 
@@ -212,6 +215,14 @@ class PFPLStrategy:
         # ── fair / mid がまだ揃っていないなら何もしない ─────────
         if self.mid is None or self.fair is None:
             return
+        # 00) --- Equity guard ------------------------------------------
+        if self._get_equity_ratio() < self.min_equity_ratio:
+            self.logger.error(
+                "⚠️ Equity ratio below %.2f → force close", self.min_equity_ratio
+            )
+            asyncio.create_task(self._close_all_positions())
+            return
+
         now = time.time()
         # 0) --- Funding 直前クローズ判定 -----------------------------------
         # 0) --- Funding 直前クローズ判定 -----------------------------------
@@ -443,6 +454,23 @@ class PFPLStrategy:
         if side.upper() == "BUY":
             return base_px * (1 - self.eps_pct)
         return base_px * (1 + self.eps_pct)
+
+    # ------------------------------------------------------------------
+    # Equity helper
+    # ------------------------------------------------------------------
+    def _get_equity_ratio(self) -> float:
+        """
+        Return current equity ratio (equity / marginUsed).
+        Falls back to 1.0 if API data is missing to avoid false-positive triggers.
+        """
+        try:
+            acct = self.exchange.info.account(self.account)
+            eq = float(acct.get("equity", 0))
+            m_used = float(acct.get("marginUsed", 1)) or 1
+            return eq / m_used
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning("equity-ratio fetch failed: %s", e)
+            return 1.0  # fail-open
 
     # ------------------------------------------------------------------
     # Universe helper

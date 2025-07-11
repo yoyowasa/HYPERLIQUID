@@ -20,6 +20,9 @@ min_usd: 5                 # minSizeUsd が取得できない場合のフォー�
 dry_run: false             # true で約定せずログのみ
 log_level: "INFO"          # DEBUG / INFO / WARNING …
 heartbeat_sec: 30          # WS ping (CloudFront idle‑timeout 回避)
+# --- Risk guard --------------------------------------------------------
+min_equity_ratio: 0.3        # 証拠金率が 30 % 未満になったら全ポジション強制クローズ
+
 funding_guard:
   enabled: true    # false にすると資金調達回避ロジックを止められます
   buffer_sec: 180  # 何秒前にポジションを閉じるか（例: 3 分）
