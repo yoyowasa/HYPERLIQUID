@@ -96,7 +96,7 @@ class PFPLStrategy:
 
         # tick
         uni_eth = next((u for u in self._get_universe() if u.get("name") == "ETH"), {})
-        tick_raw = (
+        _tick_raw = (
             uni_eth.get("pxTick")
             or uni_eth.get("pxTickSize")
             or "0.01"  # フォールバック

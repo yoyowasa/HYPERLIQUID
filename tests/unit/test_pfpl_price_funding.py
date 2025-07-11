@@ -4,8 +4,6 @@ import pytest
 from bots.pfpl.strategy import PFPLStrategy
 import os
 
-import os
-
 # --- Dummy API keys for unit tests (valid hex strings) ---
 os.environ.setdefault("HL_ACCOUNT_ADDR", "0" * 40)  # 40 hex chars → 20-byte address
 os.environ.setdefault("HL_API_SECRET", "0" * 64)  # 64 hex chars → 32-byte secret
