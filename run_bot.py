@@ -55,7 +55,6 @@ async def main() -> None:
         help="Override minimum order notional (USD) set in YAML",
     )
 
-
     p.add_argument("--cooldown", type=float, default=1.0)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING"])
@@ -104,7 +103,6 @@ async def main() -> None:
         # --- ③ Strategy インスタンス生成 ---------------------------------
         st = Strategy(config=base_cfg, semaphore=SEMA)  # ★ semaphore を渡す
         strategies.append(st)
-
 
     # WS → 全 Strategy へ配信
     async def fanout(msg: dict):

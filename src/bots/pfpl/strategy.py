@@ -102,7 +102,6 @@ class PFPLStrategy:
             or "0.01"  # フォールバック
         )
 
-
         # ── Bot パラメータ ──────────────────────────────
         self.cooldown = float(self.config.get("cooldown_sec", 1.0))
         self.order_usd = Decimal(self.config.get("order_usd", 10))
@@ -142,7 +141,6 @@ class PFPLStrategy:
         )
         h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         logging.getLogger().addHandler(h)
-
 
         logger.info("PFPLStrategy initialised with %s", self.config)
 
