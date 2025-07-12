@@ -136,14 +136,18 @@ class PFPLStrategy:
             pass  # pytest 収集時など、イベントループが無い場合
 
         log_dir = Path(__file__).resolve().parents[3] / "logs" / "pfpl"
-        log_dir.mkdir(parents=True, exist_ok=True)  # フォルダ無ければ作る
+        log_dir.mkdir(parents=True, exist_ok=True)
 
         log_file = log_dir / f"strategy_{self.symbol}.log"
-        h = TimedRotatingFileHandler(
-            log_file, when="midnight", backupCount=14, encoding="utf-8"
-        )
+        h = TimedRotatingFileHandler(log_file, when="midnight", backupCount=14, encoding="utf-8")
         h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-        logging.getLogger().addHandler(h)
+
+        strategy_logger = logging.getLogger(f"bots.pfpl.strategy.{self.symbol}")
+        strategy_logger.setLevel(logging.DEBUG)
+        strategy_logger.addHandler(h)
+        strategy_logger.propagate = True      # ← pfpl.log へ流す
+     # ★ root ではなく strategy ロガーへ
+
 
         logger.info("PFPLStrategy initialised with %s", self.config)
 

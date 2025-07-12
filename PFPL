@@ -1,0 +1,59 @@
+┌─ run_bot.py ─────────────────────────────────────────────┐
+│ ① CLI & YAML 設定を読み込み → Strategy を複数生成        │
+│ ② 共通の WSClient を 1 本起動                          │
+│ ③ 受信メッセージを fan‑out で各 Strategy へ渡す          │
+└──────────────────────────────────────────────┘
+                ▼  (WS message)
+┌─ src/hl_core/api/__init__.py ────────────────────────────┐
+│ WSClient                                                │
+│  • 再接続 (指数バックオフ)                              │
+│  • Heartbeat (Ping/Pong)                                │
+│  • on_message コールバック                              │
+└──────────────────────────────────────────────┘
+                ▼  (fan‑out)
+┌─ src/bots/pfpl/strategy.py ─────────────────────────────┐
+│ PFPLStrategy (ペアごと)                                 │
+│  • on_message() で mid/fair/fundingInfo を更新          │
+│  • evaluate() を 100 ms ごとに呼び出し                  │
+│    ├ 00) Equity guard (_get_equity_ratio)               │
+│    ├ 0) Funding guard (_should_close_before_funding)    │
+│    ├ 1) クールダウン guard                              │
+│    ├ 2) ポジション上限 guard                           │
+│    ├ 3) mid / fair 乖離計算                            │
+│    ├ 4) 閾値判定 (threshold / threshold_pct / mode)     │
+│    ├ 5) spread guard                                    │
+│    ├ 6) 同方向連続 guard                                │
+│    └ 7) place_order() ※IOC 発注                        │
+│  • _close_all_positions()                               │
+│  • _price_with_offset() （eps_pct で踏み上げ/下げ）     │
+│  • ログハンドラ                                        │
+└──────────────────────────────────────────────┘
+                ▼  (必要に応じ REST)
+┌─ Hyperliquid Exchange SDK (外部依存) ────────────────────┐
+│ Exchange.place_order()                                  │
+│ Exchange.cancel_order()                                 │
+│ Exchange.info.account() など                            │
+└──────────────────────────────────────────────┘
+起動から発注までの流れ（時系列）
+run_bot.py
+
+config.yaml → pairs.yaml → CLI の順に設定をマージ
+
+PFPLStrategy をペア数ぶん生成
+
+WSClient を起動し、fanout(msg) で各 Strategy へ broadcast
+
+WSClient (hl_core.api)
+
+URL: Mainnet or Testnet (--testnet)
+
+受信 JSON を on_message に渡す
+
+Ping 失敗や 1011/502 切断時は指数バックオフで再接続
+
+Strategy.on_message()
+
+チャンネルに応じて
+self.mids, self.fair, self.funding_info を更新
+
+100 ms タイマーで evaluate() を呼ぶ
