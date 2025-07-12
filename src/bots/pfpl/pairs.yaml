@@ -1,24 +1,32 @@
-# src/bots/pfpl/pairs.yaml
-ETH-PERP:
-  threshold: 0.10
-  threshold_pct: 0.05
-  order_usd: 10
-  max_position_usd: 200
-  max_daily_orders: 800
-  max_drawdown_usd: 150
+# ── Pair-specific overrides ─────────────────────────────
 
-SOL-PERP:
-  threshold: 0.15
-  threshold_pct: 0.08
-  order_usd: 8
-  max_position_usd: 150
+ETH-PERP:
+  # 乖離判定をやや緩めに
+  mode: either           # abs か pct のどちらか超えれば発注
+  threshold: 0.05        # USD
+  threshold_pct: 0.005    # 0.05 %
+  spread_threshold: 0.25 # 板スプレッド許容
+  order_usd: 5
+  max_position_usd: 100
   max_daily_orders: 800
   max_drawdown_usd: 150
 
 BTC-PERP:
-  threshold: 8           # USD
+  mode: either
+  threshold: 0.8
   threshold_pct: 0.04
-  order_usd: 25
-  max_position_usd: 500
-  max_daily_orders: 800
-  max_drawdown_usd: 150
+  spread_threshold: 2.0
+  order_usd: 10
+  max_position_usd: 300
+  max_daily_orders: 600
+  max_drawdown_usd: 300
+
+SOL-PERP:
+  mode: either
+  threshold: 0.03
+  threshold_pct: 0.015
+  spread_threshold: 0.10
+  order_usd: 5
+  max_position_usd: 100
+  max_daily_orders: 500
+  max_drawdown_usd: 100

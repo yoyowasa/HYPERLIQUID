@@ -1,29 +1,17 @@
-# ── 市場・発注モード ───────────────────────────
-mode: both                 # abs / pct / both / either
-testnet: false             # true: testnet / false: mainnet
-target_symbol: "ETH-PERP"  # 取引するペア
-fair_feed: indexPrices     # fair price に用いるフィード
-spread_threshold: 0.05     # インデックス乖離率 (%)
-
-# ── 売買判定閾値 ───────────────────────────────
-threshold: 1.0             # 絶対値 (USD)
-threshold_pct: 0.03        # 割合 (%) ─ 上記 threshold と併用可
-cooldown_sec: 1.0          # 連続発注のクールダウン秒
-max_order_per_sec: 3       # 取引所 API 制限に合わせた同時発注上限
-
-# ── ポジション & サイズ管理 ────────────────────
-order_usd: 10              # 1 回の発注金額 (USD)
-max_position_usd: 100      # 総エクスポージャ上限 (USD)
-min_usd: 5                 # minSizeUsd が取得できない場合のフォールバック
-
-# ── 運用・デバッグ設定 ─────────────────────────
-dry_run: false             # true で約定せずログのみ
-log_level: "INFO"          # DEBUG / INFO / WARNING …
-heartbeat_sec: 30          # WS ping (CloudFront idle‑timeout 回避)
-# --- Risk guard --------------------------------------------------------
-min_equity_ratio: 0.3        # 証拠金率が 30 % 未満になったら全ポジション強制クローズ
+# ── PFPL 共通デフォルト ───────────────────────
+mode: both                 # abs と pct を両方満たす
+fair_feed: indexPrices
+spread_threshold: 0.05     # USD
 
 funding_guard:
-  enabled: true    # false にすると資金調達回避ロジックを止められます
-  buffer_sec: 180  # 何秒前にポジションを閉じるか（例: 3 分）
-  reenter_sec: 120 # 資金調達後、何秒待って再開するか
+  enabled: true
+  buffer_sec: 180          # Funding 3 分前にクローズ
+  reenter_sec: 120         # Funding 後 2 分待って再開
+
+min_equity_ratio: 0.3      # 証拠金率 30 %
+order_usd: 10              # Fallback 発注ロット
+max_position_usd: 100      # Fallback 建玉上限
+
+heartbeat_sec: 30
+log_level: INFO
+testnet: false

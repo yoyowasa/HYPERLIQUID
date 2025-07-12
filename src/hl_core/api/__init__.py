@@ -5,6 +5,7 @@ import logging
 import httpx
 import websockets
 import asyncio
+import random  # ★ 追加
 import anyio
 import contextlib
 from typing import Awaitable, Callable, Any, Optional
@@ -48,6 +49,10 @@ class WSClient:
     def __init__(self, url: str, reconnect: bool = False, retry_sec: float = 3.0):
         self.url = url
         self.reconnect = reconnect
+        # --- reconnect back‑off params ---
+        self._backoff = 1       # 初回 1 s
+        self._backoff_max = 32  # 最大 32 s
+
         self.retry_sec = retry_sec
 
         self._ws: websockets.WebSocketClientProtocol | None = None
@@ -93,6 +98,7 @@ class WSClient:
                 ) as ws:
                     self._ws = ws
                     logger.info("WS connected")
+                    self._backoff = 1
                     self._ready.set()  # ★ open を通知
 
                     # Heartbeat を 30 s ごとに送る
@@ -107,19 +113,14 @@ class WSClient:
                         )
 
                     await self._listen()  # 切断までブロック
-            except Exception as exc:
-                logger.warning("WS disconnected: %s", exc)
-            finally:
-                if self._hb_task:  # Heartbeat 停止
-                    self._hb_task.cancel()
-                    with contextlib.suppress(Exception):
-                        await self._hb_task
-                    self._hb_task = None
-                self._ready.clear()  # ★ close を通知
+            except Exception as e:  # noqa: BLE001
+                self.logger.warning("WS disconnected: %s", e)
+                # --- Exponential back‑off + jitter -----------------
+                sleep_for = self._backoff + random.uniform(0, self._backoff * 0.1)
+                await asyncio.sleep(sleep_for)
+                self._backoff = min(self._backoff * 2, self._backoff_max)
+                continue
 
-            if not self.reconnect:
-                break
-            await anyio.sleep(self.retry_sec)
 
     # ── 3. wait_ready ───────────────────────────────────────────
     async def wait_ready(self) -> None:

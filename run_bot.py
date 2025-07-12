@@ -61,6 +61,11 @@ async def main() -> None:
     args = p.parse_args()
 
     logging.basicConfig(level=args.log_level)
+    console = logging.StreamHandler()
+    console.setLevel(args.log_level)
+    console.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logging.getLogger().addHandler(console)
+
 
     pair_params = load_pair_yaml(args.pair_cfg)
     symbols = [s.strip() for s in args.symbols.split(",")][:3]
@@ -85,6 +90,7 @@ async def main() -> None:
         base_cfg: dict[str, Any] = {
             **pair_params.get(sym, {}),  # ペア別 YAML（最優先）
         }
+        base_cfg["target_symbol"] = sym
 
         # --- ② CLI から渡された値だけピンポイント上書き -----------------
         if args.order_usd is not None:
