@@ -3,11 +3,13 @@ from .strategy import PFPLStrategy  # re-export
 import logging
 from pathlib import Path
 from logging.handlers import TimedRotatingFileHandler
+
 __all__ = ["PFPLStrategy"]
 1
 # ─────────────────────────────────────────────────────────
 #   PFPL package logger -> logs/pfpl/{pfpl.log,error.log}
 # ─────────────────────────────────────────────────────────
+
 
 def _ensure_pfpl_logger() -> None:
     logger = logging.getLogger("bots.pfpl")
@@ -40,6 +42,7 @@ def _ensure_pfpl_logger() -> None:
     logger.addHandler(fh_info)
     logger.addHandler(fh_err)
     logger.addHandler(sh)
-    logger.propagate = False          # Runner には流さない
+    logger.propagate = False  # Runner には流さない
+
 
 _ensure_pfpl_logger()

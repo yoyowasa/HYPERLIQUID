@@ -120,6 +120,7 @@ def setup_logger(
         backupCount=7,
         encoding="utf-8",
         utc=True,
+        delay=True,
     )
     fh.setLevel(file_level)
     fh.setFormatter(logging.Formatter(_LOG_FMT, "%Y-%m-%d %H:%M:%S"))

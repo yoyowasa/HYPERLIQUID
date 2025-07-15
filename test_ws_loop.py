@@ -15,4 +15,7 @@ async def main():
     await ws.close()
 
 
-anyio.run(main)
+if __name__ == "__main__":
+    import anyio
+
+    anyio.run(main)

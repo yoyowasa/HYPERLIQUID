@@ -7,7 +7,6 @@ import websockets
 import asyncio
 import random  # ★ 追加
 import anyio
-import contextlib
 from typing import Awaitable, Callable, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -50,7 +49,7 @@ class WSClient:
         self.url = url
         self.reconnect = reconnect
         # --- reconnect back‑off params ---
-        self._backoff = 1       # 初回 1 s
+        self._backoff = 1  # 初回 1 s
         self._backoff_max = 32  # 最大 32 s
 
         self.retry_sec = retry_sec
@@ -114,13 +113,12 @@ class WSClient:
 
                     await self._listen()  # 切断までブロック
             except Exception as e:  # noqa: BLE001
-                self.logger.warning("WS disconnected: %s", e)
+                logger.warning("WS disconnected: %s", e)
                 # --- Exponential back‑off + jitter -----------------
                 sleep_for = self._backoff + random.uniform(0, self._backoff * 0.1)
                 await asyncio.sleep(sleep_for)
                 self._backoff = min(self._backoff * 2, self._backoff_max)
                 continue
-
 
     # ── 3. wait_ready ───────────────────────────────────────────
     async def wait_ready(self) -> None:

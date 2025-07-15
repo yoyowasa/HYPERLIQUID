@@ -6,12 +6,14 @@ import logging
 from importlib import import_module
 from os import getenv
 from pathlib import Path
-
+import json
 from dotenv import load_dotenv
 
 from hl_core.api import WSClient
 from hl_core.utils.logger import setup_logger
 
+logging.getLogger("websockets").setLevel(logging.INFO)
+logging.getLogger("urllib3").setLevel(logging.INFO)
 
 # env
 load_dotenv()
@@ -61,11 +63,11 @@ async def main() -> None:
     args = p.parse_args()
 
     logging.basicConfig(level=args.log_level)
+    logging.getLogger().setLevel(logging.INFO)
     console = logging.StreamHandler()
     console.setLevel(args.log_level)
     console.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     logging.getLogger().addHandler(console)
-
 
     pair_params = load_pair_yaml(args.pair_cfg)
     symbols = [s.strip() for s in args.symbols.split(",")][:3]
@@ -112,15 +114,62 @@ async def main() -> None:
 
     # WS → 全 Strategy へ配信
     async def fanout(msg: dict):
+        print("WS-RAW:", msg)
         for st in strategies:
             st.on_message(msg)
 
     ws.on_message = fanout
+    # ── WebSocket 接続 --------------------------------------------------
     asyncio.create_task(ws.connect())
-    await ws.wait_ready()
-    for feed in {"allMids", "indexPrices", "oraclePrices"}:  # 乖離検出 feed
-        await ws.subscribe(feed)
-    await ws.subscribe("fundingInfo")
+    await ws.wait_ready()  # ← 接続が確立してから購読
+
+    # ── 必須フィードを subscribe ----------------------------------------
+    await ws.subscribe("allMids")  # 任意: 全銘柄板ミッド
+
+    for sym in symbols:
+        coin = sym.split("-")[0]  # 板ミッド（全銘柄一括）
+
+    # ① フェア価格 + funding を含むアセット・コンテキスト
+    await ws._ws.send(
+        json.dumps(
+            {
+                "method": "subscribe",
+                "subscription": {"type": "activeAssetCtx", "coin": coin},
+            }
+        )
+    )
+    print(
+        "SEND-DEBUG:",
+        json.dumps(
+            {
+                "method": "subscribe",
+                "subscription": {"type": "activeAssetCtx", "coin": "ETH"},
+            }
+        ),
+    )
+
+    # ② ベスト Bid/Ask（ミッド計算用）
+    await ws._ws.send(
+        json.dumps(
+            {"method": "subscribe", "subscription": {"type": "bbo", "coin": coin}}
+        )
+    )
+    print(
+        "SEND-DEBUG:",
+        json.dumps(
+            {"method": "subscribe", "subscription": {"type": "bbo", "coin": "ETH"}}
+        ),
+    )
+
+    # -------------------------------------------------------------------
+
+    # -----------------------------------------------------------------
+
+    # ③ Funding
+    funding_feed = "fundingInfoTestnet" if args.testnet else "fundingInfo"
+    await ws.subscribe(funding_feed)
+    # ------------------------------------------------------------------
+
     await asyncio.Event().wait()  # 常駐
 
 
