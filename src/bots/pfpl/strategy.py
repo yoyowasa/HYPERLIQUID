@@ -15,6 +15,7 @@ from logging.handlers import TimedRotatingFileHandler
 import yaml
 import anyio
 from datetime import datetime  # ← 追加
+from hl_core.utils.analysis_logger import AnalysisLogger
 
 # 既存 import 群の最後あたりに追加
 from hyperliquid.exchange import Exchange
@@ -86,16 +87,16 @@ class PFPLStrategy:
         # 以降 (env 読み込み・SDK 初期化 …) は従来コードを続ける
         # ------------------------------------------------------------------
         # ── Strategy 専用ロガー ─────────────────────────
-        log_dir = Path("logs/pfpl")
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = log_dir / f"strategy_{self.symbol}.log"
+        # ── ロガーは親の pfpl.log を継承 ─────────────────
+        self.logger = logging.getLogger("bots.pfpl")  # 既に存在する親
+        # -------------------------------------------------
 
-        fh = logging.FileHandler(log_file, encoding="utf-8")
-        fh.setLevel(logging.DEBUG)
-        self.logger = logging.getLogger(f"bots.pfpl.strategy.{self.symbol}")
-        self.logger.setLevel(logging.DEBUG)  # ファイルは DEBUG
+        # ── 分析ログ (CSV) ───────────────────────────────
 
-        self.logger.propagate = True  # root(INFO)へも流す
+        csv_path = Path(f"logs/pfpl/strategy_{self.symbol}.csv")
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        self.alog = AnalysisLogger(csv_path)
+        # -------------------------------------------------
 
         # ── 環境変数キー ────────────────────────────────
         self.account = os.getenv("HL_ACCOUNT_ADDR")
@@ -221,6 +222,10 @@ class PFPLStrategy:
 
     def on_message(self, msg: dict[str, Any]) -> None:
         """各 WS メッセージを取り込み、mid / fair / funding を更新"""
+        self.logger.debug(
+            "WS ch=%s keys=%s", msg.get("channel"), list(msg.get("data", {}))[:3]
+        )
+
         ch = msg.get("channel")
 
         # ── ① activeAssetCtx（または spot なら activeSpotAssetCtx）
@@ -246,6 +251,10 @@ class PFPLStrategy:
         # ── ③ 価格がそろったら評価ロジックへ
         if self.mid and self.fair:
             self.evaluate()
+        else:
+            self.logger.debug(
+                "WAIT mid=%s fair=%s (skip evaluate)", self.mid, self.fair
+            )
 
         # その他チャンネルは無視
 
@@ -279,7 +288,8 @@ class PFPLStrategy:
     #  evaluate : mid / fair がそろったら毎回呼ばれる
     # ------------------------------------------------------------------
     def evaluate(self) -> None:
-        self.logger.debug("EVAL‑CALL mid=%s fair=%s", self.mid, self.fair)
+        self.logger.info("EVAL mid=%s fair=%s", self.mid, self.fair)
+
         # ← 一時デバッグ用
 
         """乖離チェック → リスクガード → 発注（非同期）"""
@@ -321,6 +331,8 @@ class PFPLStrategy:
 
         # ── 1) Funding ウィンドウ外か？ ----------------------------------
         if not self._check_funding_window():
+            self.logger.info("FUND_WINDOW_SKIP (outside funding window)")
+
             return
 
         # ── 2) 最低証拠金率を割っていないか ------------------------------
@@ -364,6 +376,16 @@ class PFPLStrategy:
             or (mode == "both" and (abs_diff < th_abs or pct_diff < th_pct))
             or (mode == "either" and (abs_diff < th_abs and pct_diff < th_pct))
         )
+        self.logger.info(
+            "THRESH abs=%s pct=%s  th_abs=%s th_pct=%s  mode=%s  skip=%s",
+            abs_diff,
+            pct_diff,
+            th_abs,
+            th_pct,
+            mode,
+            skip,
+        )
+
         if skip:
             self.logger.debug("THRESH‑SKIP abs=%.5f pct=%.5f", abs_diff, pct_diff)
 
@@ -371,14 +393,22 @@ class PFPLStrategy:
 
         # ── 5) 発注サイド・サイズ ----------------------------------------
         side = "BUY" if fair < mid else "SELL"
-
         size = (self.order_usd / mid).quantize(self.tick)
+        self.logger.info(
+            "SIZE_SKIP size=%s * mid=%s < min_usd=%s", size, mid, self.min_usd
+        )
+
         if size * mid < self.min_usd:
             return
         if (
             abs(self.pos_usd + (size * mid if side == "BUY" else -size * mid))
             > self.max_pos
         ):
+            self.logger.info(
+                "POS_SKIP pos_usd=%s ≥ max_pos=%s — order blocked",
+                self.pos_usd,
+                self.max_pos,
+            )
             return
 
         # ── 6) 発注（dry-run ならログだけ） -------------------------------
@@ -390,6 +420,8 @@ class PFPLStrategy:
             float(mid),
             self.dry_run,
         )
+
+        self.logger.info("TASK‑SCHED side=%s size=%s", side, size)
 
         asyncio.create_task(self.place_order(side, float(size)))
         self.last_side = side
@@ -406,6 +438,8 @@ class PFPLStrategy:
         limit_px: float | None = None,
         **kwargs,
     ) -> None:
+        self.logger.info("PLACE_CALL side=%s size=%s", side, size)
+
         """IOC で即時約定、失敗時リトライ付き"""
         is_buy = side == "BUY"
         now = time.time()
@@ -423,6 +457,14 @@ class PFPLStrategy:
             logger.info("[DRY-RUN] %s %.4f %s", side, size, self.symbol)
             self.last_ts = time.time()
             self.last_side = side
+            self.alog.log_trade(
+                symbol=self.symbol,
+                side=side,
+                size=size,
+                price=float(self.mid),
+                reason="DRY",
+            )
+
             return 1.0
         # ──────────────────────────────
 
@@ -447,6 +489,14 @@ class PFPLStrategy:
                         reduce_only=False,
                     )
                     logger.info("ORDER OK %s try=%d → %s", self.symbol, attempt, resp)
+                    self.alog.log_trade(
+                        symbol=self.symbol,
+                        side=side,
+                        size=size,
+                        price=float(limit_px or self.mid),
+                        reason="ENTRY",
+                    )
+
                     self._order_count += 1
                     self.last_ts = time.time()
                     self.last_side = side
@@ -530,6 +580,12 @@ class PFPLStrategy:
         after = 120  # 2 分後
 
         in_window = self.next_funding_ts - before <= now <= self.next_funding_ts + after
+        logger.info(
+            "CHK_FUNDWIN in_window=%s next_ts=%s now=%s",
+            in_window,
+            self.next_funding_ts,
+            now,
+        )
 
         if in_window and not self._funding_pause:
             logger.info("⏳ Funding window ➜ 売買停止")

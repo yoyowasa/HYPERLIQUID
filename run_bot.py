@@ -126,32 +126,45 @@ async def main() -> None:
     # ── 必須フィードを subscribe ----------------------------------------
     await ws.subscribe("allMids")  # 任意: 全銘柄板ミッド
 
+    # run_bot.py  購読ループ
     for sym in symbols:
-        coin = sym.split("-")[0]  # 板ミッド（全銘柄一括）
+        coin_base = sym.split("-")[0]  # "ETH"
 
-    # ① フェア価格 + funding を含むアセット・コンテキスト
-    await ws._ws.send(
-        json.dumps(
-            {
-                "method": "subscribe",
-                "subscription": {"type": "activeAssetCtx", "coin": coin},
-            }
+        # 公正価格 + Funding
+        await ws._ws.send(
+            json.dumps(
+                {
+                    "method": "subscribe",
+                    "subscription": {"type": "activeAssetCtx", "coin": coin_base},
+                }
+            )
         )
-    )
-    print(
-        "SEND-DEBUG:",
-        json.dumps(
-            {
-                "method": "subscribe",
-                "subscription": {"type": "activeAssetCtx", "coin": "ETH"},
-            }
-        ),
-    )
+
+        # best-bid/ask → mid
+        await ws._ws.send(
+            json.dumps(
+                {
+                    "method": "subscribe",
+                    "subscription": {"type": "bbo", "coin": coin_base},
+                }
+            )
+        )
+
+        # oracle / index（乖離チェック）
+        for feed in ("oracle", "index"):
+            await ws._ws.send(
+                json.dumps(
+                    {
+                        "method": "subscribe",
+                        "subscription": {"type": feed, "coin": coin_base},
+                    }
+                )
+            )
 
     # ② ベスト Bid/Ask（ミッド計算用）
     await ws._ws.send(
         json.dumps(
-            {"method": "subscribe", "subscription": {"type": "bbo", "coin": coin}}
+            {"method": "subscribe", "subscription": {"type": "bbo", "coin": coin_base}}
         )
     )
     print(

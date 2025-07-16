@@ -1,0 +1,11 @@
+Git + pre-commit コマンド早見表
+リポジトリ毎に実行
+目的	1 行で済ませる最短コマンド
+
+追跡済みファイルだけ素早くコミット	git commit -a -m "msg" && git push
+
+新規ファイルも混在：一括ステージ→コミット	git add . && git commit -m "msg" && git push
+
+事前に全ファイルを整形してからコミット	pre-commit run --all-files && git add -u && git commit -m "msg" && git push
+
+新規ファイル含め整形→一括追加	pre-commit run --all-files && git add . && git commit -m "msg" && git push

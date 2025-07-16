@@ -8,6 +8,7 @@ import asyncio
 import random  # ★ 追加
 import anyio
 from typing import Awaitable, Callable, Any, Optional
+from websockets.exceptions import ConnectionClosed
 
 logger = logging.getLogger(__name__)
 
@@ -74,11 +75,19 @@ class WSClient:
         """
         try:
             while True:
-                # Python 3.13 なので anyio.sleep が素直に使える
                 await anyio.sleep(30)
+
                 # self._ws がまだ生きていれば送信
                 if self._ws and not getattr(self._ws, "closed", False):
-                    await self._ws.send('{"type":"hb"}')
+                    try:
+                        await self._ws.send('{"type":"hb"}')
+                    except (
+                        ConnectionClosed
+                    ):  # メインの listen ループが切断を検知・処理するため、こちらは静かに終了
+                        logger.debug(
+                            "WS heartbeat: connection already closed, exiting task."
+                        )
+                        break  # ← ここでループを抜けてタスク終了
         except asyncio.CancelledError:
             # connect() 側で self._hb_task.cancel() されたときに抜ける
             pass

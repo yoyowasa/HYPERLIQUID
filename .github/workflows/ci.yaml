@@ -1,31 +1,33 @@
 name: CI
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [ main ]
+  pull_request:
 
 jobs:
-  lint-test:
+  test:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 
-      # Poetry をセットアップ
-      - uses: abatilo/actions-poetry@v2
+      - name: Install Poetry
+        uses: abatilo/actions-poetry@v3
+        with:
+          poetry-version: "1.8.3"
 
-      # 依存インストール (--no-root でパッケージはインストールせず)
-      - run: poetry install --no-interaction
+      - name: Install dependencies
+        run: |
+          poetry install --with dev
+          poetry run pre-commit install --install-hooks
 
-      # Lint / Format check
-      - run: poetry run ruff check .
+      - name: Run pre‑commit checks
+        run: poetry run pre-commit run --all-files
 
-      - run: poetry run black --check .
-
-      # まだ mypy を厳密運用しないならコメントアウト
-      # - run: poetry run mypy .
-
-      # 単体テスト (e2e は除外)
-      - run: poetry run pytest -q -m "not e2e"
+      - name: Run pytest
+        run: poetry run pytest -q
