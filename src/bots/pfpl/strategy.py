@@ -498,7 +498,7 @@ class PFPLStrategy:
             for attempt in range(1, MAX_RETRY + 1):
                 try:
                     resp = self.exchange.order(
-                        coin=self.symbol,
+                        coin=self.symbol.split("-")[0],
                         is_buy=is_buy,
                         sz=float(size),
                         limit_px=limit_px,
