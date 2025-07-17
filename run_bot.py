@@ -41,8 +41,12 @@ def load_pair_yaml(path: str | None) -> dict[str, dict]:
 async def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("bot", help="bot folder name (e.g., pfpl)")
-    p.add_argument("--symbols", default="ETH-PERP", help="comma separated list (max 3)")
-    p.add_argument("--pair_cfg", help="YAML to override per‑pair params")
+    p.add_argument(
+        "--symbols", default=None, help="comma list (default: all pairs in YAML)"
+    )
+    p.add_argument(
+        "--pair_cfg", default="src/bots/pfpl/pairs.yaml", help="pair YAML path"
+    )
     # ─ 共通オプション ─
     p.add_argument("--testnet", action="store_true")
     p.add_argument(
@@ -70,7 +74,14 @@ async def main() -> None:
     logging.getLogger().addHandler(console)
 
     pair_params = load_pair_yaml(args.pair_cfg)
-    symbols = [s.strip() for s in args.symbols.split(",")][:3]
+    logger.info("PAIR-DEBUG loaded=%s", pair_params.get("BTC-PERP"))
+
+    symbols = [
+        s.strip()
+        for s in (args.symbols or ",".join(load_pair_yaml(args.pair_cfg).keys())).split(
+            ","
+        )
+    ][:3]
 
     # 動的 import
     strat_mod = import_module(f"bots.{args.bot}.strategy")

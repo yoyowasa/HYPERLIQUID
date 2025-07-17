@@ -83,9 +83,18 @@ def setup_logger(
     file_level: str | int = "DEBUG",
     log_root: Path | str = "logs",
     discord_webhook: str | None = None,
+    force: bool = False,
 ) -> None:
     """
     ロガーをシングルトンで初期化する。
+
+    Args:
+        bot_name (Optional[str]): ボット名。ログディレクトリ名に使われる。
+        console_level (str | int): コンソール出力のログレベル。
+        file_level (str | int): ファイル出力のログレベル。
+        log_root (Path | str): ログのルートディレクトリ。
+        discord_webhook (str | None): Discord Webhook URL。
+        force (bool): True の場合、既存のロガー設定をクリアして再初期化する。
 
     ```python
     from hl_core.utils.logger import setup_logger
@@ -95,9 +104,16 @@ def setup_logger(
     logger.info("hello")
     ```
     """
-    # すでに初期化済みなら何もしない
-    if logging.getLogger().handlers:
+    root_logger = logging.getLogger()
+    # すでに初期化済みで、強制再初期化フラグがなければ何もしない
+    if root_logger.handlers and not force:
         return
+
+    # 強制再初期化の場合、既存のハンドラをすべて削除
+    if force:
+        for handler in root_logger.handlers[:]:
+            handler.close()
+            root_logger.removeHandler(handler)
 
     _color_init(strip=False)  # colorama 初期化
 

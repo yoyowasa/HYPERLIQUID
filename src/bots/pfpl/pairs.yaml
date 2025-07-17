@@ -13,7 +13,7 @@ ETH-PERP:
   max_equity_ratio: 0.35
   max_daily_orders: 800
   max_drawdown_usd: 150
-
+  min_equity_ratio: 0.0
 BTC-PERP:
 
   mode: either
@@ -22,21 +22,23 @@ BTC-PERP:
   threshold: 0.8
   threshold_pct: 0.04
   spread_threshold: 2.0
-  order_usd: 10
+  order_usd: 30
+  qty_tick: 0.0001
   max_position_usd: 300
   max_daily_orders: 600
   max_drawdown_usd: 300
   max_equity_ratio: 0.35
-SOL-PERP:
+  min_equity_ratio: 0.0
+# SOL-PERP:
 
-  mode: either
-  funding_buffer_sec: 90    # Funding 直前 90 秒は発注しない
-  cooldown_sec: 2
-  threshold: 0.03
-  threshold_pct: 0.015
-  spread_threshold: 0.10
-  order_usd: 5
-  max_position_usd: 100
-  max_daily_orders: 500
-  max_drawdown_usd: 100
-  max_equity_ratio: 0.35
+#   mode: either
+#   funding_buffer_sec: 90    # Funding 直前 90 秒は発注しない
+#   cooldown_sec: 2
+#   threshold: 0.03
+#   threshold_pct: 0.015
+#   spread_threshold: 0.10
+#   order_usd: 5
+#   max_position_usd: 100
+#   max_daily_orders: 500
+#   max_drawdown_usd: 100
+#   max_equity_ratio: 0.35

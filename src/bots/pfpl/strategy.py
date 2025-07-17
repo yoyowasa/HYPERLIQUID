@@ -11,7 +11,6 @@ import time
 from decimal import Decimal
 from hl_core.utils.logger import setup_logger
 from pathlib import Path
-from logging.handlers import TimedRotatingFileHandler
 import yaml
 import anyio
 from datetime import datetime  # ← 追加
@@ -118,7 +117,7 @@ class PFPLStrategy:
         )
         # --- meta 情報から tick / min_usd 決定 ──
         self.meta = self.exchange.info.meta()
-
+        self.client = self.exchange
         # -----------------------------------------------------------------
         # 例: "@123"
         # ────────────────────────────────────────────────
@@ -136,8 +135,16 @@ class PFPLStrategy:
 
         # tick
         # --- tick ---------------------------------------------------------------
-        # Hyperliquid PERP は 0.01 USD 刻みで統一されているため固定で良い
-        self.tick = Decimal("0.01")
+        # 取引所メタ情報に数量刻みがある場合はこちらを使用
+        # --- tick ---------------------------------------------------------------
+        # ペアごとに数量刻み (qty_tick) を上書きできる。無ければ meta → 最後は 0.001
+        cfg_tick = self.config.get("qty_tick")  # 例: 0.0001
+        meta_tick = self.meta.get("qtyTicks", {}).get(
+            self.symbol.split("-")[0], "0.001"
+        )
+        self.tick = Decimal(str(cfg_tick or meta_tick))
+        # -----------------------------------------------------------------------
+
         # -----------------------------------------------------------------------
 
         # ── Bot パラメータ ──────────────────────────────
@@ -168,23 +175,17 @@ class PFPLStrategy:
         # ★ Funding Guard 用
         self.next_funding_ts: float | None = None  # 次回資金調達の UNIX 秒
         self._funding_pause: bool = False  # True なら売買停止
-        self.next_funding_ts: int | None = None  # 直近 funding 予定 UNIX 秒
-        self._funding_pause: bool = False  # True: 売買停止中
+
         # 非同期でポジション初期化
         try:
             asyncio.get_running_loop().create_task(self._refresh_position())
         except RuntimeError:
             pass  # pytest 収集時など、イベントループが無い場合
 
-        log_dir = Path(__file__).resolve().parents[3] / "logs" / "pfpl"
-        log_dir.mkdir(parents=True, exist_ok=True)
-
-        log_file = log_dir / f"strategy_{self.symbol}.log"
-        h = TimedRotatingFileHandler(
-            log_file, when="midnight", backupCount=14, encoding="utf-8"
-        )
-        h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         # ───────────────────────────────────────────────
+        self.logger.info(
+            "CFG-DEBUG %s → keys=%s", self.symbol, list(self.config.keys())
+        )
 
         logger.info("PFPLStrategy initialised with %s", self.config)
 
@@ -230,6 +231,10 @@ class PFPLStrategy:
 
         # ── ① activeAssetCtx（または spot なら activeSpotAssetCtx）
         if ch in ("activeAssetCtx", "activeSpotAssetCtx"):
+            # 自分のペア以外なら無視
+            if msg["data"].get("coin") not in (self.symbol, self.symbol.split("-")[0]):
+                return
+
             ctx = msg["data"]["ctx"]
             # フェア価格（マーク価格）
             self.fair = Decimal(ctx["markPx"])
@@ -244,6 +249,10 @@ class PFPLStrategy:
 
         # ── ② bbo  → bestBid / bestAsk から mid を都度計算
         elif ch == "bbo":
+            # 自分のペア以外なら無視
+            if msg["data"].get("coin") not in (self.symbol, self.symbol.split("-")[0]):
+                return
+
             bid_px = Decimal(msg["data"]["bbo"][0]["px"])
             ask_px = Decimal(msg["data"]["bbo"][1]["px"])
             self.mid = (bid_px + ask_px) / 2
@@ -393,13 +402,21 @@ class PFPLStrategy:
 
         # ── 5) 発注サイド・サイズ ----------------------------------------
         side = "BUY" if fair < mid else "SELL"
+
+        # 発注枚数を USD から数量へ換算
         size = (self.order_usd / mid).quantize(self.tick)
+        self.logger.info(
+            "DBG SIZE_CALC %s size=%s tick=%s", self.symbol, size, self.tick
+        )
+
+        # --- 最小 USD ガード ------------------------------------------
         self.logger.info(
             "SIZE_SKIP size=%s * mid=%s < min_usd=%s", size, mid, self.min_usd
         )
-
         if size * mid < self.min_usd:
             return
+
+        # --- ポジション上限ガード ------------------------------------
         if (
             abs(self.pos_usd + (size * mid if side == "BUY" else -size * mid))
             > self.max_pos
@@ -424,8 +441,6 @@ class PFPLStrategy:
         self.logger.info("TASK‑SCHED side=%s size=%s", side, size)
 
         asyncio.create_task(self.place_order(side, float(size)))
-        self.last_side = side
-        self.last_ts = now
 
     # ---------------------------------------------------------------- order
 
@@ -453,7 +468,8 @@ class PFPLStrategy:
             return  # 連続発注を抑制
 
         # ── Dry-run ───────────────────
-        if self.config.get("dry_run"):
+        if self.dry_run:
+
             logger.info("[DRY-RUN] %s %.4f %s", side, size, self.symbol)
             self.last_ts = time.time()
             self.last_side = side
@@ -464,6 +480,7 @@ class PFPLStrategy:
                 price=float(self.mid),
                 reason="DRY",
             )
+            self.logger.info("ALOG-WRITE dry %s %.4f %s", side, size, self.symbol)
 
             return 1.0
         # ──────────────────────────────
@@ -609,9 +626,18 @@ class PFPLStrategy:
     async def _close_all_positions(self) -> None:
         """Close every open position for this symbol."""
         # --- 成行 IOC で反対サイドを投げる簡易版 ---
-        pos = await self.client.get_position(self.symbol)  # ← API に合わせて修正
-        if not pos or pos["size"] == 0:
-            return  # 持ち高なし
+        acct = self.exchange.info.user_state(self.account)  # 全ポジション取得
+        pos = next(
+            (
+                p
+                for p in acct["assetPositions"]
+                if p["asset"] == self.symbol.split("-")[0]
+            ),
+            None,
+        )
+        if not pos or float(pos["positionValue"]) == 0:
+            return  # 建玉なしなら何もせず抜ける
+
         close_side = "SELL" if pos["size"] > 0 else "BUY"
         await self.place_order(
             side=close_side,
@@ -644,27 +670,31 @@ class PFPLStrategy:
 
     # ------------------------------------------------------------------
     # Equity helper
-    # ------------------------------------------------------------------
+    # ───────────────────────────────────── equity guard
     def _get_equity_ratio(self) -> float:
         """
-        口座の使用証拠金 ÷ 総資産 (=equity) を返す。
-        dry‑run 時は常に 1.0 を返してガードを無効化。
+        total_position_value / account_equity
+        - 成功時 : 0.0〜
+        - 失敗時 : 1.0 （安全側でブロック）
         """
-        if self.dry_run:
-            return 1.0
-
         try:
-            # 最新 SDK: Info.user_state(addr) で取得する :contentReference[oaicite:0]{index=0}
-            state = self.info.user_state(self.address)
+            # ── SDK 0.7+ : user_state が正、無ければ旧 API
+            if hasattr(self.exchange.info, "user_state"):
+                acct = self.exchange.info.user_state(self.account)
+            else:
+                acct = self.exchange.info.account(self.account)
 
-            summary = state["marginSummary"]  # ← clearinghouseState
-            equity = float(summary["accountValue"])
-            used = float(summary["totalMarginUsed"])
+            equity = float(acct["marginSummary"]["accountValue"])  # 純資産
+            positions = acct.get("assetPositions", [])  # ← 追加
+            pos_val = sum(abs(float(p.get("positionValue", 0.0))) for p in positions)
 
-            return used / equity if equity else 0.0
-        except Exception as exc:
-            # 失敗したらロガーに警告を残し、ガードを無効化
-            self.logger.warning("equity‑ratio fetch failed: %s", exc)
+            if pos_val == 0:
+                return 0.0  # 建玉なしなら 0
+            if equity == 0:
+                return 0.0
+            return pos_val / equity if equity else 0.0
+        except Exception as e:
+            self.logger.warning("equity-ratio fetch error: %s", e)
             return 1.0
 
     # ------------------------------------------------------------------
