@@ -8,9 +8,10 @@ from os import getenv
 from pathlib import Path
 import json
 from dotenv import load_dotenv
-
+import sys
 from hl_core.api import WSClient
 from hl_core.utils.logger import setup_logger
+from hl_core.api import HTTPClient
 
 logging.getLogger("websockets").setLevel(logging.INFO)
 logging.getLogger("urllib3").setLevel(logging.INFO)
@@ -40,6 +41,7 @@ def load_pair_yaml(path: str | None) -> dict[str, dict]:
 
 async def main() -> None:
     p = argparse.ArgumentParser()
+    # ----------------- ここまで追加 -----------------
     p.add_argument("bot", help="bot folder name (e.g., pfpl)")
     p.add_argument(
         "--symbols", default=None, help="comma list (default: all pairs in YAML)"
@@ -52,9 +54,10 @@ async def main() -> None:
     p.add_argument(
         "--order_usd",
         type=float,
-        default=10.0,
+        default=None,
         help="Order notional per trade (USD)",
     )
+
     p.add_argument(
         "--min_usd",
         type=float,
@@ -66,12 +69,20 @@ async def main() -> None:
     p.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING"])
     args = p.parse_args()
 
-    logging.basicConfig(level=args.log_level)
-    logging.getLogger().setLevel(logging.INFO)
-    console = logging.StreamHandler()
+    # --- ログ設定 -------------------------------------------------
+
+    root = logging.getLogger()
+    root.setLevel(args.log_level)  # ① root を指定レベルに
+
+    console = logging.StreamHandler(sys.stdout)  # ② コンソールハンドラ
     console.setLevel(args.log_level)
-    console.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-    logging.getLogger().addHandler(console)
+    console.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
+    root.addHandler(console)  # ③ root に付ける
+
+    # bots.pfpl 系も同じレベルを強制（念のため）
+    logging.getLogger("bots.pfpl").setLevel(args.log_level)
 
     pair_params = load_pair_yaml(args.pair_cfg)
     logger.info("PAIR-DEBUG loaded=%s", pair_params.get("BTC-PERP"))
@@ -86,6 +97,12 @@ async def main() -> None:
     # 動的 import
     strat_mod = import_module(f"bots.{args.bot}.strategy")
     Strategy = getattr(strat_mod, "PFPLStrategy")
+    # --- SDK(HTTP) クライアントを生成 ---------------------------------
+
+    sdk = HTTPClient(
+        getenv("HL_ACCOUNT_ADDR"),
+        getenv("HL_API_SECRET"),
+    )
 
     # WS 生成（1 本）
     ws = WSClient(
@@ -120,7 +137,7 @@ async def main() -> None:
             base_cfg["log_level"] = args.log_level
 
         # --- ③ Strategy インスタンス生成 ---------------------------------
-        st = Strategy(config=base_cfg, semaphore=SEMA)  # ★ semaphore を渡す
+        st = Strategy(config=base_cfg, semaphore=SEMA, sdk=sdk)  # ★ semaphore を渡す
         strategies.append(st)
 
     # WS → 全 Strategy へ配信
@@ -191,7 +208,16 @@ async def main() -> None:
 
     # ③ Funding
     funding_feed = "fundingInfoTestnet" if args.testnet else "fundingInfo"
-    await ws.subscribe(funding_feed)
+    for sym in symbols:
+        coin = sym.split("-")[0]  # "ETH" or "BTC"
+        await ws._ws.send(
+            json.dumps(
+                {
+                    "method": "subscribe",
+                    "subscription": {"type": funding_feed, "coin": coin},
+                }
+            )
+        )
     # ------------------------------------------------------------------
 
     await asyncio.Event().wait()  # 常駐

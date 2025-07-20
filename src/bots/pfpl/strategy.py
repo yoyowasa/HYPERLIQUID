@@ -2,19 +2,23 @@
 from __future__ import annotations
 import os
 import logging
+import sys
 from typing import Any
 import asyncio
 import hmac
 import hashlib
 import json
 import time
-from decimal import Decimal
+from decimal import Decimal, ROUND_UP
 from hl_core.utils.logger import setup_logger
 from pathlib import Path
 import yaml
 import anyio
 from datetime import datetime  # ← 追加
 from hl_core.utils.analysis_logger import AnalysisLogger
+
+# 旧: from hl_core.utils.notify import line_notify
+from hl_core.utils.notify import discord_notify
 
 # 既存 import 群の最後あたりに追加
 from hyperliquid.exchange import Exchange
@@ -30,7 +34,7 @@ class PFPLStrategy:
 
     # ← シグネチャはそのまま
     def __init__(
-        self, *, config: dict[str, Any], semaphore: asyncio.Semaphore | None = None
+        self, *, config: dict[str, Any], sdk, semaphore: asyncio.Semaphore | None = None
     ):
         # ── ① YAML と CLI のマージ ───────────────────────
         yml_path = Path(__file__).with_name("config.yaml")
@@ -64,14 +68,17 @@ class PFPLStrategy:
         # ────────────────────────────────────────────────
 
         max_ops = int(self.config.get("max_order_per_sec", 3))  # 1 秒あたり発注上限
+        self._sdk = sdk
         self.sem: asyncio.Semaphore = semaphore or asyncio.Semaphore(max_ops)
         self.max_order_per_sec = max_ops
+        self.spread_th = Decimal(str(self.config.get("spread_threshold", "0.5")))
         # ── Runtime state ------------------------------------------------
         self.mid: Decimal = Decimal("0")  # 直近板ミッド
         self.funding_rate: Decimal = Decimal("0")
         self.pos_usd: Decimal = Decimal("0")
         self.last_side: str = ""
         self.last_ts: float = 0.0
+        self.bid = self.ask = None
 
         # --- Risk metrics -----------------------------------------------
         self.max_daily_orders: int = int(self.config.get("max_daily_orders", 99999))
@@ -86,8 +93,15 @@ class PFPLStrategy:
         # 以降 (env 読み込み・SDK 初期化 …) は従来コードを続ける
         # ------------------------------------------------------------------
         # ── Strategy 専用ロガー ─────────────────────────
-        # ── ロガーは親の pfpl.log を継承 ─────────────────
-        self.logger = logging.getLogger("bots.pfpl")  # 既に存在する親
+
+        self.logger = logging.getLogger(f"pfpl.{self.symbol}")
+        if not self.logger.handlers:  # 重複防止
+            h = logging.StreamHandler(sys.stdout)
+            h.setLevel(logging.DEBUG)
+            h.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+            self.logger.addHandler(h)
+        self.logger.setLevel(logging.DEBUG)
+
         # -------------------------------------------------
 
         # ── 分析ログ (CSV) ───────────────────────────────
@@ -256,6 +270,9 @@ class PFPLStrategy:
             bid_px = Decimal(msg["data"]["bbo"][0]["px"])
             ask_px = Decimal(msg["data"]["bbo"][1]["px"])
             self.mid = (bid_px + ask_px) / 2
+            self.bid = bid_px  # スプレッド判定用
+            self.ask = ask_px  # ──────────
+            self.logger.debug("[BBO] bid=%.2f ask=%.2f", bid_px, ask_px)
 
         # ── ③ 価格がそろったら評価ロジックへ
         if self.mid and self.fair:
@@ -297,34 +314,64 @@ class PFPLStrategy:
     #  evaluate : mid / fair がそろったら毎回呼ばれる
     # ------------------------------------------------------------------
     def evaluate(self) -> None:
-        self.logger.info("EVAL mid=%s fair=%s", self.mid, self.fair)
+        if not hasattr(self, "_debug_shown"):
+            self._debug_shown = True
+            self.logger.info(
+                "PARAM order_usd=%s tick=%s min_usd=%s",
+                self.order_usd,
+                self.tick,
+                self.min_usd,
+            )
 
-        # ← 一時デバッグ用
+        if self.bid is None or self.ask is None:
+            self.logger.debug("SKIP: bid/ask missing")
+            return
+
+        spread = self.ask - self.bid
+        if spread > self.spread_th:
+            self.logger.debug("SKIP: spread %.4f > th %.4f", spread, self.spread_th)
+            return
+
+        side = "BUY" if self.fair < self.mid else "SELL"
+        self.logger.info("[EVAL] mid=%s fair=%s side=%s", self.mid, self.fair, side)
+
+        self.logger.info("EVAL mid=%s fair=%s", self.mid, self.fair)
+        self.logger.debug(
+            "SIDE=%s fair=%.2f mid=%.2f bid=%.2f ask=%.2f",
+            "BUY" if self.fair < self.mid else "SELL",
+            self.fair,
+            self.mid,
+            self.bid,
+            self.ask,
+        )
 
         """乖離チェック → リスクガード → 発注（非同期）"""
-        # ── Funding ガード ──────────────────────────────
-        # 次回 Funding まで buffer 秒以内なら発注をスキップ
-        buffer = self.config.get("funding_buffer_sec", 90)  # デフォルト 90 秒
+        # --- Funding 直前クローズ ------------------------------------
         now = time.time()
         if (
-            self.next_funding_ts  # 情報があり
-            and 0 <= self.next_funding_ts - now <= buffer  # 残り時間が buffer 以内
+            getattr(self, "next_funding_ts", None)
+            and now > self.next_funding_ts - self.funding_close_buffer_secs
         ):
-            self.logger.info(
-                "FUNDING‑SKIP: %.1fs before funding (buffer=%ds)",
-                self.next_funding_ts - now,
-                buffer,
-            )
-            return  # ここで評価を打ち切り
+            if self.pos_usd:
+                self.logger.info("FUNDING_CLOSE pos_usd=%s - closing all", self.pos_usd)
+                asyncio.create_task(self._close_all())  # 非同期で全クローズ
+            return  # 今回の evaluate を終了
+
         # ── Equity‑ratio ガード ──────────────────────────
         max_ratio = float(self.config.get("max_equity_ratio", 1.0))  # デフォルト 100%
         cur_ratio = self._get_equity_ratio()
         if cur_ratio > max_ratio:
             self.logger.warning(
-                "EQUITY‑SKIP: ratio=%.3f > max=%.3f — order blocked",
+                "EQUITY‑SKIP: ratio=%.3f > max=%.3f - order blocked",
                 cur_ratio,
                 max_ratio,
             )
+            asyncio.create_task(
+                discord_notify(
+                    f"⚠️ EQUITY {cur_ratio:.3f} > {max_ratio:.3f} - order blocked"
+                )
+            )
+
             return
         # ───────────────────────────────────────────────
 
@@ -333,6 +380,7 @@ class PFPLStrategy:
             return
         # === 追加①: ここに 2 行貼り付けてください ===
         abs_diff = abs(self.fair - self.mid)
+        self.logger.debug("[DIFF] %.6f", abs_diff)
         pct_diff = abs_diff / self.mid * Decimal("100")
         self.logger.debug("THRESH abs=%.5f pct=%.5f", abs_diff, pct_diff)
 
@@ -350,12 +398,18 @@ class PFPLStrategy:
         except Exception as e:
             # 取得失敗は PASS させる（ログだけ残す）
             self.logger.warning("equity-ratio fetch failed: %s", e)
-            ratio = 1.0
+            asyncio.create_task(discord_notify(f"‼️ Task exception: {e}"))
+
+            ratio = 0.0
 
         if ratio < self.min_equity_ratio:
             self.logger.error(
                 "⚠️ equity-ratio %.3f < %.3f → 全クローズ", ratio, self.min_equity_ratio
             )
+            asyncio.create_task(
+                discord_notify("⛔ All positions closed before funding")
+            )
+
             asyncio.create_task(self._close_all_positions())
             return
 
@@ -402,18 +456,22 @@ class PFPLStrategy:
 
         # ── 5) 発注サイド・サイズ ----------------------------------------
         side = "BUY" if fair < mid else "SELL"
+        self.logger.debug("SIDE=%s fair=%.2f mid=%.2f", side, fair, mid)
 
-        # 発注枚数を USD から数量へ換算
-        size = (self.order_usd / mid).quantize(self.tick)
+        # 発注枚数を USD から数量へ換算（必ず order_usd 以上になるよう切り上げ）
+        raw_sz = Decimal(str(self.order_usd)) / Decimal(str(mid))
+        size = raw_sz.quantize(self.tick, rounding=ROUND_UP)  # 1tick 単位で切り上げ
+
+        usd_val = size * Decimal(str(mid))  # 実発注額（USD換算）
         self.logger.info(
             "DBG SIZE_CALC %s size=%s tick=%s", self.symbol, size, self.tick
         )
 
         # --- 最小 USD ガード ------------------------------------------
-        self.logger.info(
-            "SIZE_SKIP size=%s * mid=%s < min_usd=%s", size, mid, self.min_usd
-        )
-        if size * mid < self.min_usd:
+        if usd_val < self.min_usd:
+            self.logger.info(
+                "SIZE_SKIP size=%s * mid=%s < min_usd=%s", size, mid, self.min_usd
+            )
             return
 
         # --- ポジション上限ガード ------------------------------------
@@ -422,23 +480,28 @@ class PFPLStrategy:
             > self.max_pos
         ):
             self.logger.info(
-                "POS_SKIP pos_usd=%s ≥ max_pos=%s — order blocked",
+                "POS_SKIP pos_usd=%s >= max_pos=%s - order blocked",
                 self.pos_usd,
                 self.max_pos,
             )
             return
 
         # ── 6) 発注（dry-run ならログだけ） -------------------------------
-        self.logger.info(
-            "place %s %.4f %s @ %.2f (dry-run=%s)",
-            side,
-            float(size),
-            self.symbol,
-            float(mid),
-            self.dry_run,
-        )
 
-        self.logger.info("TASK‑SCHED side=%s size=%s", side, size)
+        if self.dry_run:
+            # ★ Dry‑run でも内部ポジションを更新してロジック挙動を再現
+            delta = size * mid if side == "BUY" else -size * mid
+            self.pos_usd += delta
+
+            self.logger.info("[DRY-RUN] %s %.4f %s", side, float(size), self.symbol)
+            asyncio.create_task(
+                discord_notify(f"[DRY] {side} {size:.4f} {self.symbol}")
+            )
+        else:
+            asyncio.create_task(self.place_order(side, float(size)))
+
+        msg = f"TASK-SCHED side={side} size={size}"
+        self.logger.info(msg)
 
         asyncio.create_task(self.place_order(side, float(size)))
 
@@ -506,6 +569,12 @@ class PFPLStrategy:
                         reduce_only=False,
                     )
                     logger.info("ORDER OK %s try=%d → %s", self.symbol, attempt, resp)
+                    asyncio.create_task(
+                        discord_notify(
+                            f"✅ {side} {size:.4f} {self.symbol} @ {limit_px}"
+                        )
+                    )
+
                     self.alog.log_trade(
                         symbol=self.symbol,
                         side=side,
@@ -530,6 +599,10 @@ class PFPLStrategy:
                         logger.error(
                             "GIVE-UP %s after %d retries", self.symbol, MAX_RETRY
                         )
+                        asyncio.create_task(
+                            discord_notify(f"❌ ORDER FAIL {self.symbol}: {exc}")
+                        )
+
                     else:
                         await anyio.sleep(0.5)
 
@@ -550,7 +623,9 @@ class PFPLStrategy:
         except Exception as e:
             # 失敗したら PASS（ratio=1.0）にフォールバック
             self.logger.warning("equity-ratio fetch failed: %s", e)
-            ratio = 1.0
+            asyncio.create_task(discord_notify(f"‼️ Task exception: {e}"))
+
+            ratio = 0.0
 
         if ratio < self.min_equity_ratio:
             self.logger.warning(
@@ -673,29 +748,29 @@ class PFPLStrategy:
     # ───────────────────────────────────── equity guard
     def _get_equity_ratio(self) -> float:
         """
-        total_position_value / account_equity
-        - 成功時 : 0.0〜
-        - 失敗時 : 1.0 （安全側でブロック）
+        equityUsd ÷ risk.maxPositionUsd を返す。
+        HTTPClient 実装に合わせて account_info / portfolio / user_state の
+        いずれかがあれば利用する。取れなければ 0.0 を返しガード無効。
         """
         try:
-            # ── SDK 0.7+ : user_state が正、無ければ旧 API
-            if hasattr(self.exchange.info, "user_state"):
-                acct = self.exchange.info.user_state(self.account)
-            else:
-                acct = self.exchange.info.account(self.account)
-
-            equity = float(acct["marginSummary"]["accountValue"])  # 純資産
-            positions = acct.get("assetPositions", [])  # ← 追加
-            pos_val = sum(abs(float(p.get("positionValue", 0.0))) for p in positions)
-
-            if pos_val == 0:
-                return 0.0  # 建玉なしなら 0
-            if equity == 0:
+            # ─ 1) メソッド名を順番に探す ─
+            if hasattr(self._sdk, "account_info"):
+                info = self._sdk.account_info()
+            elif hasattr(self._sdk, "portfolio"):
+                info = self._sdk.portfolio()
+            elif hasattr(self._sdk, "user_state"):
+                info = self._sdk.user_state()
+            else:  # どれも無ければ取得不能
                 return 0.0
-            return pos_val / equity if equity else 0.0
-        except Exception as e:
-            self.logger.warning("equity-ratio fetch error: %s", e)
-            return 1.0
+
+            # ─ 2) レスポンスから必要フィールドを読む ─
+            eq_usd = float(info.get("equityUsd", 0))
+            max_pos = float(info.get("risk", {}).get("maxPositionUsd", 0))
+            return eq_usd / max_pos if max_pos else 0.0
+
+        except Exception as e:  # noqa: BLE001
+            self.logger.debug("equity-ratio fetch failed: %s - fallback 0.0", e)
+            return 0.0
 
     # ------------------------------------------------------------------
     # Universe helper

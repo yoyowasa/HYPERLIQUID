@@ -106,7 +106,7 @@ class WSClient:
                 ) as ws:
                     self._ws = ws
                     logger.info("WS connected")
-                    self._backoff = 1
+
                     self._ready.set()  # ★ open を通知
 
                     # Heartbeat を 30 s ごとに送る

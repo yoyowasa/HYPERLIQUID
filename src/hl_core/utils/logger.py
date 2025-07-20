@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+from datetime import timezone, timedelta
 import logging
 import logging.handlers
 import queue
@@ -10,6 +11,16 @@ from pathlib import Path
 from typing import Final, Optional
 
 from colorama import Fore, Style, init as _color_init
+
+# JST タイムゾーン
+JST = timezone(timedelta(hours=9))
+
+
+class JSTFormatter(logging.Formatter):
+    # 置き換え後のコード
+    def colorize(level: int, text: str) -> str:
+        return f"\x1b[{level}m{text}\x1b[0m"
+
 
 # ────────────────────────────────────────────────────────────
 # 内部定数
@@ -135,9 +146,12 @@ def setup_logger(
         interval=1,
         backupCount=7,
         encoding="utf-8",
-        utc=True,
+        utc=False,
         delay=True,
     )
+    fh.setFormatter(JSTFormatter("%(asctime)s [%(levelname)s] %(message)s"))
+    fh.utc = False  # JST で日次ローテーション
+
     fh.setLevel(file_level)
     fh.setFormatter(logging.Formatter(_LOG_FMT, "%Y-%m-%d %H:%M:%S"))
     logging.getLogger().addHandler(fh)
