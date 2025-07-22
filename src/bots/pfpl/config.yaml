@@ -1,6 +1,6 @@
 # ── PFPL 共通デフォルト ───────────────────────
 mode: both                 # abs と pct を両方満たす
-spread_threshold: 0.05     # USD
+spread_threshold: 0.2     # USD
 
 funding_guard:
   enabled: true

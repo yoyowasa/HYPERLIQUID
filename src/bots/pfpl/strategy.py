@@ -71,7 +71,7 @@ class PFPLStrategy:
         self._sdk = sdk
         self.sem: asyncio.Semaphore = semaphore or asyncio.Semaphore(max_ops)
         self.max_order_per_sec = max_ops
-        self.spread_th = Decimal(str(self.config.get("spread_threshold", "0.5")))
+        self.spread_th = Decimal(str(self.config["spread_threshold"]))
         # ── Runtime state ------------------------------------------------
         self.mid: Decimal = Decimal("0")  # 直近板ミッド
         self.funding_rate: Decimal = Decimal("0")
@@ -170,6 +170,20 @@ class PFPLStrategy:
         self.fair_feed = config.get(
             "fair_feed", "activeAssetCtx"
         )  # default を activeAssetCtx に
+        # strategy.py  __init__ 末尾
+        self.th_buy = Decimal(
+            str(self.config.get("threshold_buy", self.config["threshold"]))
+        )
+        self.th_sell = Decimal(
+            str(self.config.get("threshold_sell", self.config["threshold"]))
+        )
+
+        self.spread_th_buy = Decimal(
+            str(self.config.get("spread_threshold_buy", self.spread_th))
+        )
+        self.spread_th_sell = Decimal(
+            str(self.config.get("spread_threshold_sell", self.spread_th))
+        )
 
         self.max_daily_orders = int(self.config.get("max_daily_orders", 500))
         self.max_drawdown_usd = Decimal(self.config.get("max_drawdown_usd", 100))
@@ -200,6 +214,7 @@ class PFPLStrategy:
         self.logger.info(
             "CFG-DEBUG %s → keys=%s", self.symbol, list(self.config.keys())
         )
+        self.logger.info("PARAM max_pos=%s", self.max_pos)
 
         logger.info("PFPLStrategy initialised with %s", self.config)
 
@@ -314,6 +329,11 @@ class PFPLStrategy:
     #  evaluate : mid / fair がそろったら毎回呼ばれる
     # ------------------------------------------------------------------
     def evaluate(self) -> None:
+        # ── 0) 乖離符号を毎回記録 ─────────────────────────────
+        if self.mid is not None and self.fair is not None:
+            self.logger.debug("[DIFF_SIGN] %s", "+" if self.fair > self.mid else "-")
+
+        # ── 1) パラメータ表示（1 回だけ） ──────────────────
         if not hasattr(self, "_debug_shown"):
             self._debug_shown = True
             self.logger.info(
@@ -323,30 +343,48 @@ class PFPLStrategy:
                 self.min_usd,
             )
 
+        # ── 2) bid / ask が来るまで待機 ─────────────────────
         if self.bid is None or self.ask is None:
             self.logger.debug("SKIP: bid/ask missing")
             return
 
-        spread = self.ask - self.bid
-        if spread > self.spread_th:
-            self.logger.debug("SKIP: spread %.4f > th %.4f", spread, self.spread_th)
+        # ── 3) mid / fair が揃うまで待機 ────────────────────
+        if self.mid is None or self.fair is None:
+            self.logger.debug("SKIP: mid/fair missing")
+            return
+        side = "BUY" if self.fair < self.mid else "SELL"
+        # ここで mid・fair OK
+        self.logger.debug("[CHK-MIDFAIR] mid=%s fair=%s ok=True", self.mid, self.fair)
+
+        # ── 4) 乖離計算 --------------------------------------------------
+        th_abs = self.th_buy if side == "BUY" else self.th_sell
+        th_pct = Decimal(str(self.config.get("threshold_pct", "0.0001")))
+        self.logger.debug("[DIFF] %.6f", th_abs)
+
+        th_abs = Decimal(str(self.config.get("threshold", "0.001")))
+        th_pct = Decimal(str(self.config.get("threshold_pct", "0.0001")))
+        mode = self.config.get("mode", "either")  # abs / pct / both / either
+
+        skip = (
+            (mode == "abs" and th_abs < th_abs)
+            or (mode == "pct" and th_pct < th_pct)
+            or (mode == "both" and (th_abs < th_abs or th_pct < th_pct))
+            or (mode == "either" and (th_abs < th_abs and th_pct < th_pct))
+        )
+        self.logger.debug("[CHK-THRESH] abs=%s pct=%s skip=%s", th_abs, th_pct, skip)
+        if skip:
             return
 
-        side = "BUY" if self.fair < self.mid else "SELL"
-        self.logger.info("[EVAL] mid=%s fair=%s side=%s", self.mid, self.fair, side)
-
-        self.logger.info("EVAL mid=%s fair=%s", self.mid, self.fair)
+        # ── 5) スプレッドガード ------------------------------------------
+        th_spread = self.spread_th_buy if side == "BUY" else self.spread_th_sell
+        blocked = th_spread > th_spread
         self.logger.debug(
-            "SIDE=%s fair=%.2f mid=%.2f bid=%.2f ask=%.2f",
-            "BUY" if self.fair < self.mid else "SELL",
-            self.fair,
-            self.mid,
-            self.bid,
-            self.ask,
+            "[CHK-SPREAD] spread=%.4f th=%.4f blocked=%s", th_spread, th_spread, blocked
         )
+        if blocked:
+            return
 
-        """乖離チェック → リスクガード → 発注（非同期）"""
-        # --- Funding 直前クローズ ------------------------------------
+        # ── 6) Funding 直前クローズ --------------------------------------
         now = time.time()
         if (
             getattr(self, "next_funding_ts", None)
@@ -354,129 +392,36 @@ class PFPLStrategy:
         ):
             if self.pos_usd:
                 self.logger.info("FUNDING_CLOSE pos_usd=%s - closing all", self.pos_usd)
-                asyncio.create_task(self._close_all())  # 非同期で全クローズ
-            return  # 今回の evaluate を終了
+                asyncio.create_task(self._close_all())
+            return
 
-        # ── Equity‑ratio ガード ──────────────────────────
-        max_ratio = float(self.config.get("max_equity_ratio", 1.0))  # デフォルト 100%
+        # ── 7) Equity ratio ガード --------------------------------------
+        max_ratio = float(self.config.get("max_equity_ratio", 1.0))
         cur_ratio = self._get_equity_ratio()
         if cur_ratio > max_ratio:
             self.logger.warning(
-                "EQUITY‑SKIP: ratio=%.3f > max=%.3f - order blocked",
-                cur_ratio,
-                max_ratio,
+                "EQUITY-SKIP ratio=%.3f > max=%.3f", cur_ratio, max_ratio
             )
-            asyncio.create_task(
-                discord_notify(
-                    f"⚠️ EQUITY {cur_ratio:.3f} > {max_ratio:.3f} - order blocked"
-                )
-            )
-
-            return
-        # ───────────────────────────────────────────────
-
-        # ── 0) 必要データが揃うまで何もしない ----------------------------
-        if self.mid is None or self.fair is None:
-            return
-        # === 追加①: ここに 2 行貼り付けてください ===
-        abs_diff = abs(self.fair - self.mid)
-        self.logger.debug("[DIFF] %.6f", abs_diff)
-        pct_diff = abs_diff / self.mid * Decimal("100")
-        self.logger.debug("THRESH abs=%.5f pct=%.5f", abs_diff, pct_diff)
-
-        now = time.time()
-
-        # ── 1) Funding ウィンドウ外か？ ----------------------------------
-        if not self._check_funding_window():
-            self.logger.info("FUND_WINDOW_SKIP (outside funding window)")
-
             return
 
-        # ── 2) 最低証拠金率を割っていないか ------------------------------
-        try:
-            ratio = self._get_equity_ratio()
-        except Exception as e:
-            # 取得失敗は PASS させる（ログだけ残す）
-            self.logger.warning("equity-ratio fetch failed: %s", e)
-            asyncio.create_task(discord_notify(f"‼️ Task exception: {e}"))
-
-            ratio = 0.0
-
-        if ratio < self.min_equity_ratio:
-            self.logger.error(
-                "⚠️ equity-ratio %.3f < %.3f → 全クローズ", ratio, self.min_equity_ratio
-            )
-            asyncio.create_task(
-                discord_notify("⛔ All positions closed before funding")
-            )
-
-            asyncio.create_task(self._close_all_positions())
-            return
-
-        # ── 3) その他リスクガード ----------------------------------------
-        if not self._check_limits():
-            return
+        # ── 8) クールダウン & ポジション上限 -----------------------------
         if now - self.last_ts < self.cooldown:
             return
         if abs(self.pos_usd) >= self.max_pos:
             return
 
-        # ── 4) 乖離計算 --------------------------------------------------
-        # ③ 必要データ取得  ← ← ここの 2 行を下に置換
-        mid = self.mid or Decimal("0")
-        fair = self.fair or Decimal("0")
+        # ── 9) 発注ロジック ---------------------------------------------
+        side = "BUY" if self.fair < self.mid else "SELL"
+        raw_sz = Decimal(str(self.order_usd)) / Decimal(str(self.mid))
+        size = raw_sz.quantize(self.tick, rounding=ROUND_UP)
+        usd_val = size * self.mid
 
-        abs_diff = abs(fair - mid)  # USD
-        pct_diff = abs_diff / mid * 100  # %
-
-        th_abs = Decimal(str(self.config.get("threshold", "0.001")))
-        th_pct = Decimal(str(self.config.get("threshold_pct", "0.0001")))
-        mode = self.config.get("mode", "either")  # abs/pct/both/either
-
-        skip = (
-            (mode == "abs" and abs_diff < th_abs)
-            or (mode == "pct" and pct_diff < th_pct)
-            or (mode == "both" and (abs_diff < th_abs or pct_diff < th_pct))
-            or (mode == "either" and (abs_diff < th_abs and pct_diff < th_pct))
-        )
-        self.logger.info(
-            "THRESH abs=%s pct=%s  th_abs=%s th_pct=%s  mode=%s  skip=%s",
-            abs_diff,
-            pct_diff,
-            th_abs,
-            th_pct,
-            mode,
-            skip,
-        )
-
-        if skip:
-            self.logger.debug("THRESH‑SKIP abs=%.5f pct=%.5f", abs_diff, pct_diff)
-
-            return
-
-        # ── 5) 発注サイド・サイズ ----------------------------------------
-        side = "BUY" if fair < mid else "SELL"
-        self.logger.debug("SIDE=%s fair=%.2f mid=%.2f", side, fair, mid)
-
-        # 発注枚数を USD から数量へ換算（必ず order_usd 以上になるよう切り上げ）
-        raw_sz = Decimal(str(self.order_usd)) / Decimal(str(mid))
-        size = raw_sz.quantize(self.tick, rounding=ROUND_UP)  # 1tick 単位で切り上げ
-
-        usd_val = size * Decimal(str(mid))  # 実発注額（USD換算）
-        self.logger.info(
-            "DBG SIZE_CALC %s size=%s tick=%s", self.symbol, size, self.tick
-        )
-
-        # --- 最小 USD ガード ------------------------------------------
         if usd_val < self.min_usd:
-            self.logger.info(
-                "SIZE_SKIP size=%s * mid=%s < min_usd=%s", size, mid, self.min_usd
-            )
+            self.logger.debug("SIZE_SKIP %s < min_usd %s", usd_val, self.min_usd)
             return
 
-        # --- ポジション上限ガード ------------------------------------
         if (
-            abs(self.pos_usd + (size * mid if side == "BUY" else -size * mid))
+            abs(self.pos_usd + (size * self.mid if side == "BUY" else -size * self.mid))
             > self.max_pos
         ):
             self.logger.info(
@@ -486,24 +431,22 @@ class PFPLStrategy:
             )
             return
 
-        # ── 6) 発注（dry-run ならログだけ） -------------------------------
-
+        # ── 10) 発注（dry-run or live） ----------------------------------
         if self.dry_run:
-            # ★ Dry‑run でも内部ポジションを更新してロジック挙動を再現
-            delta = size * mid if side == "BUY" else -size * mid
+            delta = size * self.mid if side == "BUY" else -size * self.mid
             self.pos_usd += delta
-
             self.logger.info("[DRY-RUN] %s %.4f %s", side, float(size), self.symbol)
-            asyncio.create_task(
-                discord_notify(f"[DRY] {side} {size:.4f} {self.symbol}")
-            )
         else:
             asyncio.create_task(self.place_order(side, float(size)))
 
-        msg = f"TASK-SCHED side={side} size={size}"
-        self.logger.info(msg)
-
-        asyncio.create_task(self.place_order(side, float(size)))
+        self.alog.log_trade(
+            symbol=self.symbol,
+            side=side,
+            size=float(size),
+            price=float(self.mid),
+            reason="signal",
+        )
+        self.logger.info("TASK-SCHED side=%s size=%s", side, size)
 
     # ---------------------------------------------------------------- order
 

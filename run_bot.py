@@ -63,6 +63,7 @@ async def main() -> None:
         type=float,
         help="Override minimum order notional (USD) set in YAML",
     )
+    p.add_argument("--max_pos", type=float, help="Override position limit (USD)")
 
     p.add_argument("--cooldown", type=float, default=1.0)
     p.add_argument("--dry-run", action="store_true")
@@ -135,6 +136,8 @@ async def main() -> None:
             base_cfg["testnet"] = True
         if args.log_level:
             base_cfg["log_level"] = args.log_level
+        if args.max_pos is not None:
+            base_cfg["max_pos"] = args.max_pos
 
         # --- ③ Strategy インスタンス生成 ---------------------------------
         st = Strategy(config=base_cfg, semaphore=SEMA, sdk=sdk)  # ★ semaphore を渡す
