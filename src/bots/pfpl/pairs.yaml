@@ -12,8 +12,8 @@ ETH-PERP:
   max_daily_orders: 500
   max_drawdown_usd: 150
   funding_close_buffer_secs: 120  # テスト用に 60 秒
-  spread_threshold_buy: 0.1
-  spread_threshold_sell: 0.1
+  spread_threshold_buy: 0.30
+  spread_threshold_sell: 0.05
   threshold_buy: 0.5
   threshold_sell: 0.3
 BTC-PERP:
@@ -31,8 +31,8 @@ BTC-PERP:
   max_drawdown_usd: 300
   qty_tick: 0.0001        # 既存設定を維持
   funding_close_buffer_secs: 120  # テスト用に 60 秒
-  spread_threshold_buy: 0.1
-  spread_threshold_sell: 0.1
+  spread_threshold_buy: 0.30
+  spread_threshold_sell: 0.05
   threshold_buy: 0.5
   threshold_sell: 0.3
 # SOL-PERP:

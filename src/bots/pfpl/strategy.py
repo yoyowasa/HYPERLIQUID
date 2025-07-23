@@ -184,6 +184,12 @@ class PFPLStrategy:
         self.spread_th_sell = Decimal(
             str(self.config.get("spread_threshold_sell", self.spread_th))
         )
+        self.th_buy = Decimal(
+            str(self.config.get("threshold_buy", self.config["threshold"]))
+        )
+        self.th_sell = Decimal(
+            str(self.config.get("threshold_sell", self.config["threshold"]))
+        )
 
         self.max_daily_orders = int(self.config.get("max_daily_orders", 500))
         self.max_drawdown_usd = Decimal(self.config.get("max_drawdown_usd", 100))
@@ -266,7 +272,9 @@ class PFPLStrategy:
 
             ctx = msg["data"]["ctx"]
             # フェア価格（マーク価格）
-            self.fair = Decimal(ctx["markPx"])
+            self.fair = (
+                Decimal(ctx.get("indexPx", ctx["markPx"])) + Decimal(ctx["oraclePx"])
+            ) / 2
             # MidPx があればそのまま、無ければ bbo で更新する
             if "midPx" in ctx:
                 self.mid = Decimal(ctx["midPx"])
@@ -357,20 +365,21 @@ class PFPLStrategy:
         self.logger.debug("[CHK-MIDFAIR] mid=%s fair=%s ok=True", self.mid, self.fair)
 
         # ── 4) 乖離計算 --------------------------------------------------
+        abs_diff = abs(self.fair - self.mid)
+        pct_diff = abs_diff / self.mid * 100
         th_abs = self.th_buy if side == "BUY" else self.th_sell
         th_pct = Decimal(str(self.config.get("threshold_pct", "0.0001")))
+        mode = self.config.get("mode", "either")  # abs / pct / both / either
         self.logger.debug("[DIFF] %.6f", th_abs)
 
-        th_abs = Decimal(str(self.config.get("threshold", "0.001")))
-        th_pct = Decimal(str(self.config.get("threshold_pct", "0.0001")))
-        mode = self.config.get("mode", "either")  # abs / pct / both / either
-
+        # 置き換えコード
         skip = (
-            (mode == "abs" and th_abs < th_abs)
-            or (mode == "pct" and th_pct < th_pct)
-            or (mode == "both" and (th_abs < th_abs or th_pct < th_pct))
-            or (mode == "either" and (th_abs < th_abs and th_pct < th_pct))
+            (mode == "abs" and abs_diff < th_abs)
+            or (mode == "pct" and pct_diff < th_pct)
+            or (mode == "both" and (abs_diff < th_abs or pct_diff < th_pct))
+            or (mode == "either" and (abs_diff < th_abs and pct_diff < th_pct))
         )
+
         self.logger.debug("[CHK-THRESH] abs=%s pct=%s skip=%s", th_abs, th_pct, skip)
         if skip:
             return
