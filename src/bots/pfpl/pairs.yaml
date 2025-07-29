@@ -1,30 +1,30 @@
-ETH-PERP:
-  mode: either
-  funding_buffer_sec: 90
-  cooldown_sec: 2
-  threshold: 0.15          # USD フェア値（fair）と現在のミッド（mid）との乖離幅が、発注をトリガーするかどうかの“本命スイッチ”
-  threshold_pct: 0.00010  # 0.015 %
-  spread_threshold: 0.5 #**現在のスプレッド（ask − bid）**が“開き過ぎ”ていないかをチェックし、※ 乖離が大きくてもスプレッドが広過ぎると発注コストが合わないため “見送り” にするガード
-  order_usd: 15
-  max_pos: 10000
-  max_equity_ratio: 0.35
-  min_equity_ratio: 0.0
-  max_daily_orders: 500
-  max_drawdown_usd: 150
-  funding_close_buffer_secs: 120  # テスト用に 60 秒
-  spread_threshold_buy: 0.30
-  spread_threshold_sell: 0.05
-  threshold_buy: 0.5
-  threshold_sell: 0.3
+# ETH-PERP:
+#   mode: either
+#   funding_buffer_sec: 90
+#   cooldown_sec: 2
+#   threshold: 0.15          # USD フェア値（fair）と現在のミッド（mid）との乖離幅が、発注をトリガーするかどうかの“本命スイッチ”
+#   threshold_pct: 0.00010  # 0.015 %
+#   spread_threshold: 0.5 #**現在のスプレッド（ask − bid）**が“開き過ぎ”ていないかをチェックし、※ 乖離が大きくてもスプレッドが広過ぎると発注コストが合わないため “見送り” にするガード
+#   order_usd: 15
+#   max_pos: 10000
+#   max_equity_ratio: 0.35
+#   min_equity_ratio: 0.0
+#   max_daily_orders: 500
+#   max_drawdown_usd: 150
+#   funding_close_buffer_secs: 120  # テスト用に 60 秒
+#   spread_threshold_buy: 0.30
+#   spread_threshold_sell: 0.05
+#   threshold_buy: 0.5
+#   threshold_sell: 0.3
 BTC-PERP:
   mode: either
   funding_buffer_sec: 90
-  cooldown_sec: 2
-  threshold: 10           # USD
-  threshold_pct: 0.00010
+  cooldown_sec: 1.5
+  threshold: 0.25           # USD
+  threshold_pct: 0.00020
   spread_threshold: 0.5
-  order_usd: 50
-  max_pos: 15000
+  order_usd: 15
+  max_pos: 600
   max_equity_ratio: 0.35
   min_equity_ratio: 0.0
   max_daily_orders: 500

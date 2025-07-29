@@ -1,48 +1,19 @@
-# src/bots/pfpl/__init__.py
-from .strategy import PFPLStrategy  # re-export
-import logging
-from pathlib import Path
-from logging.handlers import TimedRotatingFileHandler
+from .strategy import run_live
+from .strategy import PFPLStrategy
 
-__all__ = ["PFPLStrategy"]
-1
-# ─────────────────────────────────────────────────────────
-#   PFPL package logger -> logs/pfpl/{pfpl.log,error.log}
-# ─────────────────────────────────────────────────────────
+"""
+PFPL (Points-Funding Phase-Lock) コントラリアン ― v2 基本骨格
 
+非同期コンポーネント:
+1. DataCollector      : API / WS 取得
+2. FeatureStore       : 30 d リングバッファ
+3. ScoringEngine      : ζ パーセンタイル & PnL σ
+4. SignalGenerator    : エントリ / 決済判定
+5. PositionManager    : レバ・サイズ計算とポジ管理
+6. ExecutionGateway   : 発注 / キャンセル
+7. RiskGuards         : エクスポージャ監視 & Kill-Switch
+8. AnalysisLogger     : OPEN / CLOSE 行を CSV
 
-def _ensure_pfpl_logger() -> None:
-    logger = logging.getLogger("bots.pfpl")
-    if any(isinstance(h, TimedRotatingFileHandler) for h in logger.handlers):
-        return  # 既にセット済み
-
-    log_dir = Path(__file__).resolve().parents[3] / "logs" / "pfpl"
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    # ① ファイル出力ハンドラ
-    fh_info = TimedRotatingFileHandler(
-        log_dir / "pfpl.log", when="midnight", backupCount=14, encoding="utf-8"
-    )
-    fh_info.setLevel(logging.INFO)
-    fh_err = TimedRotatingFileHandler(
-        log_dir / "error.log", when="midnight", backupCount=30, encoding="utf-8"
-    )
-    fh_err.setLevel(logging.WARNING)
-
-    # ② コンソール出力ハンドラ
-    sh = logging.StreamHandler()
-    sh.setLevel(logging.INFO)
-
-    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    fh_info.setFormatter(fmt)
-    fh_err.setFormatter(fmt)
-    sh.setFormatter(fmt)
-
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(fh_info)
-    logger.addHandler(fh_err)
-    logger.addHandler(sh)
-    logger.propagate = False  # Runner には流さない
-
-
-_ensure_pfpl_logger()
+共通ユーティリティは `hl_core` を使用。
+"""
+__all__: list[str] = ["run_live", "PFPLStrategy"]

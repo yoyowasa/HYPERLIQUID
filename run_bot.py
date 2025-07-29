@@ -12,6 +12,7 @@ import sys
 from hl_core.api import WSClient
 from hl_core.utils.logger import setup_logger
 from hl_core.api import HTTPClient
+from bots.pfpl import run_live as run_pfpl
 
 logging.getLogger("websockets").setLevel(logging.INFO)
 logging.getLogger("urllib3").setLevel(logging.INFO)
@@ -114,6 +115,12 @@ async def main() -> None:
         ),
         reconnect=True,
     )
+    api_client = sdk  # ← REST 用
+    ws_client = ws  # ← WebSocket 用
+    tx_client = sdk  # ← 発注も REST を暫定利用
+    account_equity = 10_000  # ← TODO: API で取得
+
+    asyncio.create_task(run_pfpl(api_client, ws_client, tx_client, account_equity))
 
     strategies = []
     for sym in symbols:

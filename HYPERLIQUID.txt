@@ -31,3 +31,8 @@ git push
 
 Oh no! 💥 💔 💥これの時
 poetry run black .
+
+
+poetry run python scripts/metrics.py logs/pfpl
+
+poetry run python scripts/metrics.py logs/your_folder

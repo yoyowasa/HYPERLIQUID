@@ -59,7 +59,6 @@ class AnalysisLogger:
         ]
 
         with self.csv_path.open("a", newline="", encoding="utf-8") as f:
-            # --- クローズ判定 & PnL 追記 ---------------------------------
             tmp_lines = self.csv_path.read_text(encoding="utf-8").splitlines()
 
             # 直近行（末尾）をチェックして “反対売買ならクローズ” とみなす
@@ -69,7 +68,7 @@ class AnalysisLogger:
 
                 # 同じ銘柄で方向が反対ならペアリング成立
                 if last_symbol == symbol and last_side != side:
-                    open_px = float(cols[5])  # 5: price
+                    open_px = float(cols[5])
                     size_f = float(size)
 
                     if last_side == "BUY":  # BUY → SELL
@@ -77,12 +76,19 @@ class AnalysisLogger:
                     else:  # SELL → BUY
                         pnl = (open_px - price) * size_f
 
-                    cols[9] = f"{pnl:.4f}"  # 9: pnl_usd
-                    tmp_lines[-1] = ",".join(cols)
-                    self.csv_path.write_text(
-                        "\n".join(tmp_lines) + "\n", encoding="utf-8"
-                    )
-                    return  # クローズ完了したので終了
+                    # --- 新方式: CLOSE行として新規追記 ---
+                    close_row = cols.copy()
+                    close_row[0] = ts.isoformat(timespec="seconds") + "Z"
+                    close_row[1] = unix_ms
+                    close_row[3] = "CLOSE"
+                    close_row[4] = f"{size:.8f}"
+                    close_row[5] = f"{price:.2f}"
+                    close_row[6] = reason
+                    close_row[7] = notional_usd
+                    close_row[8] = trade_id
+                    close_row[9] = f"{pnl:.4f}"  # pnl_usd
+                    csv.writer(f).writerow(close_row)
+                    return
 
             # ここに来たらオープン行として追記
             csv.writer(f).writerow(row)

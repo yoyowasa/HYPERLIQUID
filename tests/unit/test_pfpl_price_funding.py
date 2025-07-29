@@ -1,6 +1,5 @@
 import asyncio
 import pytest
-
 from bots.pfpl.strategy import PFPLStrategy
 import os
 

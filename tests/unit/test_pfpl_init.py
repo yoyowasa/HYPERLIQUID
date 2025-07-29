@@ -1,6 +1,6 @@
 # tests/unit/test_pfpl_init.py
 from asyncio import Semaphore
-from bots.pfpl import PFPLStrategy
+from bots.pfpl.strategy import PFPLStrategy
 
 
 def test_init(monkeypatch):
