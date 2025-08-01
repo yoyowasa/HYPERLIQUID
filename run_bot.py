@@ -197,6 +197,11 @@ async def main() -> None:
                     }
                 )
             )
+        # 自アカウント fills
+        await ws._ws.send(
+            json.dumps({"method": "subscribe", "subscription": {"type": "userFills"}})
+        )
+
         # blocks → 高さ & タイムスタンプ
         await ws._ws.send(
             json.dumps(

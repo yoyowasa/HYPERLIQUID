@@ -6,6 +6,7 @@ from typing import Any, Dict
 from datetime import datetime
 from pathlib import Path
 import time
+import uuid
 
 
 # ------------------------------------------------------------------
@@ -34,6 +35,7 @@ class DataCollector:
             "pointsMultiplier": 1.0,
             "timestamp": 0.0,
             "midPrice": 0.0,
+            "blockTs": 0.0,  # 最新ブロックの timestamp (秒)
             "nextFundingTs": 0.0,  # 追加: 次回 Funding UNIX 時刻 (秒)
         }
         self._task: asyncio.Task | None = None
@@ -50,6 +52,8 @@ class DataCollector:
                 ticker = await self.api.get_ticker("BTC-PERP")  # ← mid 取得
                 mid_px = float(ticker["mid"])  # best-bid/ask の平均
                 funding = await self.api.get_projected_funding("BTC-PERP")
+                blk = await self.api.get_latest_block()
+                blk_ts = float(blk["timestamp"])
                 next_ts = float(funding.get("nextFundingTime", 0))  # ← 追加
 
                 self.cache.update(
@@ -59,6 +63,7 @@ class DataCollector:
                     pointsMultiplier=float(points or 1.0),
                     timestamp=asyncio.get_event_loop().time(),
                     midPrice=mid_px,
+                    blockTs=blk_ts,
                     nextFundingTs=next_ts,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -217,26 +222,47 @@ class ExecutionGateway:
         self.tx = tx_client  # hl_core.execution client
 
     async def place(self, side: str, size: float, price: float) -> dict[str, Any]:
-        return await self.tx.place_order(
-            symbol="BTC-PERP",
-            side=side,
-            size=size,
-            px=price,
-            clientOid=str(time.time_ns()),
+        cid = str(uuid.uuid4())
+        fut = self._futures[cid] = asyncio.get_event_loop().create_future()
+        await self.tx.place_order(
+            symbol="BTC-PERP", side=side, size=size, px=price, clientOid=cid
         )
+        return cid, fut
 
     async def close(self, side: str, size: float, price: float) -> dict[str, Any]:
-        return await self.tx.place_order(
-            symbol="BTC-PERP",
-            side=side,
-            size=size,
-            px=price,
-            clientOid=str(time.time_ns()),
+        cid = str(uuid.uuid4())
+        fut = self._futures[cid] = asyncio.get_event_loop().create_future()
+        await self.tx.place_order(
+            symbol="BTC-PERP", side=side, size=size, px=price, clientOid=cid
         )
+        return cid, fut
 
     async def cancel_all(self) -> None:
         """未約定注文を全キャンセル。"""
         await self.tx.cancel_all(symbol="BTC-PERP")
+
+    # ── private fills WS を登録・待機 ───────────────────
+    def attach_ws(self, ws_client) -> None:
+        """WSClient を渡すと内部で fills を listen し、future を解決する。"""
+        self.ws = ws_client
+        self._futures: dict[str, asyncio.Future] = {}
+
+        async def _on_msg(msg):
+            if msg.get("channel") == "userFills":
+                cid = msg["data"].get("clientOid")
+                fut = self._futures.pop(cid, None)
+                if fut and not fut.done():
+                    fut.set_result(float(msg["data"]["price"]))
+
+        # 既存の fanout を奪わないよう wrap する
+        orig = getattr(self.ws, "on_message", None)
+
+        async def _wrap(msg):
+            await _on_msg(msg)
+            if orig:
+                await orig(msg)
+
+        self.ws.on_message = _wrap
 
     async def wait_fill(self, order_id: str, timeout: float = 5.0) -> float:
         """order_id が fill されるまでポーリングし、fillPx を返す。
@@ -324,14 +350,33 @@ async def run_live(api_client, ws_client, tx_client) -> None:
     signaler = SignalGenerator(scorer, store)
     pos_mgr = PositionManager(account_equity)
     exec_gate = ExecutionGateway(tx_client)
+    exec_gate.attach_ws(ws_client)
     guards = RiskGuards()
     logger = AnalysisLogger()
+    # ── 日次 DD 用初期化 ───────────────────────────────
+    daily_start_equity = account_equity  # その日の起点 Equity
+    start_day_utc = datetime.utcnow().date()  # 今日の日付 (UTC)
 
     funding_paid = 0  # Funding 支払い回数
     last_next_ts = 0.0  # 直前に観測した nextFundingTs
 
     try:
         while True:
+            # 日付が変わったら起点 Equity をリセット
+            today_utc = datetime.utcnow().date()
+            if today_utc != start_day_utc:
+                daily_start_equity = float(
+                    (await api_client.get_account_overview()).get("equityUsd", 0)
+                )
+                start_day_utc = today_utc
+
+            # 現在の Equity を取得
+            current_equity = float(
+                (await api_client.get_account_overview()).get(
+                    "equityUsd", account_equity
+                )
+            )
+
             # ① 特徴量計算
             c = collector.cache
             oi_bias = math.log(c["oiLong"] / c["oiShort"]) if c["oiShort"] else 0.0
@@ -358,25 +403,21 @@ async def run_live(api_client, ws_client, tx_client) -> None:
             if signal == "ENTER":
                 funding_paid = 0  # 新規ポジションでリセット
                 side = "SELL" if fund_sign > 0 else "BUY"
-                notional = min(account_equity * 0.1, 5_000)  # 仮のサイズ上限
-                order = pos_mgr.enter(
-                    side, price=1.0, notional_usd=notional, zeta=zeta
-                )  # price は後続実装
+
                 price = collector.cache.get("midPrice") or 0.0
                 if price == 0.0:
                     await asyncio.sleep(1)
                     continue
+
+                notional = min(account_equity * 0.1, 5_000)  # 残高の10%か5k USD
                 order = pos_mgr.enter(
                     side, price=price, notional_usd=notional, zeta=zeta
                 )
-                await exec_gate.place(order["side"], order["size"])
-                order_id = (await exec_gate.place(order["side"], order["size"], price))[
-                    "order_id"
-                ]
-                fill_px = await exec_gate.wait_fill(order_id)
-                if fill_px:
-                    pos_mgr.state["avg_px"] = fill_px  # ← エントリー価格を上書き
-                logger.log_open(order["side"], order["size"], fill_px or price)
+
+                cid, fut = await exec_gate.place(order["side"], order["size"], price)
+                fill_px = await asyncio.wait_for(fut, timeout=5.0)
+                pos_mgr.state["avg_px"] = fill_px
+                logger.log_open(order["side"], order["size"], fill_px)
 
             elif signal == "EXIT":
                 if not pos_mgr.state:
@@ -385,19 +426,21 @@ async def run_live(api_client, ws_client, tx_client) -> None:
                 entry_size = pos_mgr.state["size"]
 
                 order = pos_mgr.exit()
-                order_id = (await exec_gate.close(order["side"], order["size"], price))[
-                    "order_id"
-                ]
-                fill_px = await exec_gate.wait_fill(order_id)
-                pnl_usd = (fill_px - entry_px) * entry_size if fill_px else 0.0
+                cid, fut = await exec_gate.close(order["side"], order["size"], price)
+                fill_px = await asyncio.wait_for(fut, timeout=5.0)
+                pnl_usd = (fill_px - entry_px) * entry_size
                 logger.log_close(pnl_usd=pnl_usd)
 
             # ④ リスクガード（簡易）
             try:
                 pos_usd = (pos_mgr.state["size"] * price) if pos_mgr.state else 0.0
                 equity_ratio = abs(pos_usd) / account_equity if account_equity else 0.0
-                daily_dd = 0.0  # TODO: 日次 DD 実装予定
-                block_delay = 0.0
+                daily_dd = max(0.0, daily_start_equity - current_equity)
+
+                block_delay = abs(
+                    time.time() - collector.cache.get("blockTs", time.time())
+                )
+
                 guards.run(
                     pos_usd=pos_usd,
                     equity_ratio=equity_ratio,
