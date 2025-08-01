@@ -1,0 +1,28 @@
+HYPERLIQUID/               ← 既存フォルダを丸ごと削除し再作成
+├─ .venv/                  ← 仮想環境 (推奨: Python 3.12 – 3.13)
+├─ pyproject.toml          ← poetry / pdm などで一元管理
+├─ README.md               ← 各 Bot の概要を 1 ページで
+├─ src/                    ← import ルートを 1 本化 (PYTHONPATH 不要)
+│  ├─ hl_core/             ← すべての Bot で **再利用** する共通基盤
+│  │  ├─ __init__.py
+│  │  ├─ api/             ← HTTP / WS ラッパ & 型
+│  │  ├─ utils/
+│  │  │   ├─ logger.py    ← 色付き + 日次ローテート (+ Discord) を一元化
+│  │  │   ├─ config.py    ← YAML / .env 読み込み・バリデート
+│  │  │   └─ backtest.py  ← 共通シミュレータ (後で BOT ごとに拡張)
+│  │  └─ infra/           ← DB・キャッシュ・監視など (必要になったら)
+│  └─ bots/               ← **Bot ごと** に完全分離
+│     ├─ pfpl/            ← ③ から着手（実装コスト最小）
+│     │   ├─ strategy.py
+│     │   ├─ config.yaml
+│     │   └─ __init__.py
+│     ├─ opdh/            ← ⑥
+│     ├─ vrlg/            ← ①
+│     ├─ beir/            ← ②
+│     ├─ mes/             ← ④
+│     └─ cwfi/            ← ⑤
+├─ tests/
+│  ├─ unit/               ← hl_core の関数・クラス
+│  ├─ integration/        ← bots/xxx/strategy.py 単体
+│  └─ e2e/                ← live key があるときだけ動かす
+└─ .github/workflows/      ←  lint・pytest・ruff・mypy・black

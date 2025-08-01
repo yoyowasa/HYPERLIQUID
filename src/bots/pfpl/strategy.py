@@ -5,6 +5,7 @@ from collections import deque
 from typing import Any, Dict
 from datetime import datetime
 from pathlib import Path
+import time
 
 
 # ------------------------------------------------------------------
@@ -32,6 +33,8 @@ class DataCollector:
             "oiShort": 0.0,
             "pointsMultiplier": 1.0,
             "timestamp": 0.0,
+            "midPrice": 0.0,
+            "nextFundingTs": 0.0,  # 追加: 次回 Funding UNIX 時刻 (秒)
         }
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
@@ -44,6 +47,10 @@ class DataCollector:
                 funding = await self.api.get_projected_funding("BTC-PERP")
                 oi_data = await self.api.get_open_interest("BTC-PERP")
                 points = await self.api.get_points_multiplier()
+                ticker = await self.api.get_ticker("BTC-PERP")  # ← mid 取得
+                mid_px = float(ticker["mid"])  # best-bid/ask の平均
+                funding = await self.api.get_projected_funding("BTC-PERP")
+                next_ts = float(funding.get("nextFundingTime", 0))  # ← 追加
 
                 self.cache.update(
                     projectedFunding=float(funding["projectedFunding"]),
@@ -51,6 +58,8 @@ class DataCollector:
                     oiShort=float(oi_data["oiShort"]),
                     pointsMultiplier=float(points or 1.0),
                     timestamp=asyncio.get_event_loop().time(),
+                    midPrice=mid_px,
+                    nextFundingTs=next_ts,
                 )
             except Exception as exc:  # noqa: BLE001
                 # 失敗してもループは継続
@@ -207,17 +216,39 @@ class ExecutionGateway:
     def __init__(self, tx_client: Any) -> None:
         self.tx = tx_client  # hl_core.execution client
 
-    async def place(self, side: str, size: float) -> dict[str, Any]:
-        """成行で発注し、サーバ応答を返す。"""
-        return await self.tx.place_order(symbol="BTC-PERP", side=side, size=size)
+    async def place(self, side: str, size: float, price: float) -> dict[str, Any]:
+        return await self.tx.place_order(
+            symbol="BTC-PERP",
+            side=side,
+            size=size,
+            px=price,
+            clientOid=str(time.time_ns()),
+        )
 
-    async def close(self, side: str, size: float) -> dict[str, Any]:
-        """成行でクローズ（反対売買）。"""
-        return await self.tx.place_order(symbol="BTC-PERP", side=side, size=size)
+    async def close(self, side: str, size: float, price: float) -> dict[str, Any]:
+        return await self.tx.place_order(
+            symbol="BTC-PERP",
+            side=side,
+            size=size,
+            px=price,
+            clientOid=str(time.time_ns()),
+        )
 
     async def cancel_all(self) -> None:
         """未約定注文を全キャンセル。"""
         await self.tx.cancel_all(symbol="BTC-PERP")
+
+    async def wait_fill(self, order_id: str, timeout: float = 5.0) -> float:
+        """order_id が fill されるまでポーリングし、fillPx を返す。
+        timeout 秒を超えたら 0.0 を返して呼び元で判断。
+        """
+        t0 = asyncio.get_event_loop().time()
+        while asyncio.get_event_loop().time() - t0 < timeout:
+            status = await self.tx.get_order_status(order_id=order_id)
+            if status.get("status") == "filled":
+                return float(status["avgPx"])
+            await asyncio.sleep(0.2)
+        return 0.0
 
 
 # ------------------------------------------------------------------
@@ -278,10 +309,14 @@ class AnalysisLogger:
 
 
 # エントリポイントは後続ステップで実装する
-async def run_live(api_client, ws_client, tx_client, account_equity: float) -> None:
+async def run_live(api_client, ws_client, tx_client) -> None:
     """PFPL v2 フルフロー非同期ループ（簡易版）"""
     # ── 初期化 ─────────────────────────────────────
     collector = DataCollector(api_client, ws_client)
+    # --- 口座残高 USD を取得 ------------------------------------
+    account_equity = float(
+        (await api_client.get_account_overview()).get("equityUsd", 0)
+    )
     await collector.start()
 
     store = FeatureStore()
@@ -292,7 +327,8 @@ async def run_live(api_client, ws_client, tx_client, account_equity: float) -> N
     guards = RiskGuards()
     logger = AnalysisLogger()
 
-    funding_paid = 0  # Funding 支払い回数カウンタ
+    funding_paid = 0  # Funding 支払い回数
+    last_next_ts = 0.0  # 直前に観測した nextFundingTs
 
     try:
         while True:
@@ -306,38 +342,71 @@ async def run_live(api_client, ws_client, tx_client, account_equity: float) -> N
             )
             zeta = abs(oi_bias) * fund_sign * c["pointsMultiplier"]
 
+            # Funding 支払い検知
+            next_ts = collector.cache.get("nextFundingTs", 0.0)
+            if pos_mgr.state and next_ts and next_ts != last_next_ts:
+                funding_paid += 1
+                last_next_ts = next_ts
+
             # ② ストア更新 & スコア取得
             store.update(zeta)
-            signal = signaler.evaluate(
-                zeta, funding_paid, oi_bias, pnl=0.0
-            )  # PnL は後続実装
+            signal = signaler.evaluate(zeta, funding_paid, oi_bias, pnl=0.0)
+
+            # PnL は後続実装
 
             # ③ シグナル処理
             if signal == "ENTER":
+                funding_paid = 0  # 新規ポジションでリセット
                 side = "SELL" if fund_sign > 0 else "BUY"
                 notional = min(account_equity * 0.1, 5_000)  # 仮のサイズ上限
                 order = pos_mgr.enter(
                     side, price=1.0, notional_usd=notional, zeta=zeta
                 )  # price は後続実装
+                price = collector.cache.get("midPrice") or 0.0
+                if price == 0.0:
+                    await asyncio.sleep(1)
+                    continue
+                order = pos_mgr.enter(
+                    side, price=price, notional_usd=notional, zeta=zeta
+                )
                 await exec_gate.place(order["side"], order["size"])
-                logger.log_open(order["side"], order["size"], 1.0)
-                funding_paid = 0
+                order_id = (await exec_gate.place(order["side"], order["size"], price))[
+                    "order_id"
+                ]
+                fill_px = await exec_gate.wait_fill(order_id)
+                if fill_px:
+                    pos_mgr.state["avg_px"] = fill_px  # ← エントリー価格を上書き
+                logger.log_open(order["side"], order["size"], fill_px or price)
 
             elif signal == "EXIT":
+                if not pos_mgr.state:
+                    continue
+                entry_px = pos_mgr.state["avg_px"]
+                entry_size = pos_mgr.state["size"]
+
                 order = pos_mgr.exit()
-                if order:
-                    await exec_gate.close(order["side"], order["size"])
-                    logger.log_close(pnl_usd=0.0)
+                order_id = (await exec_gate.close(order["side"], order["size"], price))[
+                    "order_id"
+                ]
+                fill_px = await exec_gate.wait_fill(order_id)
+                pnl_usd = (fill_px - entry_px) * entry_size if fill_px else 0.0
+                logger.log_close(pnl_usd=pnl_usd)
 
             # ④ リスクガード（簡易）
             try:
-                guards.run(pos_usd=0.0, equity_ratio=0.0, daily_dd=0.0, block_delay=0.0)
+                pos_usd = (pos_mgr.state["size"] * price) if pos_mgr.state else 0.0
+                equity_ratio = abs(pos_usd) / account_equity if account_equity else 0.0
+                daily_dd = 0.0  # TODO: 日次 DD 実装予定
+                block_delay = 0.0
+                guards.run(
+                    pos_usd=pos_usd,
+                    equity_ratio=equity_ratio,
+                    daily_dd=daily_dd,
+                    block_delay=block_delay,
+                )
             except RuntimeError as e:
                 print(e)
                 break
-
-            funding_paid += 1
-            await asyncio.sleep(1)
 
     finally:
         await collector.stop()
@@ -360,6 +429,9 @@ class PFPLStrategy:
         self._last_price = 0.0  # 最新ミッド価格
         self._last_funding = 0.0  # 次回 Funding 率
         self._last_zeta = 0.0
+        self.next_funding_ts = 0.0  # 次回 Funding 時刻 (s)
+        self.funding_paid = 0  # Funding 支払済み回数
+        self._last_block_ts = 0.0  # 直近 Block タイムスタンプ (s)
         self._in_position = False  # ポジション有無フラグ
 
         self._store = FeatureStore()  # ζ 履歴バッファ
@@ -380,10 +452,14 @@ class PFPLStrategy:
         elif ch in ("fundingInfo", "fundingInfoTestnet"):
             info = msg["data"].get("BTC-PERP")
             if info:
+                new_ts = float(info.get("nextFundingTime", 0))
+                # 次回 Funding 時刻が更新されたら「支払い済み」とみなす
+                if self.next_funding_ts and new_ts != self.next_funding_ts:
+                    self.funding_paid += 1
+                self.next_funding_ts = new_ts
                 self._last_funding = float(
                     info.get("nextFundingRate") or info.get("projectedFunding") or 0.0
                 )
-                # Funding 情報は ζ 計算に使うので即時アップデート
                 self._recompute_zeta()
 
         # ── OI 情報 (例: custom feed 'openInterest') ───────────
@@ -392,6 +468,11 @@ class PFPLStrategy:
             self._oi_long = float(data.get("oiLong", 0))
             self._oi_short = float(data.get("oiShort", 0))
             self._recompute_zeta()
+        # ── Block 情報 ─
+        elif ch == "blocks":
+            blk_ts = float(msg["data"]["timestamp"])
+            self.block_delay = abs(time.time() - blk_ts)
+            self._last_block_ts = blk_ts
 
     # ────────────────────────────────────────────────────────
     # 内部ユーティリティ
@@ -439,6 +520,14 @@ class PFPLStrategy:
     def last_zeta(self) -> float:
         """最新 ζ を返す。"""
         return self._last_zeta
+
+    @property
+    def funding_paid_count(self) -> int:
+        return self.funding_paid
+
+    @property
+    def latest_block_delay(self) -> float:
+        return getattr(self, "block_delay", 0.0)
 
     @property
     def zeta_percentile(self) -> float:

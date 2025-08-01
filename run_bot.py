@@ -118,9 +118,8 @@ async def main() -> None:
     api_client = sdk  # ← REST 用
     ws_client = ws  # ← WebSocket 用
     tx_client = sdk  # ← 発注も REST を暫定利用
-    account_equity = 10_000  # ← TODO: API で取得
 
-    asyncio.create_task(run_pfpl(api_client, ws_client, tx_client, account_equity))
+    asyncio.create_task(run_pfpl(api_client, ws_client, tx_client))
 
     strategies = []
     for sym in symbols:
@@ -198,7 +197,25 @@ async def main() -> None:
                     }
                 )
             )
+        # blocks → 高さ & タイムスタンプ
+        await ws._ws.send(
+            json.dumps(
+                {
+                    "method": "subscribe",
+                    "subscription": {"type": "blocks"},
+                }
+            )
+        )
 
+        # openInterest → oiLong / oiShort
+        await ws._ws.send(
+            json.dumps(
+                {
+                    "method": "subscribe",
+                    "subscription": {"type": "openInterest", "coin": coin_base},
+                }
+            )
+        )
     # ② ベスト Bid/Ask（ミッド計算用）
     await ws._ws.send(
         json.dumps(
