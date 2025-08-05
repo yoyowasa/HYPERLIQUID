@@ -8,9 +8,12 @@ funding_guard:
   reenter_sec: 120         # Funding 後 2 分待って再開
 
 min_equity_ratio: 0.3      # 証拠金率 30 %
-order_usd: 10              # Fallback 発注ロット
+order_usd: 50              # Fallback 発注ロット
 max_position_usd: 100      # Fallback 建玉上限
 cooldown_sec: 2
 heartbeat_sec: 30
 log_level: INFO
 testnet: false
+
+
+# python run_bot.py --strategy pfpl --order_usd 50

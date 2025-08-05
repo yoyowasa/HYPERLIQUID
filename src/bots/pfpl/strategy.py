@@ -7,6 +7,11 @@ from datetime import datetime
 from pathlib import Path
 import time
 import uuid
+from hl_core.utils.retry import retry_async
+from os import getenv
+import logging
+
+log = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------
@@ -45,31 +50,34 @@ class DataCollector:
         """1 s ごとに REST / WS からデータを取得し cache を更新する。"""
         while not self._stop.is_set():
             try:
-                # --- REST 呼び出し例（擬似） ---
-                funding = await self.api.get_projected_funding("BTC-PERP")
-                oi_data = await self.api.get_open_interest("BTC-PERP")
-                points = await self.api.get_points_multiplier()
-                ticker = await self.api.get_ticker("BTC-PERP")  # ← mid 取得
-                mid_px = float(ticker["mid"])  # best-bid/ask の平均
-                funding = await self.api.get_projected_funding("BTC-PERP")
-                blk = await self.api.get_latest_block()
-                blk_ts = float(blk["timestamp"])
-                next_ts = float(funding.get("nextFundingTime", 0))  # ← 追加
+                # --- REST（Mainnet）--------------------------------
+                funding = await self._safe_call(
+                    self.api.get_projected_funding, "BTC-PERP"
+                )
+                oi_data = await self._safe_call(self.api.get_open_interest, "BTC-PERP")
+                ticker = await self._safe_call(self.api.get_ticker, "BTC-PERP")
+                oi_long = float(oi_data["long"])
+                oi_short = float(oi_data["short"])
+                mid_px = float(ticker["mid"])
+                next_ts = float(funding["nextFundingTime"])
 
                 self.cache.update(
                     projectedFunding=float(funding["projectedFunding"]),
-                    oiLong=float(oi_data["oiLong"]),
-                    oiShort=float(oi_data["oiShort"]),
-                    pointsMultiplier=float(points or 1.0),
+                    oiLong=oi_long,
+                    oiShort=oi_short,
                     timestamp=asyncio.get_event_loop().time(),
-                    midPrice=mid_px,
-                    blockTs=blk_ts,
                     nextFundingTs=next_ts,
+                    midPrice=mid_px,
                 )
+
             except Exception as exc:  # noqa: BLE001
                 # 失敗してもループは継続
-                print(f"[DataCollector] warning: {exc}")
+                log.warning("[DataCollector] warning: %s", exc)
             await asyncio.sleep(1)
+
+        @retry_async(max_attempts=4, base_delay=0.3)
+        async def _safe_call(self, func, *args, **kwargs):
+            return await func(*args, **kwargs)
 
     # --------------------------------------------------------------
     # パブリック API
@@ -84,6 +92,7 @@ class DataCollector:
         self._stop.set()
         if self._task:
             await self._task
+            self._task = None
 
 
 # ------------------------------------------------------------------
@@ -220,6 +229,7 @@ class ExecutionGateway:
 
     def __init__(self, tx_client: Any) -> None:
         self.tx = tx_client  # hl_core.execution client
+        self._futures: dict[str, asyncio.Future] = {}
 
     async def place(self, side: str, size: float, price: float) -> dict[str, Any]:
         cid = str(uuid.uuid4())
@@ -285,9 +295,9 @@ class RiskGuards:
 
     def __init__(
         self,
-        max_pos_usd: float = 10_000.0,
-        max_equity_ratio: float = 0.35,
-        max_daily_dd: float = 300.0,
+        max_pos_usd: float = 300.0,
+        max_equity_ratio: float = 0.20,
+        max_daily_dd: float = 0.03,
         max_block_delay: float = 6.0,
     ) -> None:
         self.max_pos_usd = max_pos_usd
@@ -317,8 +327,12 @@ class RiskGuards:
 class AnalysisLogger:
     """PFPL 専用シンプル CSV ロガー。"""
 
-    def __init__(self, path: str = "pfpl_trades.csv") -> None:
+    def __init__(self, path: str = "logs/pfpl/pfpl_trades.csv") -> None:
+        """PFPL 専用 CSV を logs/pfpl/ に必ず残す。"""
         self.path = path
+        # logs/ と logs/pfpl/ を自動生成
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        # ファイルが無ければヘッダーを書いて作成
         if not Path(self.path).exists():
             with open(self.path, "w", encoding="utf-8") as f:
                 f.write("ts_iso,side,size,price,pnl_usd\n")
@@ -340,9 +354,10 @@ async def run_live(api_client, ws_client, tx_client) -> None:
     # ── 初期化 ─────────────────────────────────────
     collector = DataCollector(api_client, ws_client)
     # --- 口座残高 USD を取得 ------------------------------------
-    account_equity = float(
-        (await api_client.get_account_overview()).get("equityUsd", 0)
-    )
+
+    account_equity = await api_client.get_equity(getenv("HL_ACCOUNT_ADDR"), perp=True)
+    log.info("Equity loaded = %.2f USDC", account_equity)
+
     await collector.start()
 
     store = FeatureStore()
@@ -353,6 +368,8 @@ async def run_live(api_client, ws_client, tx_client) -> None:
     exec_gate.attach_ws(ws_client)
     guards = RiskGuards()
     logger = AnalysisLogger()
+    log.info("Logger init OK → %s", logger.path)
+
     # ── 日次 DD 用初期化 ───────────────────────────────
     daily_start_equity = account_equity  # その日の起点 Equity
     start_day_utc = datetime.utcnow().date()  # 今日の日付 (UTC)
@@ -365,16 +382,15 @@ async def run_live(api_client, ws_client, tx_client) -> None:
             # 日付が変わったら起点 Equity をリセット
             today_utc = datetime.utcnow().date()
             if today_utc != start_day_utc:
-                daily_start_equity = float(
-                    (await api_client.get_account_overview()).get("equityUsd", 0)
+                daily_start_equity = await api_client.get_equity(
+                    getenv("HL_ACCOUNT_ADDR"), perp=True
                 )
+
                 start_day_utc = today_utc
 
             # 現在の Equity を取得
-            current_equity = float(
-                (await api_client.get_account_overview()).get(
-                    "equityUsd", account_equity
-                )
+            current_equity = await api_client.get_equity(
+                getenv("HL_ACCOUNT_ADDR"), perp=True
             )
 
             # ① 特徴量計算
@@ -395,6 +411,11 @@ async def run_live(api_client, ws_client, tx_client) -> None:
 
             # ② ストア更新 & スコア取得
             store.update(zeta)
+            # ζ と百分位をデバッグ出力
+            log.debug(
+                "ζ = %.4f, pctl = %.1f", zeta, signaler.scorer.score(zeta)["percentile"]
+            )
+
             signal = signaler.evaluate(zeta, funding_paid, oi_bias, pnl=0.0)
 
             # PnL は後続実装
@@ -404,9 +425,11 @@ async def run_live(api_client, ws_client, tx_client) -> None:
                 funding_paid = 0  # 新規ポジションでリセット
                 side = "SELL" if fund_sign > 0 else "BUY"
 
+                # --- 最新 midPrice を取得（0.0なら 0.5s 待機） ---
                 price = collector.cache.get("midPrice") or 0.0
-                if price == 0.0:
-                    await asyncio.sleep(1)
+                log.debug("midPrice debug: %s", price)
+                if price == 0.0:  # mid がまだ無いなら 0.5 秒待機
+                    await asyncio.sleep(0.5)
                     continue
 
                 notional = min(account_equity * 0.1, 5_000)  # 残高の10%か5k USD
@@ -448,8 +471,22 @@ async def run_live(api_client, ws_client, tx_client) -> None:
                     block_delay=block_delay,
                 )
             except RuntimeError as e:
-                print(e)
-                break
+                log.exception(e)  # ログに理由を出力
+
+                # ── Kill-Switch 処理 ─────────────────────────
+                await exec_gate.cancel_all()  # ① 注文全キャンセル
+
+                if pos_mgr.state:  # ② 建玉があれば反対売買
+                    side_close = "SELL" if pos_mgr.state["side"] == "BUY" else "BUY"
+                    size_close = pos_mgr.state["size"]
+                    _cid, fut = await exec_gate.close(side_close, size_close, price)
+                    await asyncio.wait_for(fut, timeout=5.0)
+
+                # ③ WS / REST を閉じる
+                await ws_client.close()
+                await api_client.close()
+
+                break  # ④ ループ終了
 
     finally:
         await collector.stop()
@@ -487,8 +524,16 @@ class PFPLStrategy:
         # ── Best-Bid/Ask → mid 価格 ─────────────────────────────
         if ch == "bbo":
             data = msg["data"]
-            bid = float(data["bidPx"])
-            ask = float(data["askPx"])
+
+            # Hyperliquid v2 では bbo が配列形式 ([bestBid, bestAsk])
+            arr = data.get("bbo")
+            if arr and isinstance(arr, list) and len(arr) >= 2:
+                bid = float(arr[0]["px"])
+                ask = float(arr[1]["px"])
+            else:  # 旧フォーマット {bidPx, askPx} にも対応
+                bid = float(data["bidPx"])
+                ask = float(data["askPx"])
+
             self._last_price = (bid + ask) / 2
 
         # ── Funding 情報 ─────────────────────────────────────
@@ -511,6 +556,15 @@ class PFPLStrategy:
             self._oi_long = float(data.get("oiLong", 0))
             self._oi_short = float(data.get("oiShort", 0))
             self._recompute_zeta()
+        # ── Testnet 用: activeAssetCtx 1 本で OI / Funding / midPx が取れる ─
+        elif ch == "activeAssetCtx":
+            ctx = msg["data"]["ctx"]
+            self._last_funding = float(ctx.get("funding", 0.0))
+            self._oi_long = float(ctx["openInterest"])
+
+            self._last_price = float(ctx.get("midPx", 0.0))
+            self._recompute_zeta()
+
         # ── Block 情報 ─
         elif ch == "blocks":
             blk_ts = float(msg["data"]["timestamp"])

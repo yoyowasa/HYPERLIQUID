@@ -2,17 +2,18 @@
 import argparse
 from typing import Any
 import asyncio
-import logging
 from importlib import import_module
 from os import getenv
 from pathlib import Path
 import json
 from dotenv import load_dotenv
 import sys
+import yaml
 from hl_core.api import WSClient
 from hl_core.utils.logger import setup_logger
 from hl_core.api import HTTPClient
 from bots.pfpl import run_live as run_pfpl
+import logging
 
 logging.getLogger("websockets").setLevel(logging.INFO)
 logging.getLogger("urllib3").setLevel(logging.INFO)
@@ -25,6 +26,7 @@ setup_logger(
     "runner",
     discord_webhook=getenv("DISCORD_WEBHOOK"),  # 追記
 )
+
 logger = logging.getLogger(__name__)
 
 MAX_ORDER_PER_SEC = 3
@@ -34,7 +36,6 @@ SEMA = asyncio.Semaphore(3)  # 発注 3 req/s 共有
 def load_pair_yaml(path: str | None) -> dict[str, dict]:
     if not path:
         return {}
-    import yaml
 
     with Path(path).open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
@@ -84,6 +85,7 @@ async def main() -> None:
     root.addHandler(console)  # ③ root に付ける
 
     # bots.pfpl 系も同じレベルを強制（念のため）
+
     logging.getLogger("bots.pfpl").setLevel(args.log_level)
 
     pair_params = load_pair_yaml(args.pair_cfg)
@@ -100,11 +102,12 @@ async def main() -> None:
     strat_mod = import_module(f"bots.{args.bot}.strategy")
     Strategy = getattr(strat_mod, "PFPLStrategy")
     # --- SDK(HTTP) クライアントを生成 ---------------------------------
-
-    sdk = HTTPClient(
-        getenv("HL_ACCOUNT_ADDR"),
-        getenv("HL_API_SECRET"),
+    base_url = (
+        "https://api.hyperliquid-testnet.xyz"
+        if args.testnet
+        else "https://api.hyperliquid.xyz"
     )
+    sdk = HTTPClient(base_url, api_key=getenv("HL_API_SECRET"))
 
     # WS 生成（1 本）
     ws = WSClient(
@@ -151,7 +154,7 @@ async def main() -> None:
 
     # WS → 全 Strategy へ配信
     async def fanout(msg: dict):
-        print("WS-RAW:", msg)
+        logger.debug("WS-RAW: %s", msg)
         for st in strategies:
             st.on_message(msg)
 
@@ -187,32 +190,12 @@ async def main() -> None:
             )
         )
 
-        # oracle / index（乖離チェック）
-        for feed in ("oracle", "index"):
-            await ws._ws.send(
-                json.dumps(
-                    {
-                        "method": "subscribe",
-                        "subscription": {"type": feed, "coin": coin_base},
-                    }
-                )
-            )
-        # 自アカウント fills
-        await ws._ws.send(
-            json.dumps({"method": "subscribe", "subscription": {"type": "userFills"}})
-        )
-
         # blocks → 高さ & タイムスタンプ
         await ws._ws.send(
-            json.dumps(
-                {
-                    "method": "subscribe",
-                    "subscription": {"type": "blocks"},
-                }
-            )
+            json.dumps({"method": "subscribe", "subscription": {"type": "blocks"}})
         )
 
-        # openInterest → oiLong / oiShort
+        # openInterest → OI Long / Short
         await ws._ws.send(
             json.dumps(
                 {
@@ -221,16 +204,27 @@ async def main() -> None:
                 }
             )
         )
-    # ② ベスト Bid/Ask（ミッド計算用）
-    await ws._ws.send(
-        json.dumps(
-            {"method": "subscribe", "subscription": {"type": "bbo", "coin": coin_base}}
+
+        # Funding
+        funding_feed = "fundingInfoTestnet" if args.testnet else "fundingInfo"
+        await ws._ws.send(
+            json.dumps(
+                {
+                    "method": "subscribe",
+                    "subscription": {"type": funding_feed, "coin": coin_base},
+                }
+            )
         )
-    )
-    print(
-        "SEND-DEBUG:",
+
+    # （ループ後の重複 bbo ブロックは削除）
+
+    logger.debug(
+        "SEND-DEBUG: %s",
         json.dumps(
-            {"method": "subscribe", "subscription": {"type": "bbo", "coin": "ETH"}}
+            {
+                "method": "subscribe",
+                "subscription": {"type": "bbo", "coin": "coin_base"},
+            }
         ),
     )
 
@@ -238,18 +232,18 @@ async def main() -> None:
 
     # -----------------------------------------------------------------
 
-    # ③ Funding
-    funding_feed = "fundingInfoTestnet" if args.testnet else "fundingInfo"
-    for sym in symbols:
-        coin = sym.split("-")[0]  # "ETH" or "BTC"
-        await ws._ws.send(
-            json.dumps(
-                {
-                    "method": "subscribe",
-                    "subscription": {"type": funding_feed, "coin": coin},
-                }
-            )
-        )
+    # # ③ Funding
+    # funding_feed = "fundingInfoTestnet" if args.testnet else "fundingInfo"
+    # for sym in symbols:
+    #     coin = sym.split("-")[0]  # "ETH" or "BTC"
+    #     await ws._ws.send(
+    #         json.dumps(
+    #             {
+    #                 "method": "subscribe",
+    #                 "subscription": {"type": funding_feed, "coin": coin},
+    #             }
+    #         )
+    #     )
     # ------------------------------------------------------------------
 
     await asyncio.Event().wait()  # 常駐

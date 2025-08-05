@@ -19,6 +19,8 @@ class HTTPClient:
     """
 
     def __init__(self, base_url: str, api_key: Optional[str] = None) -> None:
+        if not base_url.startswith(("http://", "https://")):  # プロトコル自動補完
+            base_url = f"https://{base_url.lstrip('/')}"
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self._cli = httpx.AsyncClient(base_url=self.base_url)
@@ -42,6 +44,58 @@ class HTTPClient:
 
     async def close(self) -> None:
         await self._cli.aclose()
+
+    async def get_account_overview(self) -> dict[str, Any]:
+        """GET /account/overview ― 口座概要（equityUsd など）を取得する関数"""
+        return await self.get("account/overview")
+
+    async def get_equity(self, addr: str, perp: bool = True) -> float:
+        """
+        Testnet / Mainnet 共通で口座 Equity(USDC) を返すユーティリティ。
+        perp=True なら Perpetual、False なら Spot の残高合計を返す。
+        """
+        req_type = "clearinghouseState" if perp else "spotClearinghouseState"
+        payload = {"type": req_type, "user": addr}
+
+        resp = await self.post("info", data=payload)
+        # ---- Perp: marginSummary.accountValue に Equity が入っている ----
+        if perp:
+            return float(resp["marginSummary"]["accountValue"])
+
+        # ---- Spot: 各トークン残高を USDC換算して合計 ----
+        # ここでは USDC だけを想定。複数トークンの場合は価格取得が必要。
+        return sum(
+            float(bal["total"])
+            for bal in resp["balances"]
+            if bal["coin"].upper() == "USDC"
+        )
+
+    async def get_projected_funding(self, symbol: str) -> dict[str, Any]:
+        """
+        Testnet は /fundingInfo が無いので /info activeAssetCtx を流用。
+        戻り値: {"projectedFunding": float, "nextFundingTime": int}
+        """
+        coin = symbol.split("-")[0]  # "BTC"
+        resp = await self.post(
+            "info",
+            data={"type": "activeAssetCtx", "coin": coin},
+        )
+        funding = float(resp["ctx"]["funding"])
+        # Testnet は次回時刻が無いので 0 を返す
+        return {"projectedFunding": funding, "nextFundingTime": 0}
+
+    async def get_ticker(self, symbol: str) -> dict[str, Any]:
+        """
+        Testnet では midPx を /info activeAssetCtx から取る。
+        戻り値: {"mid": float}
+        """
+        coin = symbol.split("-")[0]
+        resp = await self.post(
+            "info",
+            data={"type": "activeAssetCtx", "coin": coin},
+        )
+        mid_px = float(resp["ctx"]["midPx"])
+        return {"mid": mid_px}
 
 
 class WSClient:
