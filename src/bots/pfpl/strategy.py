@@ -202,7 +202,6 @@ class PFPLStrategy:
             return
         now = time.time()
         # 0) --- Funding 直前クローズ判定 -----------------------------------
-        # 0) --- Funding 直前クローズ判定 -----------------------------------
         if self._should_close_before_funding(now):
             asyncio.create_task(self._close_all_positions())
             return  # 今回の evaluate はここで終了
