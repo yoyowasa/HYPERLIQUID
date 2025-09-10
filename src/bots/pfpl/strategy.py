@@ -115,10 +115,8 @@ class PFPLStrategy:
         self.last_ts: float = 0.0
         self.pos_usd = Decimal("0")
         # ★ Funding Guard 用
-        self.next_funding_ts: float | None = None  # 次回資金調達の UNIX 秒
-        self._funding_pause: bool = False  # True なら売買停止
-        self.next_funding_ts: int | None = None  # 直近 funding 予定 UNIX 秒
-        self._funding_pause: bool = False  # True: 売買停止中
+        self.next_funding_ts: float | None = None  # 直近 funding 予定の UNIX 秒
+        self._funding_pause: bool = False  # True なら売買停止中
         # 非同期でポジション初期化
         try:
             asyncio.get_running_loop().create_task(self._refresh_position())
@@ -175,7 +173,7 @@ class PFPLStrategy:
             self.ora = Decimal(msg["data"]["prices"]["ETH"])
         elif msg.get("channel") == "fundingInfo":
             # 取引所のレスポンス例: {"channel":"fundingInfo","data":{"nextFundingTime":1720597200}}
-            self.next_funding_ts = int(msg["data"]["nextFundingTime"])
+            self.next_funding_ts = float(msg["data"]["nextFundingTime"])
 
         # fair が作れれば評価へ
         if self.mid and self.idx and self.ora:
