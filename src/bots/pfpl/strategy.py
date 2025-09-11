@@ -165,27 +165,28 @@ class PFPLStrategy:
     def on_message(self, msg: dict[str, Any]) -> None:
         ch = msg.get("channel")
 
-        if msg.get("channel") == "allMids":  # 板 mid 群
+        if ch == "allMids":  # 板 mid 群
             self.mid = Decimal(msg["data"]["mids"]["@1"])
-        elif msg.get("channel") == "indexPrices":  # インデックス価格
+        elif ch == "indexPrices":  # インデックス価格
             self.idx = Decimal(msg["data"]["prices"]["ETH"])
-        elif msg.get("channel") == "oraclePrices":  # オラクル価格
+        elif ch == "oraclePrices":  # オラクル価格
             self.ora = Decimal(msg["data"]["prices"]["ETH"])
         elif msg.get("channel") == "fundingInfo":
-            # 取引所のレスポンス例: {"channel":"fundingInfo","data":{"nextFundingTime":1720597200}}
-            self.next_funding_ts = float(msg["data"]["nextFundingTime"])
+            data = msg.get("data", {})
+            next_ts = data.get("nextFundingTime")
+            if next_ts is None:
+                info = data.get(self.symbol)
+                if info:
+                    next_ts = info.get("nextFundingTime")
+            if next_ts is not None:
+                self.next_funding_ts = float(next_ts)
+                logger.debug("fundingInfo: next @ %s", self.next_funding_ts)
+
 
         # fair が作れれば評価へ
         if self.mid and self.idx and self.ora:
             self.fair = (self.idx + self.ora) / 2  # ★ 平均で公正価格
             self.evaluate()
-        # ★ fundingInfo 追加 ------------------------------
-        if ch == "fundingInfo":
-            # 例: {"channel":"fundingInfo","data":{"ETH-PERP":{"nextFundingTime":1720528800}}}
-            info = msg["data"].get(self.symbol)
-            if info:
-                self.next_funding_ts = float(info["nextFundingTime"])
-                logger.debug("fundingInfo: next @ %s", self.next_funding_ts)
 
     # ---------------------------------------------------------------- evaluate
 
@@ -199,7 +200,6 @@ class PFPLStrategy:
         if self.mid is None or self.fair is None:
             return
         now = time.time()
-        # 0) --- Funding 直前クローズ判定 -----------------------------------
         # 0) --- Funding 直前クローズ判定 -----------------------------------
         if self._should_close_before_funding(now):
             asyncio.create_task(self._close_all_positions())
