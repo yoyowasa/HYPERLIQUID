@@ -56,6 +56,7 @@ async def main() -> None:
     # ─ 共通オプション ─
     p.add_argument("--testnet", action="store_true")
     p.add_argument("--cooldown", type=float, default=1.0)
+    p.add_argument("--order_usd", type=float, default=15.0)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING"])
     args = p.parse_args()
@@ -85,6 +86,7 @@ async def main() -> None:
             "target_symbol": sym,
             "testnet": args.testnet,
             "cooldown_sec": args.cooldown,
+            "order_usd": args.order_usd,
             "dry_run": args.dry_run,
             **pair_params.get(sym, {}),
         }
