@@ -26,6 +26,27 @@ MAX_ORDER_PER_SEC = 3
 SEMA = asyncio.Semaphore(3)  # 発注 3 req/s 共有
 
 
+async def _place_order_async(ex, *args, **kwargs):
+    """Run synchronous `ex.order` in a thread and return its ACK."""
+    res = await asyncio.to_thread(ex.order, *args, **kwargs)
+    logging.getLogger(__name__).debug("ORDER-ACK %s", res)
+    try:
+        st = (res or {}).get("response", {}).get("data", {}).get("statuses", [{}])[0]
+        if "error" in st:
+            logging.getLogger(__name__).warning("ORDER-ERR %s", st["error"])
+        if "filled" in st:
+            f = st["filled"]
+            logging.getLogger(__name__).info(
+                "ORDER-FILLED sz=%s px=%s oid=%s",
+                f.get("totalSz"),
+                f.get("avgPx"),
+                f.get("oid"),
+            )
+    except Exception:
+        pass
+    return res
+
+
 def load_pair_yaml(path: str | None) -> dict[str, dict]:
     if not path:
         return {}
@@ -43,6 +64,7 @@ async def main() -> None:
     # ─ 共通オプション ─
     p.add_argument("--testnet", action="store_true")
     p.add_argument("--cooldown", type=float, default=1.0)
+    p.add_argument("--order_usd", type=float, default=15.0)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING"])
     args = p.parse_args()
@@ -72,6 +94,7 @@ async def main() -> None:
             "target_symbol": sym,
             "testnet": args.testnet,
             "cooldown_sec": args.cooldown,
+            "order_usd": args.order_usd,
             "dry_run": args.dry_run,
             **pair_params.get(sym, {}),
         }
