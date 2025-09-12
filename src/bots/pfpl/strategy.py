@@ -182,7 +182,6 @@ class PFPLStrategy:
                 self.next_funding_ts = float(next_ts)
                 logger.debug("fundingInfo: next @ %s", self.next_funding_ts)
 
-
         # fair が作れれば評価へ
         if self.mid and self.idx and self.ora:
             self.fair = (self.idx + self.ora) / 2  # ★ 平均で公正価格
