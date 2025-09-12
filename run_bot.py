@@ -26,6 +26,19 @@ MAX_ORDER_PER_SEC = 3
 SEMA = asyncio.Semaphore(3)  # 発注 3 req/s 共有
 
 
+async def _place_order_async(ex, *args, **kwargs):
+    """Run synchronous `ex.order` in a thread and return its ACK."""
+    res = await asyncio.to_thread(ex.order, *args, **kwargs)
+    logging.getLogger(__name__).debug("ORDER-ACK %s", res)
+    try:
+        st = (res or {}).get("response", {}).get("data", {}).get("statuses", [{}])[0]
+        if "error" in st:
+            logging.getLogger(__name__).warning("ORDER-ERR %s", st["error"])
+    except Exception:
+        pass
+    return res
+
+
 def load_pair_yaml(path: str | None) -> dict[str, dict]:
     if not path:
         return {}
