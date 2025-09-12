@@ -34,14 +34,25 @@ async def _place_order_async(ex, *args, **kwargs):
         st = (res or {}).get("response", {}).get("data", {}).get("statuses", [{}])[0]
         if "error" in st:
             logging.getLogger(__name__).warning("ORDER-ERR %s", st["error"])
-        if "filled" in st:
-            f = st["filled"]
-            logging.getLogger(__name__).info(
-                "ORDER-FILLED sz=%s px=%s oid=%s",
-                f.get("totalSz"),
-                f.get("avgPx"),
-                f.get("oid"),
-            )
+# 何をするコード？：
+#   ACKレスポンスを安全に読み取り、エラー時はwarn、約定完了時は詳細をinfoで記録してから結果を返す。
+
+            st = (res or {}).get("response", {}).get("data", {}).get("statuses", [])
+            st = st[0] if st else {}
+
+            if "error" in st:
+                logging.getLogger(__name__).warning("ORDER-ERR %s", st.get("error"))
+
+            # 約定完了（フィールド名に揺れがあっても落ちないように安全にログ）
+            status_val = (st.get("status") or "").lower()
+            if status_val == "filled" or "filled" in st:
+                sz = st.get("sz") or st.get("size") or st.get("totalSz")
+                px = st.get("px") or st.get("price") or st.get("avgPx")
+                oid = st.get("oid") or st.get("orderId")
+                logging.getLogger(__name__).info(
+                    "ORDER-FILLED sz=%s px=%s oid=%s", sz, px, oid
+                )
+
     except Exception:
         pass
     return res
