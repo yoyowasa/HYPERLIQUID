@@ -70,19 +70,21 @@ async def _place_order_async(ex, *args, **kwargs):
                     sz = qty_tick
                 kwargs["sz"] = sz
 
-    res = await loop.run_in_executor(None, ex.order, *args, **kwargs)
+    res = await asyncio.to_thread(ex.order, *args, **kwargs)
     logging.getLogger(__name__).debug("ORDER-ACK %s", res)
     try:
-        st = (res or {}).get("response", {}).get("data", {}).get("statuses", [{}])[0]
+        st = (res or {}).get("response", {}).get("data", {}).get("statuses", [])
+        st = st[0] if st else {}
         if "error" in st:
-            logging.getLogger(__name__).warning("ORDER-ERR %s", st["error"])
-        if "filled" in st:
-            f = st["filled"]
+            logging.getLogger(__name__).warning("ORDER-ERR %s", st.get("error"))
+
+        status_val = (st.get("status") or "").lower()
+        if status_val == "filled" or "filled" in st:
+            sz = st.get("sz") or st.get("size") or st.get("totalSz")
+            px = st.get("px") or st.get("price") or st.get("avgPx")
+            oid = st.get("oid") or st.get("orderId")
             logging.getLogger(__name__).info(
-                "ORDER-FILLED sz=%s px=%s oid=%s",
-                f.get("totalSz"),
-                f.get("avgPx"),
-                f.get("oid"),
+                "ORDER-FILLED sz=%s px=%s oid=%s", sz, px, oid
             )
     except Exception:
         pass
