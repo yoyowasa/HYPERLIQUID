@@ -101,7 +101,6 @@ class PFPLStrategy:
         self.max_pos = Decimal(self.config.get("max_position_usd", 100))
         self.fair_feed = self.config.get("fair_feed", "indexPrices")
         self.max_daily_orders = int(self.config.get("max_daily_orders", 500))
-        self.max_drawdown_usd = Decimal(self.config.get("max_drawdown_usd", 100))
         self._order_count = 0
         self._start_day = datetime.utcnow().date()
         self.enabled = True
@@ -109,6 +108,7 @@ class PFPLStrategy:
         self.mid: Decimal | None = None  # 板 Mid (@1)
         self.idx: Decimal | None = None  # indexPrices
         self.ora: Decimal | None = None  # oraclePrices
+        self.fair: Decimal | None = None  # 平均した公正価格
 
         # ── 内部ステート ────────────────────────────────
         self.last_side: str | None = None
@@ -216,9 +216,9 @@ class PFPLStrategy:
             return
 
         # ③ 必要データ取得
-        mid = Decimal(self.mids.get("@1", "0"))
-        fair = Decimal(self.mids.get(self.fair_feed, "0"))
-        if mid == 0 or fair == 0:
+        mid = self.mid
+        fair = self.fair
+        if mid is None or fair is None:
             return  # データが揃っていない
 
         abs_diff = abs(fair - mid)  # USD 差
@@ -340,22 +340,18 @@ class PFPLStrategy:
 
     # ------------------------------------------------------------------ limits
     def _check_limits(self) -> bool:
-        """日次の発注数と DD 制限を超えていないか確認"""
+        """日次の発注数と建玉制限を超えていないか確認"""
         today = datetime.utcnow().date()
         if today != self._start_day:  # 日付が変わったらリセット
             self._start_day = today
             self._order_count = 0
 
-        if self._order_count >= self.max_order_per_sec * 60 * 60 * 24:
+        if self._order_count >= self.max_daily_orders:
             logger.warning("daily order-limit reached → trading disabled")
             return False
 
         if abs(self.pos_usd) >= self.max_pos:
             logger.warning("position limit %.2f USD reached", self.max_pos)
-            return False
-
-        if self.drawdown_usd >= self.max_drawdown_usd:
-            logger.warning("drawdown limit %.2f USD reached", self.max_drawdown_usd)
             return False
 
         return True
@@ -395,25 +391,39 @@ class PFPLStrategy:
 
     async def _close_all_positions(self) -> None:
         """Close every open position for this symbol."""
-        # --- 成行 IOC で反対サイドを投げる簡易版 ---
-        pos = await self.client.get_position(self.symbol)  # ← API に合わせて修正
-        if not pos or pos["size"] == 0:
-            return  # 持ち高なし
-        close_side = "SELL" if pos["size"] > 0 else "BUY"
-        await self.place_order(
-            side=close_side,
-            size=abs(pos["size"]),
-            order_type="market",
-            reduce_only=True,
-            comment="auto‑close‑before‑funding",
-        )
-        self.logger.info(
-            "⚡ Funding close: %s %s @ %s (buffer %s s)",
-            close_side,
-            abs(pos["size"]),
-            self.symbol,
-            self.funding_close_buffer_secs,
-        )
+        try:
+            state = self.exchange.info.user_state(self.account)
+            coin = self.symbol.split("-")[0]
+            perp_pos = next(
+                (
+                    p
+                    for p in state.get("perpPositions", [])
+                    if p["position"]["coin"] == coin
+                ),
+                None,
+            )
+            if not perp_pos:
+                return
+            sz = Decimal(perp_pos["position"]["sz"])
+            if sz == 0:
+                return  # 持ち高なし
+            close_side = "SELL" if sz > 0 else "BUY"
+            await self.place_order(
+                side=close_side,
+                size=float(abs(sz)),
+                order_type="market",
+                reduce_only=True,
+                comment="auto‑close‑before‑funding",
+            )
+            logger.info(
+                "⚡ Funding close: %s %s @ %s (buffer %s s)",
+                close_side,
+                abs(sz),
+                self.symbol,
+                self.funding_close_buffer_secs,
+            )
+        except Exception as exc:
+            logger.error("close_all_positions failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Order-price helper
