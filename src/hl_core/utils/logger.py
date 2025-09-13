@@ -144,4 +144,6 @@ def setup_logger(
     logging.getLogger().setLevel(file_level)
 
     # タイムゾーンを UTC に統一
-    logging.Formatter.converter = lambda ts: _dt.datetime.fromtimestamp(ts, tz=_TZ).timetuple()
+    logging.Formatter.converter = lambda ts: _dt.datetime.fromtimestamp(
+        ts, tz=_TZ
+    ).timetuple()
