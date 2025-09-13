@@ -1,6 +1,7 @@
 # src/hl_core/utils/logger.py
 from __future__ import annotations
 
+import copy
 import datetime as _dt
 import logging
 import logging.handlers
@@ -29,8 +30,10 @@ class _ColorFormatter(logging.Formatter):
     """レベルに応じて色付けして表示するコンソール用フォーマッタ."""
 
     def format(self, record: logging.LogRecord) -> str:  # noqa: D401
+        record = copy.copy(record)
         color = _LEVEL_COLOR.get(record.levelno, "")
-        record.msg = f"{color}{record.msg}{Style.RESET_ALL if color else ''}"
+        if color:
+            record.msg = f"{color}{record.msg}{Style.RESET_ALL}"
         return super().format(record)
 
 
@@ -141,4 +144,6 @@ def setup_logger(
     logging.getLogger().setLevel(file_level)
 
     # タイムゾーンを UTC に統一
-    logging.Formatter.converter = lambda *args: _dt.datetime.now(tz=_TZ).timetuple()
+    logging.Formatter.converter = lambda ts: _dt.datetime.fromtimestamp(
+        ts, tz=_TZ
+    ).timetuple()
