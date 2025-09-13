@@ -20,10 +20,10 @@ BTC-PERP:
   mode: either
   funding_buffer_sec: 90
   cooldown_sec: 1.5
-  threshold: 0.25           # USD
+  threshold: 18           # USD
   threshold_pct: 0.00020
   spread_threshold: 0.5
-  order_usd: 15
+  order_usd: 50
   max_pos: 600
   max_equity_ratio: 0.35
   min_equity_ratio: 0.0

@@ -84,18 +84,49 @@ class HTTPClient:
         # Testnet は次回時刻が無いので 0 を返す
         return {"projectedFunding": funding, "nextFundingTime": 0}
 
-    async def get_ticker(self, symbol: str) -> dict[str, Any]:
+    async def get_ticker(self, coin: str):
         """
-        Testnet では midPx を /info activeAssetCtx から取る。
-        戻り値: {"mid": float}
+        coin 例: 'BTC'  → 返り値 {'mid': 118723.5}
         """
-        coin = symbol.split("-")[0]
-        resp = await self.post(
+        mids = await self.post("info", data={"type": "allMids"})
+        return {"mid": float(mids[coin])}
+
+    async def get_open_interest(self, coin: str):
+        return await self.post(
             "info",
-            data={"type": "activeAssetCtx", "coin": coin},
+            data={"type": "openInterest", "coin": coin, "contractType": "perp"},
         )
-        mid_px = float(resp["ctx"]["midPx"])
-        return {"mid": mid_px}
+
+    async def get_asset_ctx(self):
+        """return list of asset contexts (includes openInterest, funding, midPx, …)"""
+        return await self.post("info", data={"type": "metaAndAssetCtxs"})
+
+    async def place_order(
+        self,
+        symbol: str,
+        side: str,
+        size: float,
+        px: float,
+        clientOid: str,
+        tif: str = "GTC",
+        reduce_only: bool = False,
+    ):
+        # "BTC-PERP" → "BTC"
+        return await self.post(
+            "exchange",
+            data={
+                "type": "order",
+                "order": {
+                    "coin": symbol.split("-")[0],  # 例 "BTC-PERP" → "BTC"
+                    "side": side,
+                    "px": str(px),
+                    "sz": str(size),
+                    "tif": tif,
+                    "reduceOnly": reduce_only,
+                    "clientOid": clientOid,
+                },
+            },
+        )
 
 
 class WSClient:

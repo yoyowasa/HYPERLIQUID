@@ -1,7 +1,21 @@
 #!/usr/bin/env python
+import inspect
+
+if not hasattr(inspect, "getargspec"):
+    from collections import namedtuple
+
+    def _getargspec(func):
+        full = inspect.getfullargspec(func)
+        ArgSpec = namedtuple("ArgSpec", "args varargs keywords defaults")
+        return ArgSpec(full.args, full.varargs, full.varkw, full.defaults)
+
+    inspect.getargspec = _getargspec
+
 import argparse
 from typing import Any
 import asyncio
+from eth_account import Account
+import functools
 from importlib import import_module
 from os import getenv
 from pathlib import Path
@@ -12,6 +26,7 @@ import yaml
 from hl_core.api import WSClient
 from hl_core.utils.logger import setup_logger
 from hl_core.api import HTTPClient
+from hyperliquid.exchange import Exchange
 from bots.pfpl import run_live as run_pfpl
 import logging
 
@@ -120,7 +135,23 @@ async def main() -> None:
     )
     api_client = sdk  # ← REST 用
     ws_client = ws  # ← WebSocket 用
-    tx_client = sdk  # ← 発注も REST を暫定利用
+    secret_key = getenv("HL_API_SECRET")
+    account = Account.from_key(secret_key)
+
+    _account_address = account.address
+    ex = Exchange(account, "https://api.hyperliquid.xyz")
+
+    async def _place_order_async(*args, **kwargs):
+        loop = asyncio.get_running_loop()
+        res = await loop.run_in_executor(
+            None, functools.partial(ex.order, *args, **kwargs)
+        )
+        logging.getLogger(__name__).debug("ORDER-ACK %s", res)
+        return res
+
+    ex.place_order = _place_order_async
+
+    tx_client = ex  # ← 発注も REST を暫定利用
 
     asyncio.create_task(run_pfpl(api_client, ws_client, tx_client))
 

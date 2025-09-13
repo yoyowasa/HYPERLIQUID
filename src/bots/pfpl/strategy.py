@@ -1,6 +1,5 @@
 from __future__ import annotations
 import asyncio
-import math
 from collections import deque
 from typing import Any, Dict
 from datetime import datetime
@@ -10,6 +9,15 @@ import uuid
 from hl_core.utils.retry import retry_async
 from os import getenv
 import logging
+import math
+from hyperliquid.utils import types as hl_types
+import hashlib
+from hyperliquid.info import Info
+from hyperliquid.utils import constants
+from decimal import Decimal, ROUND_DOWN, getcontext
+
+getcontext().prec = 28
+
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +38,7 @@ class DataCollector:
     }
     """
 
-    def __init__(self, api_client: Any, ws_client: Any) -> None:
+    def __init__(self, api_client: Any, ws_client: Any, symbol: str) -> None:
         self.api = api_client  # REST 用
         self.ws = ws_client  # WebSocket 用
         self.cache: Dict[str, float] = {
@@ -43,6 +51,7 @@ class DataCollector:
             "blockTs": 0.0,  # 最新ブロックの timestamp (秒)
             "nextFundingTs": 0.0,  # 追加: 次回 Funding UNIX 時刻 (秒)
         }
+        self.symbol = symbol
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
 
@@ -51,20 +60,22 @@ class DataCollector:
         while not self._stop.is_set():
             try:
                 # --- REST（Mainnet）--------------------------------
-                funding = await self._safe_call(
-                    self.api.get_projected_funding, "BTC-PERP"
-                )
-                oi_data = await self._safe_call(self.api.get_open_interest, "BTC-PERP")
-                ticker = await self._safe_call(self.api.get_ticker, "BTC-PERP")
-                oi_long = float(oi_data["long"])
-                oi_short = float(oi_data["short"])
-                mid_px = float(ticker["mid"])
-                next_ts = float(funding["nextFundingTime"])
+                # 例 "BTC"
+                ctxs = await self._safe_call(self.api.get_asset_ctx)
+                asset_ctxs = ctxs["assetCtxs"] if "assetCtxs" in ctxs else ctxs[1]
+                log.debug("AssetCtx sample: %s", asset_ctxs[0])
+
+                ctx = asset_ctxs[0]  # 対象コインだけ抽出
+
+                mid_px = float(ctx["midPx"])
+                oi_long = float(ctx["openInterest"])
+                proj_funding = float(ctx["funding"])
+                next_ts = float(ctx.get("nextFundingTime", 0.0))
 
                 self.cache.update(
-                    projectedFunding=float(funding["projectedFunding"]),
+                    projectedFunding=proj_funding,
                     oiLong=oi_long,
-                    oiShort=oi_short,
+                    oiShort=0.0,  # short 個別が無いので 0 で埋める
                     timestamp=asyncio.get_event_loop().time(),
                     nextFundingTs=next_ts,
                     midPrice=mid_px,
@@ -75,9 +86,14 @@ class DataCollector:
                 log.warning("[DataCollector] warning: %s", exc)
             await asyncio.sleep(1)
 
-        @retry_async(max_attempts=4, base_delay=0.3)
-        async def _safe_call(self, func, *args, **kwargs):
+    @retry_async(max_attempts=4, base_delay=0.3)
+    async def _safe_call(self, func, *args, **kwargs):
+        """awaitable (coroutine) を安全に実行し、失敗時は None を返す"""
+        try:
             return await func(*args, **kwargs)
+        except Exception as e:
+            log.exception("DataCollector _safe_call error: %s", e)
+            return None
 
     # --------------------------------------------------------------
     # パブリック API
@@ -227,29 +243,316 @@ class PositionManager:
 class ExecutionGateway:
     """place() / cancel() を提供し、latency ≤50 ms を目指す。"""
 
-    def __init__(self, tx_client: Any) -> None:
+    def __init__(self, tx_client, symbol: Any) -> None:
+        self.symbol = symbol
         self.tx = tx_client  # hl_core.execution client
         self._futures: dict[str, asyncio.Future] = {}
 
+    async def _get_equity_ratio(self) -> float:
+        # 役割: 口座のUSDC等価残高を取得し、1回の注文額(order_usd)に対する充足率(0.0..1.0)を返す。
+        #      DRY-RUN時は常に1.0。SDKの仕様差に備えて複数メソッド(user_state/account/user/balances)へフォールバックする。
+        if getattr(self, "dry_run", False):
+            return 1.0
+
+        order_usd = float(getattr(self, "order_usd", 15.0))
+        try:
+            loop = asyncio.get_running_loop()
+            info = Info(
+                getattr(self.tx, "base_url", constants.MAINNET_API_URL), skip_ws=True
+            )  # 役割: tx_clientと同じURLで口座情報を取得（mainnet/testnet自動追従）
+            addr = self.tx.wallet.address
+
+            # 返却形が違っても拾えるように順に試す
+            data = None
+            for fetch in (
+                lambda: info.user_state(addr),
+                lambda: info.account(addr),
+                lambda: info.user(addr),
+                lambda: info.balances(addr),
+            ):
+                try:
+                    data = await loop.run_in_executor(None, fetch)
+                    if data:
+                        break
+                except Exception:
+                    continue
+
+            equity = 0.0
+            # marginSummary / crossMarginSummary / balances(配列) の順で抽出
+            try:
+                equity = float((data or {}).get("marginSummary", {}).get("equity", 0.0))
+            except Exception:
+                pass
+            if not equity:
+                try:
+                    equity = float(
+                        (data or {}).get("crossMarginSummary", {}).get("equity", 0.0)
+                    )
+                except Exception:
+                    pass
+            if not equity and isinstance(data, list):
+                for b in data:
+                    if (b or {}).get("coin") == "USDC":
+                        equity = float(b.get("available") or b.get("total") or 0.0)
+                        break
+
+            if equity <= 0.0 or order_usd <= 0.0:
+                return 0.0
+            return max(0.0, min(1.0, equity / order_usd))
+        except Exception:
+            return 0.0
+
     async def place(self, side: str, size: float, price: float) -> dict[str, Any]:
-        cid = str(uuid.uuid4())
-        fut = self._futures[cid] = asyncio.get_event_loop().create_future()
-        await self.tx.place_order(
-            symbol="BTC-PERP", side=side, size=size, px=price, clientOid=cid
+        usd = getattr(self, "order_usd", 15.0)
+        loop = asyncio.get_running_loop()
+        if not hasattr(self, "qty_tick"):
+            info = Info(
+                getattr(self.tx, "base_url", constants.MAINNET_API_URL), skip_ws=True
+            )  # 役割: tx_clientと同じURLでmeta取得（環境ズレ防止）
+            meta = await loop.run_in_executor(None, info.meta)
+            unit = next(
+                (u for u in meta["universe"] if u.get("name") == self.symbol), None
+            )
+            self.qty_tick = (
+                10 ** (-unit["szDecimals"])
+                if unit and ("szDecimals" in unit)
+                else 0.001
+            )
+            qty_tick = self.qty_tick  # ここから下はこの刻みに合わせて計算する
+            log.debug(
+                "TICK-INFO %s szDecimals=%s qty_tick=%s",
+                self.symbol,
+                unit.get("szDecimals") if unit else None,
+                qty_tick,
+            )
+
+        if (float(size) <= 0) and (float(price) > 0) and (usd > 0):
+            size = usd / float(price)
+        tick_dec = Decimal(str(qty_tick))
+        qty_tick = getattr(
+            self, "qty_tick", 10 ** (-3)
+        )  # 何をする行か: 既にself.qty_tickがある場合でもローカルqty_tickを必ず定義（未定義エラー回避）
+
+        units = (Decimal(str(size)) / tick_dec).to_integral_value(rounding=ROUND_DOWN)
+        size_dec = units * tick_dec
+        if size_dec < tick_dec:
+            size_dec = tick_dec
+        size_coin = float(size_dec.quantize(Decimal("0.00000001"), rounding=ROUND_DOWN))
+
+        cloid = "0x" + hashlib.sha256(str(uuid.uuid4()).encode()).digest()[:16].hex()
+        fut = self._futures[cloid] = asyncio.get_event_loop().create_future()
+
+        size_coin = (
+            round(float(size) / float(price), 8)
+            if float(size) > 1 and float(price) > 100
+            else round(float(size), 8)
         )
-        return cid, fut
+        qty_tick = self.qty_tick if getattr(self, "qty_tick", None) else 10 ** (-3)
+        # 価格の最小単位（小数桁）を一時取得するが、この関数内では参照しないため意図的に未使用として保持
+        # _px_decimals = market_meta["pxDecimals"]  # 削除: market_meta 未定義のため
+
+        size_coin = (
+            float(size)
+            if float(size) > 0
+            else ((10.0 / float(price)) if float(price) > 0 else qty_tick)
+        )
+        size_coin = max(size_coin, qty_tick)
+        size_coin = math.floor(size_coin / qty_tick) * qty_tick
+        min_sz_for_ntl = (
+            math.ceil((10.0 / float(price)) / qty_tick) * qty_tick
+        )  # 最低建玉$10を保証
+        size_coin = max(size_coin, min_sz_for_ntl)
+        px_tick = getattr(self, "px_tick", None)
+        if px_tick is None:
+            try:
+                info = Info(
+                    getattr(self.tx, "base_url", constants.MAINNET_API_URL),
+                    skip_ws=True,
+                )  # 役割: tx_clientと同じURLで口座/メタを取得（_get_equity_ratio / place / close / cancel_all いずれの箇所でも同じ置換）
+                meta = await loop.run_in_executor(None, info.meta)
+                unit = next(
+                    (u for u in meta["universe"] if u.get("name") == self.symbol), None
+                )
+                self.px_tick = float(unit.get("pxTick", 0.5)) if unit else 0.5
+            except Exception:
+                self.px_tick = 0.5
+        px_tick = self.px_tick
+        int_digits = len(str(int(abs(float(price)))))
+        if int_digits >= 5:
+            # 整数は常に許可される（有効桁数制限の例外）。高価格帯では小数をやめて整数にする。
+            limit_px = float(int(float(price)))
+        else:
+            # 小数が許可される価格帯のみ、px_tick の倍数に切り捨て
+            limit_px = float(
+                (Decimal(str(price)) / Decimal(str(px_tick))).to_integral_value(
+                    rounding=ROUND_DOWN
+                )
+                * Decimal(str(px_tick))
+            )
+
+        log.debug(
+            "PLACE-CALL side=%s size_in=%s price_in=%s -> sz=%s tick=%s min_ntl=%s limit_px=%s",
+            side,
+            size,
+            price,
+            size_coin,
+            qty_tick,
+            min_sz_for_ntl,
+            limit_px,
+        )
+
+        px_tick = getattr(
+            self, "px_tick", None
+        )  # 何をする行か: place内でも価格刻み(px_tick)が未定義なら取得フローに入る
+        if (
+            px_tick is None
+        ):  # 何をする行か: 初回だけ Info.meta() から該当シンボルの pxTick を取得してキャッシュ
+            try:
+                info = Info(
+                    getattr(self.tx, "base_url", constants.MAINNET_API_URL),
+                    skip_ws=True,
+                )  # 何をする行か: tx_clientと同じURLでInfo初期化（環境ズレ防止）
+                meta = await asyncio.get_running_loop().run_in_executor(
+                    None, info.meta
+                )  # 何をする行か: メタ情報(universe)を取得
+                unit = next(
+                    (u for u in meta["universe"] if u.get("name") == self.symbol), None
+                )  # 何をする行か: 対象シンボルのユニット情報を抽出
+                self.px_tick = (
+                    float(unit.get("pxTick", 0.5)) if unit else 0.5
+                )  # 何をする行か: 見つかればpxTick、無ければ0.5を既定に
+            except Exception:
+                self.px_tick = 0.5  # 何をする行か: 例外時のフォールバック
+        px_tick = (
+            self.px_tick
+        )  # 何をする行か: 以降の丸め処理はキャッシュ済みのpx_tickを使用
+
+        limit_px = float(
+            (
+                Decimal(str(limit_px * (1 + 0.0005 if side == "BUY" else 1 - 0.0005)))
+                / Decimal(str(px_tick))
+            ).to_integral_value(rounding=ROUND_DOWN)
+            * Decimal(str(px_tick))
+        )  # 役割: エントリー価格を±0.05%だけ乖離方向へ微調整し、px_tickに再丸め（fill率改善）
+
+        await self.tx.place_order(
+            coin=self.symbol,  # 銘柄名（例: "BTC"）— SDKはベース銘柄名で受け取る
+            is_buy=(side == "BUY"),  # True=買い / False=売り
+            sz=size_coin,  # 刻み( szDecimals )に合わせて切り捨て + 最低名目$10を満たした最終サイズ
+            limit_px=limit_px,  # 銘柄の許容小数桁に丸めた指値（px_decimalsに基づく）
+            order_type={
+                "limit": {"tif": "Gtc"}
+            },  # 指値 + GTC（キャンセルされるまで有効）
+            reduce_only=False,  # 新規/追加の発注なので False（手仕舞い側 close は True にする）
+            cloid=hl_types.Cloid(cloid),
+        )
+
+        return (
+            cloid,
+            fut,
+        )  # 何をする行か: userFillsのclientOidと一致させるため、返すIDもcloidに統一
 
     async def close(self, side: str, size: float, price: float) -> dict[str, Any]:
         cid = str(uuid.uuid4())
         fut = self._futures[cid] = asyncio.get_event_loop().create_future()
-        await self.tx.place_order(
-            symbol="BTC-PERP", side=side, size=size, px=price, clientOid=cid
+        size_coin = (
+            round(float(size) / float(price), 8)
+            if float(size) > 1 and float(price) > 100
+            else round(float(size), 8)
         )
+        cid = str(uuid.uuid4())
+        fut = self._futures[cid] = asyncio.get_event_loop().create_future()
+        size_coin = (
+            round(float(size) / float(price), 8)
+            if float(size) > 1 and float(price) > 100
+            else round(float(size), 8)
+        )
+        qty_tick = self.qty_tick if getattr(self, "qty_tick", None) else 10 ** (-3)
+        # 価格の最小単位（小数桁）を一時取得するが、このスコープでは参照しないため意図的に未使用として保持
+
+        size_coin = (
+            float(size)
+            if float(size) > 0
+            else ((10.0 / float(price)) if float(price) > 0 else qty_tick)
+        )
+        size_coin = max(size_coin, qty_tick)
+        size_coin = math.floor(size_coin / qty_tick) * qty_tick
+        min_sz_for_ntl = (
+            math.ceil((10.0 / float(price)) / qty_tick) * qty_tick
+        )  # 最低建玉$10を保証
+        size_coin = max(size_coin, min_sz_for_ntl)
+        px_tick = getattr(self, "px_tick", None)
+        if px_tick is None:
+            try:
+                info = Info(
+                    getattr(self.tx, "base_url", constants.MAINNET_API_URL),
+                    skip_ws=True,
+                )  # 役割: tx_clientと同じURLでmeta取得（環境ズレ防止）
+                loop = asyncio.get_running_loop()
+                meta = await loop.run_in_executor(None, info.meta)
+                unit = next(
+                    (u for u in meta["universe"] if u.get("name") == self.symbol), None
+                )
+                self.px_tick = float(unit.get("pxTick", 0.5)) if unit else 0.5
+            except Exception:
+                self.px_tick = 0.5
+        px_tick = self.px_tick
+        int_digits = len(str(int(abs(float(price)))))
+        if int_digits >= 5:
+            # 整数は常に許可される（有効桁数制限の例外）。高価格帯では小数をやめて整数にする。
+            limit_px = float(int(float(price)))
+        else:
+            # 小数が許可される価格帯のみ、px_tick の倍数に切り捨て
+            limit_px = float(
+                (Decimal(str(price)) / Decimal(str(px_tick))).to_integral_value(
+                    rounding=ROUND_DOWN
+                )
+                * Decimal(str(px_tick))
+            )
+
+        log.debug(
+            "CLOSE-CALL side=%s size_in=%s price_in=%s -> sz=%s tick=%s limit_px=%s",
+            side,
+            size,
+            price,
+            size_coin,
+            qty_tick,
+            limit_px,
+        )
+
+        await self.tx.place_order(
+            coin=self.symbol,  # 銘柄（例: "BTC"）— SDKはベース銘柄名で受け取る
+            is_buy=(side == "BUY"),  # True=買い / False=売り
+            sz=size_coin,  # 刻みに合わせた最終数量（最低$10ノッチも満たす）
+            limit_px=limit_px,  # 許容小数桁に丸めた指値
+            order_type={"limit": {"tif": "Gtc"}},  # 指値 + GTC
+            reduce_only=True,  # 手仕舞いなので必ず True（新規建てを防ぐ）
+            cloid=hl_types.Cloid(
+                "0x" + hashlib.sha256(str(cid).encode()).digest()[:16].hex()
+            ),  # 0x + 16バイトhex
+        )
+
         return cid, fut
 
     async def cancel_all(self) -> None:
         """未約定注文を全キャンセル。"""
-        await self.tx.cancel_all(symbol="BTC-PERP")
+        from hyperliquid.info import Info
+        from hyperliquid.utils import constants
+
+        info = Info(
+            getattr(self.tx, "base_url", constants.MAINNET_API_URL), skip_ws=True
+        )  # 役割: tx_clientと同じURLで口座/メタを取得（_get_equity_ratio / place / close / cancel_all いずれの箇所でも同じ置換）
+        loop = asyncio.get_running_loop()
+        open_orders = await loop.run_in_executor(
+            None, info.open_orders, self.tx.wallet.address
+        )
+        for oo in open_orders:
+            await loop.run_in_executor(None, self.tx.cancel, oo["coin"], oo["oid"])
+
+    async def flatten_all(self):
+        """全ポジション解消のキルスイッチ（最小版）: まず全注文をキャンセルして戻る"""
+        await self.cancel_all()
+        return
 
     # ── private fills WS を登録・待機 ───────────────────
     def attach_ws(self, ws_client) -> None:
@@ -285,6 +588,40 @@ class ExecutionGateway:
                 return float(status["avgPx"])
             await asyncio.sleep(0.2)
         return 0.0
+
+    def _log_trade_csv(
+        logger_obj,
+        symbol: str,
+        side: str,
+        size: float,
+        price: float,
+        reason: str,
+        kind: str = "ENTRY",
+    ):
+        """何をする関数なのか: AnalysisLogger（analysis_logger.py）等の既存ロガーを使い、
+        ts_iso,unix_ms,symbol,side,size,price,reason の1行CSV形式テキストをそのまま出力するアダプタ。
+        logger.info(...) があればそれで出す。無ければ append 等を順に試し、最悪は print にフォールバックする。
+        """
+        from datetime import (
+            datetime,
+            timezone,
+        )  # 関数内でだけ使う（外部依存を増やさない）
+
+        # 何をする行か: CSVの1行分（ヘッダ互換）を組み立てる
+        ts = datetime.now(timezone.utc)
+        ts_iso = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+        unix_ms = int(ts.timestamp() * 1000)
+        line = f"{ts_iso},{unix_ms},{symbol},{side},{float(size):.8f},{float(price):.2f},{kind}:{reason}"
+
+        # 何をする行か: 代表的なメソッド名を優先順で試す → 無ければ print
+        if hasattr(logger_obj, "info"):
+            logger_obj.info(line)
+        elif hasattr(logger_obj, "append"):
+            logger_obj.append(line)
+        elif hasattr(logger_obj, "write"):
+            logger_obj.write(line)
+        else:
+            print(line)
 
 
 # ------------------------------------------------------------------
@@ -352,7 +689,8 @@ class AnalysisLogger:
 async def run_live(api_client, ws_client, tx_client) -> None:
     """PFPL v2 フルフロー非同期ループ（簡易版）"""
     # ── 初期化 ─────────────────────────────────────
-    collector = DataCollector(api_client, ws_client)
+    collector = DataCollector(api_client, ws_client, "BTC-PERP")
+
     # --- 口座残高 USD を取得 ------------------------------------
 
     account_equity = await api_client.get_equity(getenv("HL_ACCOUNT_ADDR"), perp=True)
@@ -364,7 +702,42 @@ async def run_live(api_client, ws_client, tx_client) -> None:
     scorer = ScoringEngine(store)
     signaler = SignalGenerator(scorer, store)
     pos_mgr = PositionManager(account_equity)
-    exec_gate = ExecutionGateway(tx_client)
+    symbol = "BTC"  # 取引対象ペア
+    exec_gate = ExecutionGateway(tx_client, symbol)
+    exec_gate.order_usd = float(
+        locals().get("order_usd")
+        or (
+            locals().get("pair")
+            or locals().get("pair_cfg")
+            or locals().get("params")
+            or {}
+        ).get("order_usd")
+        or 15.0
+    )  # 役割: CLI/YAMLなどの order_usd を ExecutionGateway に伝播
+    exec_gate.dry_run = bool(
+        locals().get("dry_run")
+        or (locals().get("params") or {}).get("dry_run")
+        or getattr(exec_gate, "dry_run", False)
+    )  # 役割: DRY-RUNフラグを ExecutionGateway に伝播（DRY時は equity 取得をスキップ）
+    exec_gate.use_market_close = bool(
+        (locals().get("params") or {}).get("use_market_close")
+        or (locals().get("pair_cfg") or {}).get("use_market_close")
+        or locals().get("use_market_close")
+        or False
+    )  # 役割: 決済を成行/指値で切替できるようフラグを伝播
+
+    equity_ratio = (
+        await exec_gate._get_equity_ratio()
+    )  # 役割: 残高充足率(0..1)を取得（order_usd 反映後）
+    if equity_ratio < 1.0:
+        print(
+            f"GATE-SKIP equity<order_usd: ratio={equity_ratio:.2f} order_usd={getattr(exec_gate, 'order_usd', 0.0):.2f}"
+        )
+        return  # 役割: 残高が注文額に満たないので今回は発注しない
+    print(
+        f"EQUITY-CHECK ratio={equity_ratio:.2f} order_usd={getattr(exec_gate, 'order_usd', 0.0):.2f}"
+    )  # 役割: 残高比率と注文額をログ出力（デバッグ）
+
     exec_gate.attach_ws(ws_client)
     guards = RiskGuards()
     logger = AnalysisLogger()
@@ -438,7 +811,14 @@ async def run_live(api_client, ws_client, tx_client) -> None:
                 )
 
                 cid, fut = await exec_gate.place(order["side"], order["size"], price)
-                fill_px = await asyncio.wait_for(fut, timeout=5.0)
+                fill_px = await fut
+                log.info(
+                    "ENTRY fill: side=%s size=%.8f px=%.2f",
+                    order["side"],
+                    float(order["size"]),
+                    float(fill_px),
+                )  # 何をする行か: 可読ログ（CSVは logger.log_open で既に出力）
+
                 pos_mgr.state["avg_px"] = fill_px
                 logger.log_open(order["side"], order["size"], fill_px)
 
@@ -450,7 +830,7 @@ async def run_live(api_client, ws_client, tx_client) -> None:
 
                 order = pos_mgr.exit()
                 cid, fut = await exec_gate.close(order["side"], order["size"], price)
-                fill_px = await asyncio.wait_for(fut, timeout=5.0)
+                fill_px = await fut
                 pnl_usd = (fill_px - entry_px) * entry_size
                 logger.log_close(pnl_usd=pnl_usd)
 
@@ -464,6 +844,24 @@ async def run_live(api_client, ws_client, tx_client) -> None:
                     time.time() - collector.cache.get("blockTs", time.time())
                 )
 
+                from hyperliquid.info import Info
+                from hyperliquid.utils import constants
+
+                loop = asyncio.get_running_loop()
+                info = Info(
+                    getattr(tx_client, "base_url", constants.MAINNET_API_URL),
+                    skip_ws=True,
+                )  # 役割: run_live内でInfoをExchange(tx_client)と同じURLで初期化
+                state = await loop.run_in_executor(
+                    None, info.user_state, tx_client.wallet.address
+                )
+                equity = float(state["marginSummary"]["accountValue"])
+                if equity <= 0:
+                    log.debug("GATE-SKIP equity<=0: equity=%.2f USDC", equity)
+
+                    await asyncio.sleep(1.0)
+                    continue
+
                 guards.run(
                     pos_usd=pos_usd,
                     equity_ratio=equity_ratio,
@@ -471,22 +869,12 @@ async def run_live(api_client, ws_client, tx_client) -> None:
                     block_delay=block_delay,
                 )
             except RuntimeError as e:
-                log.exception(e)  # ログに理由を出力
-
-                # ── Kill-Switch 処理 ─────────────────────────
-                await exec_gate.cancel_all()  # ① 注文全キャンセル
-
-                if pos_mgr.state:  # ② 建玉があれば反対売買
-                    side_close = "SELL" if pos_mgr.state["side"] == "BUY" else "BUY"
-                    size_close = pos_mgr.state["size"]
-                    _cid, fut = await exec_gate.close(side_close, size_close, price)
-                    await asyncio.wait_for(fut, timeout=5.0)
-
-                # ③ WS / REST を閉じる
-                await ws_client.close()
-                await api_client.close()
-
-                break  # ④ ループ終了
+                log.critical("%s — Kill-Switch", e)
+                await exec_gate.cancel_all()  # ① 注文をすべてキャンセル
+                await exec_gate.flatten_all()  # ② 全ポジションを反対売買で解消
+                await ws_client.close()  # ③ WebSocket 切断
+                await api_client.close()  # ④ REST 切断
+                break  # ⑤ ループ終了
 
     finally:
         await collector.stop()
