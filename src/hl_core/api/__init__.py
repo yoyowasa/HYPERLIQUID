@@ -8,6 +8,7 @@ import asyncio
 import anyio
 import contextlib
 from typing import Awaitable, Callable, Any, Optional
+import ssl
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +18,15 @@ class HTTPClient:
     Hyperliquid REST API ラッパ（雛形）
     """
 
-    def __init__(self, base_url: str, api_key: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: Optional[str] = None,
+        verify: bool | str | ssl.SSLContext = True,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        self._cli = httpx.AsyncClient(base_url=self.base_url)
+        self._cli = httpx.AsyncClient(base_url=self.base_url, verify=verify)
         logger.debug("HTTPClient initialised: %s", self.base_url)
 
     async def get(self, path: str, params: dict[str, Any] | None = None) -> Any:

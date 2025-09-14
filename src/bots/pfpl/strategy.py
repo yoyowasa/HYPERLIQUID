@@ -17,7 +17,17 @@ from datetime import datetime  # ← 追加
 
 # 既存 import 群の最後あたりに追加
 from hyperliquid.exchange import Exchange
-from eth_account.account import Account
+try:  # pragma: no cover - eth_account is optional for tests
+    from eth_account.account import Account  # type: ignore
+except Exception:  # noqa: F401 - fallback when eth_account isn't installed
+    class Account:  # type: ignore
+        @staticmethod
+        def from_key(key: str):
+            class _Wallet:
+                def __init__(self, key: str) -> None:
+                    self.key = key
+
+            return _Wallet(key)
 
 setup_logger(bot_name="pfpl")  # ← Bot 切替時はここだけ変える
 
