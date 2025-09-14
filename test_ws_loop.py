@@ -2,7 +2,6 @@ import functools
 import ssl
 
 import anyio
-import certifi
 import pytest
 import websockets
 from hl_core.api import WSClient

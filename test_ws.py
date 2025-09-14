@@ -2,7 +2,6 @@ import json
 import ssl
 
 import anyio
-import certifi
 import pytest
 import websockets
 
