@@ -6,6 +6,7 @@ verification when available.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -22,3 +23,5 @@ if str(SRC_PATH) not in sys.path:
 # variables (e.g. requests, httpx, websockets).
 os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+
+logging.basicConfig(level=logging.DEBUG)
