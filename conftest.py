@@ -3,6 +3,7 @@
 Ensures source package is importable and uses certifi for SSL
 verification when available.
 """
+
 from __future__ import annotations
 
 import os

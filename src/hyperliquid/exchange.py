@@ -4,6 +4,7 @@ This provides only the attributes and methods exercised by the unit
 tests so that strategies depending on the official SDK can be
 constructed without performing real network I/O.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
