@@ -26,7 +26,7 @@ setup_logger(
 logger = logging.getLogger(__name__)
 
 MAX_ORDER_PER_SEC = 3
-SEMA = asyncio.Semaphore(3)  # 発注 3 req/s 共有
+SEMA = asyncio.Semaphore(MAX_ORDER_PER_SEC)  # 発注 3 req/s 共有
 
 
 async def _place_order_async(ex, *args, **kwargs):
@@ -71,21 +71,19 @@ async def _place_order_async(ex, *args, **kwargs):
                 kwargs["sz"] = sz
 
     res = await asyncio.to_thread(ex.order, *args, **kwargs)
-    logging.getLogger(__name__).debug("ORDER-ACK %s", res)
+    logger.debug("ORDER-ACK %s", res)
     try:
         st = (res or {}).get("response", {}).get("data", {}).get("statuses", [])
         st = st[0] if st else {}
         if "error" in st:
-            logging.getLogger(__name__).warning("ORDER-ERR %s", st.get("error"))
+            logger.warning("ORDER-ERR %s", st.get("error"))
 
         status_val = (st.get("status") or "").lower()
         if status_val == "filled" or "filled" in st:
             sz = st.get("sz") or st.get("size") or st.get("totalSz")
             px = st.get("px") or st.get("price") or st.get("avgPx")
             oid = st.get("oid") or st.get("orderId")
-            logging.getLogger(__name__).info(
-                "ORDER-FILLED sz=%s px=%s oid=%s", sz, px, oid
-            )
+            logger.info("ORDER-FILLED sz=%s px=%s oid=%s", sz, px, oid)
     except Exception:
         pass
     return res
