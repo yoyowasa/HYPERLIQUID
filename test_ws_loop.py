@@ -14,20 +14,29 @@ websockets.connect = functools.partial(_orig_connect, ssl=_sslctx)
 
 
 class DemoWS(WSClient):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.messages = []
+
     def on_message(self, data):  # 受信フック
-        print("HOOK:", data["channel"])
+        self.messages.append(data)
 
 
-async def main() -> None:
+async def main() -> list[dict]:
     ws = DemoWS(url="wss://api.hyperliquid.xyz/ws", reconnect=False)
     await ws.connect()
-    await ws.subscribe("allMids")  # 何か 1 チャンネル購読
-    await anyio.sleep(3)  # 3 秒間データを受信
+    await ws.subscribe("allMids")
+    await anyio.sleep(3)
     await ws.close()
+    return ws.messages
 
 
 def test_ws_loop_subscription() -> None:
     try:
-        anyio.run(main)
+        messages = anyio.run(main)
     except Exception as exc:  # pragma: no cover - network dependent
         pytest.skip(f"websocket loop failed: {exc}")
+    if not messages:
+        pytest.skip("no websocket messages received")
+    for msg in messages:
+        assert msg.get("channel") == "allMids"
