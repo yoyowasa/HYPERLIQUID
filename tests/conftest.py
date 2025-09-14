@@ -1,5 +1,6 @@
 # Ensure consistent SSL certificate verification using certifi's CA bundle.
-import os, certifi  # noqa: F401
+import os
+import certifi
 
 # Use certifi for OpenSSL-based libraries (requests, httpx, websockets, etc.).
 os.environ.setdefault("SSL_CERT_FILE", certifi.where())
