@@ -10,28 +10,34 @@ import websockets
 # Tests use certifi's CA bundle so websocket connections verify server
 # certificates instead of disabling SSL verification.
 
+# 検証済みのSSLコンテキストでHyperliquid WSに接続し、
+# "allMids" チャネルの実データだけを3件集めて返す（確認用の軽量ヘルパ）
+async def main() -> list[dict[str, object]]:
 
-async def main() -> None:
-    """Subscribe to the allMids feed using a verified SSL context.
-
-    Requires certifi to supply trusted root certificates.
-    """
     sslctx = ssl.create_default_context(cafile=certifi.where())
 
-    async with websockets.connect(
-        "wss://api.hyperliquid.xyz/ws", ping_interval=None, ssl=sslctx
-    ) as ws:
-        await ws.send(
-            json.dumps({"method": "subscribe", "subscription": {"type": "allMids"}})
-        )
+    async with anyio.fail_after(5):
+        async with websockets.connect(
+            "wss://api.hyperliquid.xyz/ws", ping_interval=None, ssl=sslctx
+        ) as ws:
+            await ws.send(
+                json.dumps({"method": "subscribe", "subscription": {"type": "allMids"}})
+            )
+            messages: list[dict[str, object]] = []
+            while len(messages) < 3:
+                raw = await ws.recv()
+                data = json.loads(raw)
+                if isinstance(data, dict) and data.get("channel") == "allMids":
+                    messages.append(data)
+            return messages
 
-        for _ in range(3):  # ここを追加 —— 3 件だけ受信
-            msg = await ws.recv()
-            logging.debug("recv: %s …", msg[:200])
 
 
 def test_ws_subscription() -> None:
     try:
-        anyio.run(main)
+        messages = anyio.run(main)
     except Exception as exc:  # pragma: no cover - network dependent
         pytest.skip(f"websocket connection failed: {exc}")
+    assert len(messages) == 3
+    for msg in messages:
+        assert msg.get("channel") == "allMids"
