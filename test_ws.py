@@ -2,17 +2,17 @@ import json
 import ssl
 
 import anyio
+import certifi
 import pytest
 import websockets
 
 
 async def main() -> None:
-    # Disable certificate verification to allow connecting in environments
-    # where the Hyperliquid certificate chain is not trusted.
-    _sslctx = ssl._create_unverified_context()
+    """Subscribe to the allMids feed using a verified SSL context."""
+    sslctx = ssl.create_default_context(cafile=certifi.where())
 
     async with websockets.connect(
-        "wss://api.hyperliquid.xyz/ws", ping_interval=None, ssl=_sslctx
+        "wss://api.hyperliquid.xyz/ws", ping_interval=None, ssl=sslctx
     ) as ws:
         await ws.send(
             json.dumps({"method": "subscribe", "subscription": {"type": "allMids"}})

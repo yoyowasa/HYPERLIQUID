@@ -2,15 +2,10 @@ import functools
 import ssl
 
 import anyio
+import certifi
 import pytest
 import websockets
 from hl_core.api import WSClient
-
-# Disable certificate verification globally for websockets to allow
-# connections in environments where the certificate chain isn't trusted.
-_sslctx = ssl._create_unverified_context()
-_orig_connect = websockets.connect
-websockets.connect = functools.partial(_orig_connect, ssl=_sslctx)
 
 
 class DemoWS(WSClient):
@@ -19,11 +14,20 @@ class DemoWS(WSClient):
 
 
 async def main() -> None:
+    sslctx = ssl.create_default_context(cafile=certifi.where())
+
+    orig_connect = websockets.connect
+    patched_connect = functools.partial(orig_connect, ssl=sslctx)
+
     ws = DemoWS(url="wss://api.hyperliquid.xyz/ws", reconnect=False)
-    await ws.connect()
-    await ws.subscribe("allMids")  # 何か 1 チャンネル購読
-    await anyio.sleep(3)  # 3 秒間データを受信
-    await ws.close()
+    try:
+        websockets.connect = patched_connect
+        await ws.connect()
+        await ws.subscribe("allMids")  # 何か 1 チャンネル購読
+        await anyio.sleep(3)  # 3 秒間データを受信
+    finally:
+        websockets.connect = orig_connect
+        await ws.close()
 
 
 def test_ws_loop_subscription() -> None:
