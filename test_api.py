@@ -1,5 +1,12 @@
+import os
+
 import anyio
+import certifi
 from hl_core.api import HTTPClient
+
+# Ensure HTTPClient uses certifi's CA bundle for SSL verification.
+os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
 
 
 async def main() -> None:
