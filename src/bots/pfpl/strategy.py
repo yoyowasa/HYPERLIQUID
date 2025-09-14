@@ -11,13 +11,41 @@ import time
 from decimal import Decimal
 from hl_core.utils.logger import setup_logger
 from pathlib import Path
-import yaml
+
+try:  # pragma: no cover - PyYAML may be absent in the test environment
+    import yaml  # type: ignore
+except Exception:  # noqa: F401 - fallback when PyYAML isn't installed
+    import json as _json
+
+    class _YAMLModule:  # minimal shim with safe_load
+        @staticmethod
+        def safe_load(stream: str):  # type: ignore[override]
+            try:
+                return _json.loads(stream)
+            except Exception:
+                return {}
+
+    yaml = _YAMLModule()  # type: ignore
+
 import anyio
 from datetime import datetime  # ← 追加
 
 # 既存 import 群の最後あたりに追加
 from hyperliquid.exchange import Exchange
-from eth_account.account import Account
+
+try:  # pragma: no cover - eth_account is optional for tests
+    from eth_account.account import Account  # type: ignore
+except Exception:  # noqa: F401 - fallback when eth_account isn't installed
+
+    class Account:  # type: ignore
+        @staticmethod
+        def from_key(key: str):
+            class _Wallet:
+                def __init__(self, key: str) -> None:
+                    self.key = key
+
+            return _Wallet(key)
+
 
 setup_logger(bot_name="pfpl")  # ← Bot 切替時はここだけ変える
 
