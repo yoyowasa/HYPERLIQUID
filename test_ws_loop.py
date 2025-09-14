@@ -1,5 +1,15 @@
+import functools
+import ssl
+
 import anyio
+import certifi
+import websockets
 from hl_core.api import WSClient
+
+# Ensure websockets uses certifi's CA bundle for TLS verification.
+_sslctx = ssl.create_default_context(cafile=certifi.where())
+_orig_connect = websockets.connect
+websockets.connect = functools.partial(_orig_connect, ssl=_sslctx)
 
 
 class DemoWS(WSClient):
