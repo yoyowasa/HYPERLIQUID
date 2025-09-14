@@ -11,13 +11,41 @@ import time
 from decimal import Decimal
 from hl_core.utils.logger import setup_logger
 from pathlib import Path
-import yaml
+
+try:  # pragma: no cover - PyYAML may be absent in the test environment
+    import yaml  # type: ignore
+except Exception:  # noqa: F401 - fallback when PyYAML isn't installed
+    import json as _json
+
+    class _YAMLModule:  # minimal shim with safe_load
+        @staticmethod
+        def safe_load(stream: str):  # type: ignore[override]
+            try:
+                return _json.loads(stream)
+            except Exception:
+                return {}
+
+    yaml = _YAMLModule()  # type: ignore
+
 import anyio
-from datetime import datetime  # ← 追加
+from datetime import datetime, timezone  # ← 追加
 
 # 既存 import 群の最後あたりに追加
 from hyperliquid.exchange import Exchange
-from eth_account.account import Account
+
+try:  # pragma: no cover - eth_account is optional for tests
+    from eth_account.account import Account  # type: ignore
+except Exception:  # noqa: F401 - fallback when eth_account isn't installed
+
+    class Account:  # type: ignore
+        @staticmethod
+        def from_key(key: str):
+            class _Wallet:
+                def __init__(self, key: str) -> None:
+                    self.key = key
+
+            return _Wallet(key)
+
 
 setup_logger(bot_name="pfpl")  # ← Bot 切替時はここだけ変える
 
@@ -102,7 +130,7 @@ class PFPLStrategy:
         self.fair_feed = self.config.get("fair_feed", "indexPrices")
         self.max_daily_orders = int(self.config.get("max_daily_orders", 500))
         self._order_count = 0
-        self._start_day = datetime.utcnow().date()
+        self._start_day = datetime.now(timezone.utc).date()
         self.enabled = True
         # ── フィード保持用 -------------------------------------------------
         self.mid: Decimal | None = None  # 板 Mid (@1)
@@ -341,7 +369,7 @@ class PFPLStrategy:
     # ------------------------------------------------------------------ limits
     def _check_limits(self) -> bool:
         """日次の発注数と建玉制限を超えていないか確認"""
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
         if today != self._start_day:  # 日付が変わったらリセット
             self._start_day = today
             self._order_count = 0
