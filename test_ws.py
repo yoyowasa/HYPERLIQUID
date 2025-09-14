@@ -1,5 +1,6 @@
 import json
 import ssl
+from typing import Any
 
 import anyio
 import certifi
@@ -7,9 +8,10 @@ import pytest
 import websockets
 
 
-async def main() -> None:
+async def main() -> list[dict[str, Any]]:
     """Subscribe to the allMids feed using a verified SSL context."""
     sslctx = ssl.create_default_context(cafile=certifi.where())
+    messages: list[dict[str, Any]] = []
 
     async with websockets.connect(
         "wss://api.hyperliquid.xyz/ws", ping_interval=None, ssl=sslctx
@@ -21,6 +23,9 @@ async def main() -> None:
         for _ in range(3):  # ここを追加 —— 3 件だけ受信
             msg = await ws.recv()
             print("recv:", msg[:200], "…")
+            messages.append(json.loads(msg))
+
+    return messages
 
 
 def test_ws_subscription() -> None:
