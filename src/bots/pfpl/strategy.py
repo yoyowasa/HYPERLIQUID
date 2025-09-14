@@ -47,8 +47,6 @@ except Exception:  # noqa: F401 - fallback when eth_account isn't installed
             return _Wallet(key)
 
 
-setup_logger(bot_name="pfpl")  # ← Bot 切替時はここだけ変える
-
 logger = logging.getLogger(__name__)
 
 
@@ -56,9 +54,15 @@ class PFPLStrategy:
     """Price-Fair-Price-Lag bot"""
 
     # ← シグネチャはそのまま
+    _LOGGER_INITIALISED = False
+    _FILE_HANDLERS: set[str] = set()
+
     def __init__(
         self, *, config: dict[str, Any], semaphore: asyncio.Semaphore | None = None
     ):
+        if not PFPLStrategy._LOGGER_INITIALISED:
+            setup_logger(bot_name="pfpl")
+            PFPLStrategy._LOGGER_INITIALISED = True
         # ── ① YAML と CLI のマージ ───────────────────────
         yml_path = Path(__file__).with_name("config.yaml")
         yaml_conf: dict[str, Any] = {}
@@ -152,9 +156,11 @@ class PFPLStrategy:
             pass  # pytest 収集時など、イベントループが無い場合
 
         # ─── ここから追加（ロガーをペアごとのファイルへも出力）────
-        h = logging.FileHandler(f"strategy_{self.symbol}.log", encoding="utf-8")
-        h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-        logging.getLogger().addHandler(h)
+        if self.symbol not in PFPLStrategy._FILE_HANDLERS:
+            h = logging.FileHandler(f"strategy_{self.symbol}.log", encoding="utf-8")
+            h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+            logging.getLogger().addHandler(h)
+            PFPLStrategy._FILE_HANDLERS.add(self.symbol)
 
         logger.info("PFPLStrategy initialised with %s", self.config)
 
