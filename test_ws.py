@@ -6,9 +6,15 @@ import certifi
 import pytest
 import websockets
 
+# Tests use certifi's CA bundle so websocket connections verify server
+# certificates instead of disabling SSL verification.
+
 
 async def main() -> None:
-    """Subscribe to the allMids feed using a verified SSL context."""
+    """Subscribe to the allMids feed using a verified SSL context.
+
+    Requires certifi to supply trusted root certificates.
+    """
     sslctx = ssl.create_default_context(cafile=certifi.where())
 
     async with websockets.connect(
