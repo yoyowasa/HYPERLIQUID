@@ -28,7 +28,7 @@ except Exception:  # noqa: F401 - fallback when PyYAML isn't installed
     yaml = _YAMLModule()  # type: ignore
 
 import anyio
-from datetime import datetime  # ← 追加
+from datetime import datetime, timezone  # ← 追加
 
 # 既存 import 群の最後あたりに追加
 from hyperliquid.exchange import Exchange
@@ -130,7 +130,7 @@ class PFPLStrategy:
         self.fair_feed = self.config.get("fair_feed", "indexPrices")
         self.max_daily_orders = int(self.config.get("max_daily_orders", 500))
         self._order_count = 0
-        self._start_day = datetime.utcnow().date()
+        self._start_day = datetime.now(timezone.utc).date()
         self.enabled = True
         # ── フィード保持用 -------------------------------------------------
         self.mid: Decimal | None = None  # 板 Mid (@1)
@@ -369,7 +369,7 @@ class PFPLStrategy:
     # ------------------------------------------------------------------ limits
     def _check_limits(self) -> bool:
         """日次の発注数と建玉制限を超えていないか確認"""
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
         if today != self._start_day:  # 日付が変わったらリセット
             self._start_day = today
             self._order_count = 0
