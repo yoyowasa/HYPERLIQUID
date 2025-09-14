@@ -1,4 +1,5 @@
 import json
+import logging
 import ssl
 
 import anyio
@@ -26,7 +27,7 @@ async def main() -> None:
 
         for _ in range(3):  # ここを追加 —— 3 件だけ受信
             msg = await ws.recv()
-            print("recv:", msg[:200], "…")
+            logging.debug("recv: %s …", msg[:200])
 
 
 def test_ws_subscription() -> None:
