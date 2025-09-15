@@ -9,9 +9,8 @@ import anyio
 import pytest
 import websockets
 from websockets.sync.server import serve
-
-# This test runs entirely locally and requires no network access.
-
+# _subscriber: モックWSへ接続し、3件のメッセージを受信して内容を検証する
+"""Connects to the mock WS and asserts 3 sequential mids messages."""
 
 @pytest.fixture
 def mock_hyperliquid_ws_server() -> str:
@@ -43,5 +42,7 @@ async def _subscriber(url: str) -> None:
             assert json.loads(msg) == {"type": "mids", "data": i}
 
 
+# test_ws_subscription: anyioランナーで非同期購読関数を実行する単体テスト
+"""Runs the subscriber against a local mock server (no network)."""
 def test_ws_subscription(mock_hyperliquid_ws_server: str) -> None:
     anyio.run(_subscriber, mock_hyperliquid_ws_server)
