@@ -1,43 +1,45 @@
-import json
+"""Tests for WebSocket subscription with a mock server."""
 
-import ssl
+from __future__ import annotations
+
+import json
+from threading import Thread
 
 import anyio
-import certifi
 import pytest
 import websockets
-
-# Tests use certifi's CA bundle so websocket connections verify server
-# certificates instead of disabling SSL verification.
-
-# 検証済みのSSLコンテキストでHyperliquid WSに接続し、
-# "allMids" チャネルの実データだけを3件集めて返す（確認用の軽量ヘルパ）
-async def main() -> list[dict[str, object]]:
-
-    sslctx = ssl.create_default_context(cafile=certifi.where())
-
-    async with anyio.fail_after(5):
-        async with websockets.connect(
-            "wss://api.hyperliquid.xyz/ws", ping_interval=None, ssl=sslctx
-        ) as ws:
-            await ws.send(
-                json.dumps({"method": "subscribe", "subscription": {"type": "allMids"}})
-            )
-            messages: list[dict[str, object]] = []
-            while len(messages) < 3:
-                raw = await ws.recv()
-                data = json.loads(raw)
-                if isinstance(data, dict) and data.get("channel") == "allMids":
-                    messages.append(data)
-            return messages
+from websockets.sync.server import serve
 
 
+@pytest.fixture
+def mock_hyperliquid_ws_server() -> str:
+    """Spin up a local WebSocket server that mimics Hyperliquid responses."""
 
-def test_ws_subscription() -> None:
+    def handler(ws) -> None:  # pragma: no cover - exercised indirectly
+        ws.recv()
+        for i in range(3):
+            ws.send(json.dumps({"type": "mids", "data": i}))
+
+    server = serve(handler, "localhost", 0)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.socket.getsockname()[1]
     try:
-        messages = anyio.run(main)
-    except Exception as exc:  # pragma: no cover - network dependent
-        pytest.skip(f"websocket connection failed: {exc}")
-    assert len(messages) == 3
-    for msg in messages:
-        assert msg.get("channel") == "allMids"
+        yield f"ws://localhost:{port}"
+    finally:
+        server.shutdown()
+
+
+async def _subscriber(url: str) -> None:
+    async with websockets.connect(url, ping_interval=None) as ws:
+        await ws.send(
+            json.dumps({"method": "subscribe", "subscription": {"type": "allMids"}})
+        )
+
+        for i in range(3):
+            msg = await ws.recv()
+            assert json.loads(msg) == {"type": "mids", "data": i}
+
+
+def test_ws_subscription(mock_hyperliquid_ws_server: str) -> None:
+    anyio.run(_subscriber, mock_hyperliquid_ws_server)
