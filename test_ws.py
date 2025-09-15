@@ -33,7 +33,12 @@ def mock_hyperliquid_ws_server() -> str:
 async def _subscriber(url: str) -> None:
     async with websockets.connect(url, ping_interval=None) as ws:
         await ws.send(
-            json.dumps({"method": "subscribe", "subscription": {"type": "allMids"}})
+            json.dumps(
+                {
+                    "method": "subscribe",
+                    "subscription": {"type": "allMids"},
+                }
+            )
         )
 
         for i in range(3):
