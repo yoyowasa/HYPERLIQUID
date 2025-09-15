@@ -1,3 +1,5 @@
+"""Tests for WebSocket loop subscription against the live Hyperliquid server."""
+
 import functools
 import ssl
 
@@ -30,6 +32,7 @@ async def main() -> None:
         await ws.close()
 
 
+@pytest.mark.network
 def test_ws_loop_subscription() -> None:
     try:
         anyio.run(main)
