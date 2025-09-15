@@ -1,42 +1,26 @@
-"""Tests for WebSocket subscription using both mock and live servers."""
-
+"""Tests for WebSocket subscription with a local mock server (no network)."""
 from __future__ import annotations
 
 import json
-import ssl
 from threading import Thread
 
 import anyio
-import certifi
 import pytest
 import websockets
 from websockets.sync.server import serve
 
 
+# mock_hyperliquid_ws_server: Hyperliquid風の応答を返すローカルWSサーバを起動する
 @pytest.fixture
 def mock_hyperliquid_ws_server() -> str:
     """Spin up a local WebSocket server that mimics Hyperliquid responses."""
-
     def handler(ws) -> None:  # pragma: no cover - exercised indirectly
+        # クライアントからsubscribe要求を受信し、ACKを返した後、3件のイベントを送る
         raw = ws.recv()
         request = json.loads(raw)
-        ws.send(
-            json.dumps(
-                {
-                    "channel": "subscriptionResponse",
-                    "data": request,
-                }
-            )
-        )
+        ws.send(json.dumps({"channel": "subscriptionResponse", "data": request}))
         for i in range(3):
-            ws.send(
-                json.dumps(
-                    {
-                        "channel": "allMids",
-                        "data": {"sequence": i},
-                    }
-                )
-            )
+            ws.send(json.dumps({"channel": "allMids", "data": {"sequence": i}}))
 
     server = serve(handler, "localhost", 0)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -49,7 +33,9 @@ def mock_hyperliquid_ws_server() -> str:
         thread.join(timeout=1)
 
 
+# _subscriber: モックWSへ接続し、ACKと3件のイベントを検証する
 async def _subscriber(url: str) -> None:
+    """Connect to the mock WS and assert ACK + 3 sequential allMids messages."""
     async with websockets.connect(url, ping_interval=None) as ws:
         await ws.send(
             json.dumps({"method": "subscribe", "subscription": {"type": "allMids"}})
@@ -68,37 +54,8 @@ async def _subscriber(url: str) -> None:
             }
 
 
-async def _collect_live_all_mids() -> list[dict[str, object]]:
-    """Subscribe to the live Hyperliquid WS and collect a few allMids messages."""
-
-    sslctx = ssl.create_default_context(cafile=certifi.where())
-
-    async with anyio.fail_after(5):
-        async with websockets.connect(
-            "wss://api.hyperliquid.xyz/ws", ping_interval=None, ssl=sslctx
-        ) as ws:
-            await ws.send(
-                json.dumps({"method": "subscribe", "subscription": {"type": "allMids"}})
-            )
-            messages: list[dict[str, object]] = []
-            while len(messages) < 3:
-                raw = await ws.recv()
-                data = json.loads(raw)
-                if isinstance(data, dict) and data.get("channel") == "allMids":
-                    messages.append(data)
-            return messages
-
-
+# test_ws_subscription_mock: anyioで非同期購読を実行するローカル専用テスト
 def test_ws_subscription_mock(mock_hyperliquid_ws_server: str) -> None:
+    """Runs the subscriber against a local mock server only (no network)."""
     anyio.run(_subscriber, mock_hyperliquid_ws_server)
 
-
-@pytest.mark.network
-def test_ws_subscription_live() -> None:
-    try:
-        messages = anyio.run(_collect_live_all_mids)
-    except Exception as exc:  # pragma: no cover - network dependent
-        pytest.skip(f"websocket connection failed: {exc}")
-    assert len(messages) == 3
-    for msg in messages:
-        assert msg.get("channel") == "allMids"
