@@ -1,5 +1,8 @@
-import json
+"""Tests for WebSocket subscription against the live Hyperliquid server."""
 
+from __future__ import annotations
+
+import json
 import ssl
 
 import anyio
@@ -10,10 +13,10 @@ import websockets
 # Tests use certifi's CA bundle so websocket connections verify server
 # certificates instead of disabling SSL verification.
 
+
 # 検証済みのSSLコンテキストでHyperliquid WSに接続し、
 # "allMids" チャネルの実データだけを3件集めて返す（確認用の軽量ヘルパ）
 async def main() -> list[dict[str, object]]:
-
     sslctx = ssl.create_default_context(cafile=certifi.where())
 
     async with anyio.fail_after(5):
@@ -32,7 +35,7 @@ async def main() -> list[dict[str, object]]:
             return messages
 
 
-
+@pytest.mark.network
 def test_ws_subscription() -> None:
     try:
         messages = anyio.run(main)
