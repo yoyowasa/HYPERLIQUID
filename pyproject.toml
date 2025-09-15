@@ -41,3 +41,8 @@ black = "^25.1.0"
 mypy = "^1.16.1"
 pre-commit = "^4.2.0"
 hyperliquid-python-sdk = "^0.4.0"
+
+[tool.pytest.ini_options]
+markers = [
+    "network: tests that require network access",
+]
