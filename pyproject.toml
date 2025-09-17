@@ -5,11 +5,11 @@ description = "Hyperliquid trading bot monorepo"      # function: 説明
 authors = ["Yoshi <yoshiyoshi@example.com>"]          # function: 著者
 readme = "README.md"                                   # function: リポのREADMEをメインに
 
-# function: srcレイアウトで配布対象を限定（app/hl_core/bots を src/ 配下から収集）
+# function: srcレイアウトで配布対象を限定（hyperliquid/hl_core/bots を src/ 配下から収集）
 packages = [
-  { include = "app",     from = "src" },
-  { include = "hl_core", from = "src" },
-  { include = "bots",    from = "src" }
+  { include = "hyperliquid", from = "src" },
+  { include = "hl_core",     from = "src" },
+  { include = "bots",        from = "src" }
 ]
 
 # function: ランタイム依存（本番・実行に必要なもの）
