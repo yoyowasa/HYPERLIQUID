@@ -1,0 +1,81 @@
+# GitHub Actions: CI for bot-only repo
+# 目的: PRやmainへのpush時に、ruff/pyright/pytest(非live)を自動実行し、緑/赤で判定する。
+
+name: CI (bot)
+
+on:
+  # PRを作った/更新したときに走る（CodexのPR含む）
+  pull_request:
+    branches: [ main, develop ]
+  # mainへ直接pushされたときも走る（保険）
+  push:
+    branches: [ main ]
+  # 手動実行できると便利（Run workflow ボタン）
+  workflow_dispatch:
+
+# 連続更新時は最新だけ残して古い実行をキャンセル（無駄な待ちを防ぐ）
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# 最小権限
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify (ruff / pyright / pytest -m "not live")
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # 既定の安全ガードと再現性（明示的に本番発注しない / DBはsqlite）
+    env:
+      DRY_RUN: "true"                 # function: 実発注を抑止する既定フラグ
+      DATABASE_URL: "sqlite:///bot.db" # function: テスト/CI用の軽量DB（再現容易）
+      POETRY_VIRTUALENVS_CREATE: "false" # function: Poetryの仮想環境を作らずOS環境へ入れる（高速化）
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      # function: リポジトリのコードを取得
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # function: Python 3.11 をセットアップ
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # function: Poetry をインストール
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "1.8.3"
+
+      # function: 依存のキャッシュ（速くするため）
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cache/pypoetry
+          key: ${{ runner.os }}-poetry-${{ hashFiles('**/poetry.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-poetry-
+
+      # function: 開発依存込みでインストール（ruff/pyright/pytest など）
+      - name: Install (dev)
+        run: poetry install --with dev --no-interaction
+
+      # function: Lint（コード規約チェック）
+      - name: Lint (ruff)
+        run: poetry run ruff check .
+
+      # function: 型チェック（落とし穴の早期発見）
+      - name: Type check (pyright)
+        run: poetry run pyright
+
+      # function: ユニットテスト（live印のテストは除外して速く安全に）
+      - name: Unit tests (skip live)
+        run: poetry run pytest -q -m "not live" --maxfail=1
