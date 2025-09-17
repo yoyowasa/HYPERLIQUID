@@ -24,6 +24,7 @@ websockets = "^15.0.1"
 colorama = "^0.4.6"
 python-dotenv = "^1.1.1"
 hyperliquid-python-sdk = "^0.4.0"                     # function: SDKは実行時に使うので本体依存へ
+setuptools = "^75.0.0"                                # function: pkg_resources（SDK依存）を提供
 
 # function: 開発時のみ使う依存（CIで --with dev して実行）
 [tool.poetry.group.dev.dependencies]
