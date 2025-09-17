@@ -12,7 +12,9 @@ from .config import Settings, mask_secret, require_live_creds
 
 
 def get_base_url(network: str) -> str:
-    return constants.MAINNET_API_URL if network == "mainnet" else constants.TESTNET_API_URL
+    return (
+        constants.MAINNET_API_URL if network == "mainnet" else constants.TESTNET_API_URL
+    )
 
 
 def make_account(settings: Settings) -> Optional[LocalAccount]:
@@ -26,9 +28,15 @@ def make_clients(settings: Settings) -> Tuple[Info, Optional[Exchange], str]:
     info = Info(base_url, skip_ws=True)
     account = make_account(settings)
 
-    resolved_address = (settings.account_address or (account.address if account else "")) or ""
+    resolved_address = (
+        settings.account_address or (account.address if account else "")
+    ) or ""
 
-    if account and settings.account_address and settings.account_address.lower() != account.address.lower():
+    if (
+        account
+        and settings.account_address
+        and settings.account_address.lower() != account.address.lower()
+    ):
         print(
             f"[warn] HL_ACCOUNT_ADDRESS と秘密鍵由来のアドレスが不一致です。"
             f" 使用候補: {account.address} (pk={mask_secret(settings.private_key)})"
@@ -38,9 +46,13 @@ def make_clients(settings: Settings) -> Tuple[Info, Optional[Exchange], str]:
     return info, exchange, resolved_address
 
 
-def safe_market_open(exchange: Exchange, coin: str, is_buy: bool, sz: float, settings: Settings):
+def safe_market_open(
+    exchange: Exchange, coin: str, is_buy: bool, sz: float, settings: Settings
+):
     if settings.dry_run:
-        print(f"[dry-run] market_open({coin}, buy={is_buy}, sz={sz}) はブロックされました（DRY_RUN=true）")
+        print(
+            f"[dry-run] market_open({coin}, buy={is_buy}, sz={sz}) はブロックされました（DRY_RUN=true）"
+        )
         return {"status": "dry-run"}
     require_live_creds(settings)
     return exchange.market_open(coin, is_buy, sz)
