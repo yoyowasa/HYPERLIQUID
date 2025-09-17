@@ -31,6 +31,7 @@ ruff = "*"             # function: Lint（規約/軽量バグ検出）
 pyright = "*"          # function: 型チェック（Pythonの静的解析）
 pytest = "*"           # function: テストランナー
 pytest-asyncio = "*"   # function: asyncテストの補助（BOTはasyncが多いため）
+black = "^24.8.0"      # function: フォーマッタ（CIで black --check を実行）
 
 # function: ruff の最小設定（速く・壊さず）
 [tool.ruff]
