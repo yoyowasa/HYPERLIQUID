@@ -1,43 +1,58 @@
-[project]
-name = "hyperliquid"
-version = "0.1.0"
-description = ""
-authors = [
-    {name = "Yoshi",email = "yoshiyoshi@example.com"}
-]
-readme = "README.md"
-requires-python = ">=3.13,<4.0"
+[tool.poetry]
+name = "hyperliquid"                                  # function: パッケージ名
+version = "0.1.0"                                     # function: バージョン
+description = "Hyperliquid trading bot monorepo"      # function: 説明
+authors = ["Yoshi <yoshiyoshi@example.com>"]          # function: 著者
+readme = "README.md"                                   # function: リポのREADMEをメインに
+
+# function: srcレイアウトで配布対象を限定（app/hl_core/bots を src/ 配下から収集）
 packages = [
-    { include = "app",       from = "src" },   # ← new
-    { include = "hl_core",   from = "src" },
-    { include = "bots",      from = "src" }
+  { include = "app",     from = "src" },
+  { include = "hl_core", from = "src" },
+  { include = "bots",    from = "src" }
 ]
 
-dependencies = [
-    "httpx (>=0.28.1,<0.29.0)",
-    "pydantic (>=2.11.7,<3.0.0)",
-    "rich (>=14.0.0,<15.0.0)",
-    "loguru (>=0.7.3,<0.8.0)",
-    "anyio (>=4.9.0,<5.0.0)",
-    "websockets (>=15.0.1,<16.0.0)",
-    "colorama (>=0.4.6,<0.5.0)",
-    "python-dotenv (>=1.1.1,<2.0.0)",
-    "setuptools (>=80.9.0,<81.0.0)"
-]
-
-
-[build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
-
+# function: ランタイム依存（本番・実行に必要なもの）
 [tool.poetry.dependencies]
+python = "^3.11"                                       # function: CIと揃える（setup-python:3.11）
 anyio = "^4.9.0"
+httpx = "^0.28.1"
+pydantic = "^2.11.7"
+rich = "^14.0.0"
+loguru = "^0.7.3"
+websockets = "^15.0.1"
+colorama = "^0.4.6"
+python-dotenv = "^1.1.1"
+hyperliquid-python-sdk = "^0.4.0"                     # function: SDKは実行時に使うので本体依存へ
 
+# function: 開発時のみ使う依存（CIで --with dev して実行）
 [tool.poetry.group.dev.dependencies]
-python = "^3.13"
-pytest = "^8.4.1"
-ruff = "^0.12.1"
-black = "^25.1.0"
-mypy = "^1.16.1"
-pre-commit = "^4.2.0"
-hyperliquid-python-sdk = "^0.4.0"
+ruff = "*"             # function: Lint（規約/軽量バグ検出）
+pyright = "*"          # function: 型チェック（Pythonの静的解析）
+pytest = "*"           # function: テストランナー
+pytest-asyncio = "*"   # function: asyncテストの補助（BOTはasyncが多いため）
+
+# function: ruff の最小設定（速く・壊さず）
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = ["build", "dist", ".venv", "node_modules"]
+
+# function: pyright の最小設定（まずはbasicでサクサク）
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+exclude = [".venv", "build", "dist", ".eggs"]
+
+# function: pytest の最小設定（既定で live マークを除外して安全・高速）
+[tool.pytest.ini_options]
+addopts = "-m 'not live' -q --maxfail=1"
+markers = [
+  "live: tests that hit live network/exchange; skipped in CI"
+]
+testpaths = ["tests"]
+
+# function: ビルド方式は poetry-core（CIのPoetry 1.8系と整合）
+[build-system]
+requires = ["poetry-core>=1.8.0,<2.0.0"]
+build-backend = "poetry.core.masonry.api"
