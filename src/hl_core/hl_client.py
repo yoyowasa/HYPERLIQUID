@@ -55,4 +55,7 @@ def safe_market_open(
         )
         return {"status": "dry-run"}
     require_live_creds(settings)
-    return exchange.market_open(coin, is_buy, sz)
+    market_open = getattr(exchange, "market_open", None)
+    if not callable(market_open):  # pragma: no cover - defensive guard
+        raise AttributeError("exchange.market_open is unavailable")
+    return market_open(coin, is_buy, sz)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from threading import Thread
 
 import anyio
@@ -12,7 +13,7 @@ from websockets.sync.server import serve
 
 
 @pytest.fixture
-def mock_hyperliquid_ws_server() -> str:
+def mock_hyperliquid_ws_server() -> Iterator[str]:
     """Spin up a local WebSocket server that mimics Hyperliquid responses."""
 
     def handler(ws) -> None:  # pragma: no cover - exercised indirectly

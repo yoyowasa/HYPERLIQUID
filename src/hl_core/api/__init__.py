@@ -56,7 +56,7 @@ class WSClient:
         self.reconnect = reconnect
         self.retry_sec = retry_sec
 
-        self._ws: websockets.WebSocketClientProtocol | None = None
+        self._ws: Any | None = None
         self._subs: set[str] = set()  # set に統一
         self._hb_task: asyncio.Task | None = None
 
@@ -79,8 +79,9 @@ class WSClient:
                 # Python 3.13 なので anyio.sleep が素直に使える
                 await anyio.sleep(30)
                 # self._ws がまだ生きていれば送信
-                if self._ws and not getattr(self._ws, "closed", False):
-                    await self._ws.send('{"type":"hb"}')
+                ws = self._ws
+                if ws and not getattr(ws, "closed", False):
+                    await ws.send('{"type":"hb"}')
         except asyncio.CancelledError:
             # connect() 側で self._hb_task.cancel() されたときに抜ける
             pass
@@ -106,7 +107,7 @@ class WSClient:
 
                     # 過去の購読を復元
                     for ch in self._subs:
-                        await self._ws.send(
+                        await ws.send(
                             json.dumps(
                                 {"method": "subscribe", "subscription": {"type": ch}}
                             )
@@ -142,7 +143,12 @@ class WSClient:
         if feed_type in self._subs:
             return  # 既に購読済み
 
-        await self._ws.send(
+        ws = self._ws
+        if ws is None:
+            logger.warning("WS handle missing; skip subscribe(%s)", feed_type)
+            return
+
+        await ws.send(
             json.dumps({"method": "subscribe", "subscription": {"type": feed_type}})
         )
         self._subs.add(feed_type)
@@ -154,7 +160,11 @@ class WSClient:
         サーバーから届く WebSocket メッセージを
         JSON デコードして on_message フックへ渡す。
         """
-        async for raw in self._ws:  # noqa: E501  type: ignore[operator]
+        ws = self._ws
+        if ws is None:
+            return
+
+        async for raw in ws:  # noqa: E501  type: ignore[operator]
             try:
                 msg = json.loads(raw)
             except Exception as exc:
@@ -172,9 +182,11 @@ class WSClient:
     async def close(self) -> None:
         if self._hb_task:
             self._hb_task.cancel()
-        if self._ws and not getattr(self._ws, "closed", False):
-            await self._ws.close()
+        ws = self._ws
+        if ws and not getattr(ws, "closed", False):
+            await ws.close()
         self._ready.clear()
+        self._ws = None
         logger.info("WS closed")
 
 
