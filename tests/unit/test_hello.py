@@ -2,14 +2,15 @@
 
 import sys
 import types
+from typing import Any, cast
 
 
 # function: hyperliquid SDKが未インストール環境でもテストできるようダミーモジュールを注入
-hyperliquid_pkg = types.ModuleType("hyperliquid")
-hyperliquid_exchange = types.ModuleType("hyperliquid.exchange")
-hyperliquid_info = types.ModuleType("hyperliquid.info")
-hyperliquid_utils = types.ModuleType("hyperliquid.utils")
-hyperliquid_utils_constants = types.ModuleType("hyperliquid.utils.constants")
+hyperliquid_pkg: Any = types.ModuleType("hyperliquid")
+hyperliquid_exchange: Any = types.ModuleType("hyperliquid.exchange")
+hyperliquid_info: Any = types.ModuleType("hyperliquid.info")
+hyperliquid_utils: Any = types.ModuleType("hyperliquid.utils")
+hyperliquid_utils_constants: Any = types.ModuleType("hyperliquid.utils.constants")
 
 
 class _DummyInfo:  # function: Info の雛形（user_state/metaのみ利用）
@@ -113,7 +114,7 @@ def test_safe_market_open_dry_run():
     )
     # function: DRY_RUNならexchangeはNoneでも到達しない（market_openを呼ばない）
     result = safe_market_open(
-        exchange=None, coin="BTC", is_buy=True, sz=0.001, settings=s
+        exchange=cast(Any, None), coin="BTC", is_buy=True, sz=0.001, settings=s
     )
     assert isinstance(result, dict)
     assert result.get("status") == "dry-run"
