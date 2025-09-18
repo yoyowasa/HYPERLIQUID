@@ -11,3 +11,8 @@ logs/
 
 # secrets
 .env
+# HYPERLIQUID_BOT_GITIGNORE
+# function: 環境変数ファイルをGit管理から除外し、テンプレ(例)だけは追跡する
+.env
+.env.*
+!.env.example

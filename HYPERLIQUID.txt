@@ -28,3 +28,9 @@ git commit -m "chore: bulk update after lint & format"
 
 # プッシュ
 git push
+
+強制上書き
+git fetch origin && git reset --hard origin/main && git clean -fdx
+
+
+code tunnel --name home-dev
