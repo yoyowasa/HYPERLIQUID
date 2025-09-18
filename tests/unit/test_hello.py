@@ -3,8 +3,6 @@
 import sys
 import types
 
-import pytest
-
 
 # function: hyperliquid SDKが未インストール環境でもテストできるようダミーモジュールを注入
 hyperliquid_pkg = types.ModuleType("hyperliquid")
@@ -57,11 +55,11 @@ setattr(hyperliquid_pkg, "info", hyperliquid_info)
 setattr(hyperliquid_pkg, "utils", hyperliquid_utils)
 
 # function: helloボットのmainをテスト対象として読み込む
-from bots.hello import main as hello_main
+from bots.hello import main as hello_main  # noqa: E402
 # function: DRY_RUNの挙動テスト用にsafe_market_openを読み込む
-from hl_core.hl_client import safe_market_open
+from hl_core.hl_client import safe_market_open  # noqa: E402
 # function: 設定オブジェクト（型付き）を利用してダミー設定を作る
-from hl_core.config import Settings
+from hl_core.config import Settings  # noqa: E402
 
 
 # function: main() がアドレスありのときに user_state を表示することを確認（Infoはモック）
