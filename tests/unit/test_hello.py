@@ -56,8 +56,10 @@ setattr(hyperliquid_pkg, "utils", hyperliquid_utils)
 
 # function: helloボットのmainをテスト対象として読み込む
 from bots.hello import main as hello_main  # noqa: E402
+
 # function: DRY_RUNの挙動テスト用にsafe_market_openを読み込む
 from hl_core.hl_client import safe_market_open  # noqa: E402
+
 # function: 設定オブジェクト（型付き）を利用してダミー設定を作る
 from hl_core.config import Settings  # noqa: E402
 
@@ -110,6 +112,8 @@ def test_safe_market_open_dry_run():
         log_level="INFO",
     )
     # function: DRY_RUNならexchangeはNoneでも到達しない（market_openを呼ばない）
-    result = safe_market_open(exchange=None, coin="BTC", is_buy=True, sz=0.001, settings=s)
+    result = safe_market_open(
+        exchange=None, coin="BTC", is_buy=True, sz=0.001, settings=s
+    )
     assert isinstance(result, dict)
     assert result.get("status") == "dry-run"
