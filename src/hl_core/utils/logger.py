@@ -7,6 +7,7 @@ import logging
 import logging.handlers
 import queue
 import threading
+import time as _time
 from pathlib import Path
 from typing import Final, Optional
 
@@ -144,6 +145,8 @@ def setup_logger(
     logging.getLogger().setLevel(file_level)
 
     # タイムゾーンを UTC に統一
-    logging.Formatter.converter = lambda ts: _dt.datetime.fromtimestamp(
-        ts, tz=_TZ
-    ).timetuple()
+    def _utc_converter(timestamp: float | None) -> _time.struct_time:
+        ts = 0.0 if timestamp is None else float(timestamp)
+        return _dt.datetime.fromtimestamp(ts, tz=_TZ).timetuple()
+
+    logging.Formatter.converter = _utc_converter  # type: ignore[assignment]

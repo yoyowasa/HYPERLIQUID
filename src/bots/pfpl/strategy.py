@@ -68,7 +68,8 @@ class PFPLStrategy:
         yaml_conf: dict[str, Any] = {}
         if yml_path.exists():
             with yml_path.open(encoding="utf-8") as f:
-                yaml_conf = yaml.safe_load(f) or {}
+                raw_conf = f.read()
+            yaml_conf = yaml.safe_load(raw_conf) or {}
         self.config = {**yaml_conf, **config}
         # --- Funding 直前クローズ用バッファ秒数（デフォルト 120）
         self.funding_close_buffer_secs: int = int(
@@ -89,10 +90,12 @@ class PFPLStrategy:
         # ------------------------------------------------------------------
 
         # ── 環境変数キー ────────────────────────────────
-        self.account = os.getenv("HL_ACCOUNT_ADDR")
-        self.secret = os.getenv("HL_API_SECRET")
-        if not (self.account and self.secret):
+        account = os.getenv("HL_ACCOUNT_ADDR")
+        secret = os.getenv("HL_API_SECRET")
+        if not (account and secret):
             raise RuntimeError("HL_ACCOUNT_ADDR / HL_API_SECRET が未設定")
+        self.account: str = account
+        self.secret: str = secret
 
         # ── Hyperliquid SDK 初期化 ──────────────────────
         self.wallet = Account.from_key(self.secret)
@@ -318,6 +321,7 @@ class PFPLStrategy:
     ) -> None:
         """IOC で即時約定、失敗時リトライ付き"""
         is_buy = side == "BUY"
+        mid_value = self.mid
 
         # ── Dry-run ───────────────────
         if self.config.get("dry_run"):
@@ -329,17 +333,27 @@ class PFPLStrategy:
 
         # --- eps_pct を適用した価格補正 -------------------------------
         if order_type == "limit":
+            if mid_value is None:
+                logger.warning("mid price unavailable; skip order placement")
+                return
             limit_px = (
                 limit_px
                 if limit_px is not None
-                else self._price_with_offset(float(self.mid), side)
+                else self._price_with_offset(float(mid_value), side)
             )
+
+        if mid_value is None:
+            logger.warning("mid price unavailable; skip order placement")
+            return
 
         async with self.sem:  # 1 秒あたり発注制御
             MAX_RETRY = 3
+            order_fn = getattr(self.exchange, "order", None)
+            if not callable(order_fn):
+                raise AttributeError("exchange.order is not callable")
             for attempt in range(1, MAX_RETRY + 1):
                 try:
-                    resp = self.exchange.order(
+                    resp = order_fn(
                         coin=self.symbol,
                         is_buy=is_buy,
                         sz=float(size),

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, field_validator
@@ -39,14 +39,15 @@ class Settings(BaseModel):
 
 def load_settings() -> Settings:
     load_env_file()
-    return Settings(
-        dry_run=os.getenv("DRY_RUN", "true"),
-        database_url=os.getenv("DATABASE_URL", "sqlite:///bot.db"),
-        network=os.getenv("NETWORK", "testnet"),
-        account_address=os.getenv("HL_ACCOUNT_ADDRESS"),
-        private_key=os.getenv("HL_PRIVATE_KEY"),
-        log_level=os.getenv("LOG_LEVEL", "INFO"),
-    )
+    raw: dict[str, Any] = {
+        "dry_run": os.getenv("DRY_RUN", "true"),
+        "database_url": os.getenv("DATABASE_URL", "sqlite:///bot.db"),
+        "network": os.getenv("NETWORK", "testnet"),
+        "account_address": os.getenv("HL_ACCOUNT_ADDRESS"),
+        "private_key": os.getenv("HL_PRIVATE_KEY"),
+        "log_level": os.getenv("LOG_LEVEL", "INFO"),
+    }
+    return Settings.model_validate(raw)
 
 
 def require_live_creds(settings: Settings) -> None:
