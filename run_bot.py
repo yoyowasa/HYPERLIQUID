@@ -9,7 +9,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from hl_core.config import load_settings, require_live_creds  # function: .env読込とlive発注の必須チェック
+from hl_core.config import (
+    load_settings,
+    require_live_creds,
+)  # function: .env読込とlive発注の必須チェック
 
 from hl_core.api import WSClient
 from hl_core.utils.logger import setup_logger
@@ -116,8 +119,15 @@ async def main() -> None:
     # function: 実稼働の安全ゲート（GO/DRY_RUN/NETWORK/鍵）
     settings = load_settings()  # function: .env を読み込み（DRY_RUN/NETWORK/鍵）
     is_mainnet = not args.testnet  # function: --testnet が無指定なら本番(mainnet)
-    go_ok = ((getenv("GO") or "").strip().lower() in {"1", "true", "live", "go"})  # function: 明示GOフラグ
-    effective_dry_run = (args.dry_run or settings.dry_run)  # function: CLI/環境のどちらかがtrueならDRY
+    go_ok = (getenv("GO") or "").strip().lower() in {
+        "1",
+        "true",
+        "live",
+        "go",
+    }  # function: 明示GOフラグ
+    effective_dry_run = (
+        args.dry_run or settings.dry_run
+    )  # function: CLI/環境のどちらかがtrueならDRY
 
     if is_mainnet:
         if not go_ok:
@@ -126,7 +136,9 @@ async def main() -> None:
         if effective_dry_run:
             print("[exit] DRY_RUN=true（--dry-run または .env）。本番発注を中止。")
             return
-        require_live_creds(settings)  # function: HL_PRIVATE_KEY / HL_ACCOUNT_ADDRESS を必須化
+        require_live_creds(
+            settings
+        )  # function: HL_PRIVATE_KEY / HL_ACCOUNT_ADDRESS を必須化
 
     logging.basicConfig(level=args.log_level)
 
