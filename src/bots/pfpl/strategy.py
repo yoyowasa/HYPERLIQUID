@@ -82,6 +82,8 @@ class PFPLStrategy:
 
         # ── ② 通貨ペア・Semaphore 初期化 ─────────────────
         self.symbol: str = self.config.get("target_symbol", "ETH-PERP")
+        sym_parts = self.symbol.split("-", 1)
+        self.base_coin: str = sym_parts[0] if sym_parts else self.symbol
 
         max_ops = int(self.config.get("max_order_per_sec", 3))  # 1 秒あたり発注上限
         self.sem: asyncio.Semaphore = semaphore or asyncio.Semaphore(max_ops)
@@ -133,6 +135,7 @@ class PFPLStrategy:
         # ── Bot パラメータ ──────────────────────────────
         self.cooldown = float(self.config.get("cooldown_sec", 1.0))
         self.order_usd = Decimal(self.config.get("order_usd", 10))
+        self.dry_run = bool(self.config.get("dry_run"))
         self.max_pos = Decimal(self.config.get("max_position_usd", 100))
         self.fair_feed = self.config.get("fair_feed", "indexPrices")
         self.max_daily_orders = int(self.config.get("max_daily_orders", 500))
@@ -205,22 +208,32 @@ class PFPLStrategy:
         if ch == "allMids":  # 板 mid 群
             self.mid = Decimal(msg["data"]["mids"]["@1"])
         elif ch == "indexPrices":  # インデックス価格
-            self.idx = Decimal(msg["data"]["prices"]["ETH"])
+            prices = (msg.get("data") or {}).get("prices", {})
+            price_val = prices.get(self.base_coin)
+            if price_val is not None:
+                self.idx = Decimal(str(price_val))
         elif ch == "oraclePrices":  # オラクル価格
-            self.ora = Decimal(msg["data"]["prices"]["ETH"])
+            prices = (msg.get("data") or {}).get("prices", {})
+            price_val = prices.get(self.base_coin)
+            if price_val is not None:
+                self.ora = Decimal(str(price_val))
         elif msg.get("channel") == "fundingInfo":
             data = msg.get("data", {})
-            next_ts = data.get("nextFundingTime")
-            if next_ts is None:
+            next_ts = data.get("nextFundingTime") if isinstance(data, dict) else None
+            if next_ts is None and isinstance(data, dict):
                 info = data.get(self.symbol)
-                if info:
+                if isinstance(info, dict):
                     next_ts = info.get("nextFundingTime")
+            if next_ts is None and isinstance(data, dict):
+                base_info = data.get(self.base_coin)
+                if isinstance(base_info, dict):
+                    next_ts = base_info.get("nextFundingTime")
             if next_ts is not None:
                 self.next_funding_ts = float(next_ts)
                 logger.debug("fundingInfo: next @ %s", self.next_funding_ts)
 
         # fair が作れれば評価へ
-        if self.mid and self.idx and self.ora:
+        if self.mid is not None and self.idx is not None and self.ora is not None:
             self.fair = (self.idx + self.ora) / 2  # ★ 平均で公正価格
             self.evaluate()
 
@@ -265,6 +278,17 @@ class PFPLStrategy:
         th_abs = Decimal(str(self.config.get("threshold", "1.0")))  # USD
         th_pct = Decimal(str(self.config.get("threshold_pct", "0.05")))  # %
         mode = self.config.get("mode", "both")  # both / either
+
+        logger.debug(
+            "signal: abs=%.6f pct=%.6f thr=%.6f thr_pct=%.6f pos_usd=%.2f order_usd=%.2f dry_run=%s",
+            abs_diff,
+            pct_diff,
+            th_abs,
+            th_pct,
+            self.pos_usd,
+            self.order_usd,
+            self.dry_run,
+        )
 
         if mode == "abs":
             if abs_diff < th_abs:
@@ -324,7 +348,7 @@ class PFPLStrategy:
         mid_value = self.mid
 
         # ── Dry-run ───────────────────
-        if self.config.get("dry_run"):
+        if self.dry_run:
             logger.info("[DRY-RUN] %s %.4f %s", side, size, self.symbol)
             self.last_ts = time.time()
             self.last_side = side
