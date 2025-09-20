@@ -232,11 +232,7 @@ class PFPLStrategy:
                 logger.debug("fundingInfo: next @ %s", self.next_funding_ts)
 
         # fair が作れれば評価へ
-        if (
-            self.mid is not None
-            and self.idx is not None
-            and self.ora is not None
-        ):
+        if self.mid is not None and self.idx is not None and self.ora is not None:
             self.fair = (self.idx + self.ora) / 2  # ★ 平均で公正価格
             self.evaluate()
 

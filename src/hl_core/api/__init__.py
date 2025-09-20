@@ -147,9 +147,7 @@ class WSClient:
             logger.warning("WS handle missing; skip subscribe(%s)", label)
             return
 
-        await ws.send(
-            json.dumps({"method": "subscribe", "subscription": payload})
-        )
+        await ws.send(json.dumps({"method": "subscribe", "subscription": payload}))
         self._subs.add(sub_key)
         logger.debug("Subscribed %s", label)
 
