@@ -56,7 +56,8 @@ class WSClient:
         self.retry_sec = retry_sec
 
         self._ws: Any | None = None
-        self._subs: set[str] = set()  # set に統一
+        # WebSocket 購読情報を JSON 文字列で保持（reconnect 時に再送）
+        self._subs: set[str] = set()
 
         # コールバック（デフォルトは no-op）
         self.on_message: Callable[[dict[str, Any]], Awaitable[None] | None] = (
@@ -82,10 +83,17 @@ class WSClient:
                     self._ready.set()  # ★ open を通知
 
                     # 過去の購読を復元
-                    for ch in self._subs:
+                    for sub_json in self._subs:
+                        try:
+                            subscription = json.loads(sub_json)
+                        except json.JSONDecodeError:
+                            logger.warning(
+                                "Skip invalid stored subscription: %s", sub_json
+                            )
+                            continue
                         await ws.send(
                             json.dumps(
-                                {"method": "subscribe", "subscription": {"type": ch}}
+                                {"method": "subscribe", "subscription": subscription}
                             )
                         )
 
@@ -105,25 +113,43 @@ class WSClient:
         await self._ready.wait()
 
     # ── 4. subscribe ────────────────────────────────────────────
-    async def subscribe(self, feed_type: str) -> None:
+    @staticmethod
+    def _normalize_subscription(
+        subscription: str | dict[str, Any]
+    ) -> tuple[dict[str, Any], str, str]:
+        """返却: (payload, key, label)"""
+
+        if isinstance(subscription, str):
+            payload: dict[str, Any] = {"type": subscription}
+            label = subscription
+        elif isinstance(subscription, dict):
+            payload = dict(subscription)
+            label = str(payload.get("type", payload))
+        else:  # pragma: no cover - 型ヒントがあるため通常到達しない
+            raise TypeError(f"Unsupported subscription type: {type(subscription)!r}")
+
+        key = json.dumps(payload, sort_keys=True)
+        return payload, key, label
+
+    async def subscribe(self, subscription: str | dict[str, Any]) -> None:
+        payload, sub_key, label = self._normalize_subscription(subscription)
+
         # まだ接続完了していない場合は待つ
         if not self._ready.is_set():
-            logger.warning("WS not ready; skip subscribe(%s)", feed_type)
+            logger.warning("WS not ready; skip subscribe(%s)", label)
             return
 
-        if feed_type in self._subs:
+        if sub_key in self._subs:
             return  # 既に購読済み
 
         ws = self._ws
         if ws is None:
-            logger.warning("WS handle missing; skip subscribe(%s)", feed_type)
+            logger.warning("WS handle missing; skip subscribe(%s)", label)
             return
 
-        await ws.send(
-            json.dumps({"method": "subscribe", "subscription": {"type": feed_type}})
-        )
-        self._subs.add(feed_type)
-        logger.debug("Subscribed %s", feed_type)
+        await ws.send(json.dumps({"method": "subscribe", "subscription": payload}))
+        self._subs.add(sub_key)
+        logger.debug("Subscribed %s", label)
 
     # ─────────────────────────────────────────────────────────────
     async def _listen(self) -> None:

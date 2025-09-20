@@ -144,6 +144,13 @@ async def main() -> None:
 
     pair_params = load_pair_yaml(args.pair_cfg)
     symbols = [s.strip() for s in args.symbols.split(",")][:3]
+    bases: set[str] = set()
+    for sym in symbols:
+        if not sym:
+            continue
+        base = sym.split("-")[0].strip()
+        if base:
+            bases.add(base)
 
     # 動的 import
     strat_mod = import_module(f"bots.{args.bot}.strategy")
@@ -180,9 +187,12 @@ async def main() -> None:
     ws.on_message = fanout
     asyncio.create_task(ws.connect())
     await ws.wait_ready()
-    for feed in {"allMids", "indexPrices", "oraclePrices"}:  # 乖離検出 feed
-        await ws.subscribe(feed)
-    await ws.subscribe("fundingInfo")
+
+    await ws.subscribe({"type": "allMids"})
+    for base in sorted(bases):
+        await ws.subscribe({"type": "indexPrices", "coins": [base]})
+        await ws.subscribe({"type": "oraclePrices", "coins": [base]})
+        await ws.subscribe({"type": "fundingInfo", "coins": [base]})
     await asyncio.Event().wait()  # 常駐
 
 
