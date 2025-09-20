@@ -142,6 +142,7 @@ class PFPLStrategy:
         # ── Bot パラメータ ──────────────────────────────
         self.cooldown = float(self.config.get("cooldown_sec", 1.0))
         self.order_usd = Decimal(self.config.get("order_usd", 10))
+        self.dry_run = bool(self.config.get("dry_run"))
         self.max_pos = Decimal(self.config.get("max_position_usd", 100))
         self.fair_feed = self.config.get("fair_feed", "indexPrices")
         self.max_daily_orders = int(self.config.get("max_daily_orders", 500))
@@ -285,6 +286,17 @@ class PFPLStrategy:
         th_pct = Decimal(str(self.config.get("threshold_pct", "0.05")))  # %
         mode = self.config.get("mode", "both")  # both / either
 
+        logger.debug(
+            "signal: abs=%.6f pct=%.6f thr=%.6f thr_pct=%.6f pos_usd=%.2f order_usd=%.2f dry_run=%s",
+            abs_diff,
+            pct_diff,
+            th_abs,
+            th_pct,
+            self.pos_usd,
+            self.order_usd,
+            self.dry_run,
+        )
+
         if mode == "abs":
             if abs_diff < th_abs:
                 return
@@ -343,7 +355,7 @@ class PFPLStrategy:
         mid_value = self.mid
 
         # ── Dry-run ───────────────────
-        if self.config.get("dry_run"):
+        if self.dry_run:
             logger.info("[DRY-RUN] %s %.4f %s", side, size, self.symbol)
             self.last_ts = time.time()
             self.last_side = side
