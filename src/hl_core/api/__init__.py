@@ -6,7 +6,6 @@ import httpx
 import websockets
 import asyncio
 import anyio
-import contextlib
 from typing import Awaitable, Callable, Any, Optional
 import ssl
 
@@ -58,7 +57,6 @@ class WSClient:
 
         self._ws: Any | None = None
         self._subs: set[str] = set()  # set に統一
-        self._hb_task: asyncio.Task | None = None
 
         # コールバック（デフォルトは no-op）
         self.on_message: Callable[[dict[str, Any]], Awaitable[None] | None] = (
@@ -69,25 +67,6 @@ class WSClient:
         self._ready: asyncio.Event = asyncio.Event()
 
     # ─────────────────────────────────────────────────────────────
-    async def _heartbeat(self) -> None:
-        """
-        30 秒ごとにダミー ping を送信して CloudFront のアイドル
-        タイムアウト（約 60 s）を回避する。
-        """
-        try:
-            while True:
-                # Python 3.13 なので anyio.sleep が素直に使える
-                await anyio.sleep(30)
-                # self._ws がまだ生きていれば送信
-                ws = self._ws
-                if ws and not getattr(ws, "closed", False):
-                    await ws.send('{"type":"hb"}')
-        except asyncio.CancelledError:
-            # connect() 側で self._hb_task.cancel() されたときに抜ける
-            pass
-
-    # ─────────────────────────────────────────────────────────────
-
     # ── 2. connect ──────────────────────────────────────────────
     async def connect(self) -> None:
         """接続し listen を開始。切断されたら自動再接続（reconnect=True の場合）"""
@@ -102,9 +81,6 @@ class WSClient:
                     logger.info("WS connected")
                     self._ready.set()  # ★ open を通知
 
-                    # Heartbeat を 30 s ごとに送る
-                    self._hb_task = asyncio.create_task(self._heartbeat())
-
                     # 過去の購読を復元
                     for ch in self._subs:
                         await ws.send(
@@ -117,11 +93,6 @@ class WSClient:
             except Exception as exc:
                 logger.warning("WS disconnected: %s", exc)
             finally:
-                if self._hb_task:  # Heartbeat 停止
-                    self._hb_task.cancel()
-                    with contextlib.suppress(Exception):
-                        await self._hb_task
-                    self._hb_task = None
                 self._ready.clear()  # ★ close を通知
 
             if not self.reconnect:
@@ -180,8 +151,6 @@ class WSClient:
 
     # ── 5. close ────────────────────────────────────────────────
     async def close(self) -> None:
-        if self._hb_task:
-            self._hb_task.cancel()
         ws = self._ws
         if ws and not getattr(ws, "closed", False):
             await ws.close()
