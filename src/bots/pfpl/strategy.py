@@ -121,16 +121,23 @@ class PFPLStrategy:
             logger.info("min_usd override from config: USD %.2f", self.min_usd)
         else:
             min_usd_map: dict[str, str] = meta.get("minSizeUsd", {})
-            self.min_usd = (
-                Decimal(min_usd_map["ETH"]) if "ETH" in min_usd_map else Decimal("1")
-            )
-            if "ETH" not in min_usd_map:
-                logger.warning("minSizeUsd missing ➜ fallback USD 1")
+            min_usd_raw = min_usd_map.get(self.base_coin)
+            if min_usd_raw is not None:
+                self.min_usd = Decimal(str(min_usd_raw))
+                logger.info(
+                    "min_usd from meta for %s: USD %.2f", self.base_coin, self.min_usd
+                )
+            else:
+                self.min_usd = Decimal("1")
+                logger.warning(
+                    "minSizeUsd missing for %s ➜ fallback USD 1", self.base_coin
+                )
 
         # tick
-        uni_eth = next(u for u in meta["universe"] if u["name"] == "ETH")
-        tick_raw = uni_eth.get("pxTick") or uni_eth.get("pxTickSize", "0.01")
-        self.tick = Decimal(tick_raw)
+        uni_entry = next(u for u in meta["universe"] if u["name"] == self.base_coin)
+        tick_raw = uni_entry.get("pxTick") or uni_entry.get("pxTickSize", "0.01")
+        self.tick = Decimal(str(tick_raw))
+        logger.info("pxTick for %s: %s", self.base_coin, self.tick)
 
         # ── Bot パラメータ ──────────────────────────────
         self.cooldown = float(self.config.get("cooldown_sec", 1.0))
