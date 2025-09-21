@@ -408,34 +408,66 @@ class PFPLStrategy:
         *,
         order_type: str = "limit",
         limit_px: float | None = None,
+        reduce_only: bool = False,
+        time_in_force: str | None = None,
         **kwargs,
     ) -> None:
         """IOC で即時約定、失敗時リトライ付き"""
         is_buy = side == "BUY"
         mid_value = self.mid
 
+        tif = time_in_force
+        if "time_in_force" in kwargs and tif is None:
+            tif = kwargs.pop("time_in_force")
+        if "tif" in kwargs and tif is None:
+            tif = kwargs.pop("tif")
+        ioc_requested = kwargs.pop("ioc", None)
+
+        order_type_payload: dict[str, Any]
+
+        # --- eps_pct を適用した価格補正 -------------------------------
+        if order_type == "limit":
+            if limit_px is None:
+                if mid_value is None:
+                    logger.warning("mid price unavailable; skip order placement")
+                    return
+                limit_px = self._price_with_offset(float(mid_value), side)
+
+            limit_body: dict[str, Any] = {}
+            if tif is not None:
+                limit_body["tif"] = tif
+            else:
+                use_ioc = True if ioc_requested is None else bool(ioc_requested)
+                if use_ioc:
+                    limit_body["tif"] = "Ioc"
+
+            order_type_payload = {"limit": limit_body}
+        elif order_type == "market":
+            order_type_payload = {"market": {}}
+            limit_px = None
+        else:
+            logger.error("unsupported order_type=%s", order_type)
+            return
+
+        order_kwargs: dict[str, Any] = {
+            "coin": self.base_coin,
+            "is_buy": is_buy,
+            "sz": float(size),
+            "order_type": order_type_payload,
+            "reduce_only": reduce_only,
+            **kwargs,
+        }
+        if limit_px is not None:
+            order_kwargs["limit_px"] = limit_px
+
         # ── Dry-run ───────────────────
         if self.dry_run:
             logger.info("[DRY-RUN] %s %.4f %s", side, size, self.symbol)
+            logger.info("[DRY-RUN] payload=%s", order_kwargs)
             self.last_ts = time.time()
             self.last_side = side
             return
         # ──────────────────────────────
-
-        # --- eps_pct を適用した価格補正 -------------------------------
-        if order_type == "limit":
-            if mid_value is None:
-                logger.warning("mid price unavailable; skip order placement")
-                return
-            limit_px = (
-                limit_px
-                if limit_px is not None
-                else self._price_with_offset(float(mid_value), side)
-            )
-
-        if mid_value is None:
-            logger.warning("mid price unavailable; skip order placement")
-            return
 
         async with self.sem:  # 1 秒あたり発注制御
             MAX_RETRY = 3
@@ -444,14 +476,7 @@ class PFPLStrategy:
                 raise AttributeError("exchange.order is not callable")
             for attempt in range(1, MAX_RETRY + 1):
                 try:
-                    resp = order_fn(
-                        coin=self.symbol,
-                        is_buy=is_buy,
-                        sz=float(size),
-                        limit_px=limit_px,
-                        order_type={"limit": {"tif": "Ioc"}},  # IOC 指定
-                        reduce_only=False,
-                    )
+                    resp = order_fn(**order_kwargs)
                     logger.info("ORDER OK %s try=%d → %s", self.symbol, attempt, resp)
                     self._order_count += 1
                     self.last_ts = time.time()
@@ -532,7 +557,7 @@ class PFPLStrategy:
         """Close every open position for this symbol."""
         try:
             state = self.exchange.info.user_state(self.account)
-            coin = self.symbol.split("-")[0]
+            coin = self.base_coin
             perp_pos = next(
                 (
                     p
