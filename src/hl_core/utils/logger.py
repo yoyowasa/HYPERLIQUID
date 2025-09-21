@@ -116,6 +116,7 @@ def setup_logger(
     ``file_level`` overrides the respective handler regardless of the
     environment configuration.
     """
+
     # ---------- レベルの解決 ----------
     def _coerce_level(value: str | int | None, *, default: int) -> int:
         if value is None:
