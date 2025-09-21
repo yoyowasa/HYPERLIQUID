@@ -5,6 +5,7 @@ import copy
 import datetime as _dt
 import logging
 import logging.handlers
+import os
 import queue
 import threading
 import time as _time
@@ -25,6 +26,17 @@ _LEVEL_COLOR: Final = {
     logging.ERROR: Fore.RED,
     logging.CRITICAL: Fore.MAGENTA,
 }
+
+_NOISY_NETWORK_LOGGERS: Final = (
+    "websockets",
+    "websockets.client",
+    "websockets.server",
+    "asyncio",
+    "asyncio.base_events",
+    "asyncio.selector_events",
+)
+
+_LOGGER_CONFIGURED = False
 
 
 class _ColorFormatter(logging.Formatter):
@@ -83,8 +95,8 @@ class DiscordHandler(logging.Handler):
 def setup_logger(
     bot_name: Optional[str] = None,
     *,
-    console_level: str | int = "INFO",
-    file_level: str | int = "DEBUG",
+    console_level: str | int | None = None,
+    file_level: str | int | None = None,
     log_root: Path | str = "logs",
     discord_webhook: str | None = None,
 ) -> None:
@@ -98,9 +110,54 @@ def setup_logger(
     logger = logging.getLogger(__name__)
     logger.info("hello")
     ```
+
+    The console and rotating file handlers default to the ``LOG_LEVEL``
+    environment variable (``INFO`` when unset). Passing ``console_level`` or
+    ``file_level`` overrides the respective handler regardless of the
+    environment configuration.
     """
-    # すでに初期化済みなら何もしない
-    if logging.getLogger().handlers:
+    # ---------- レベルの解決 ----------
+    def _coerce_level(value: str | int | None, *, default: int) -> int:
+        if value is None:
+            return default
+        if isinstance(value, int):
+            return value
+
+        text = str(value).strip()
+        if not text:
+            return default
+        if text.isdecimal() or (text[0] in {"+", "-"} and text[1:].isdecimal()):
+            return int(text)
+
+        numeric = logging.getLevelName(text.upper())
+        if isinstance(numeric, int):
+            return numeric
+        raise ValueError(f"Unknown log level: {value!r}")
+
+    env_level = os.getenv("LOG_LEVEL")
+    default_level = _coerce_level(env_level, default=logging.INFO)
+    console_level_value = _coerce_level(console_level, default=default_level)
+    file_level_value = _coerce_level(file_level, default=default_level)
+    root_level = min(console_level_value, file_level_value)
+    quiet_network_level = max(logging.INFO, root_level)
+
+    root_logger = logging.getLogger()
+
+    def _apply_effective_levels() -> None:
+        root_logger.setLevel(root_level)
+        for handler in root_logger.handlers:
+            if isinstance(handler, logging.handlers.TimedRotatingFileHandler):
+                handler.setLevel(file_level_value)
+            elif isinstance(handler, logging.StreamHandler) and not isinstance(
+                handler, logging.FileHandler
+            ):
+                handler.setLevel(console_level_value)
+        for name in _NOISY_NETWORK_LOGGERS:
+            logging.getLogger(name).setLevel(quiet_network_level)
+
+    global _LOGGER_CONFIGURED
+    if _LOGGER_CONFIGURED:
+        _apply_effective_levels()
         return
 
     _color_init(strip=False)  # colorama 初期化
@@ -112,9 +169,9 @@ def setup_logger(
 
     # ---------- ハンドラ: Console ----------
     ch = logging.StreamHandler()
-    ch.setLevel(console_level)
+    ch.setLevel(console_level_value)
     ch.setFormatter(_ColorFormatter(_LOG_FMT, datefmt="%Y-%m-%d %H:%M:%S"))
-    logging.getLogger().addHandler(ch)
+    root_logger.addHandler(ch)
 
     # ---------- ハンドラ: 日次ローテート ----------
     fh = logging.handlers.TimedRotatingFileHandler(
@@ -125,24 +182,24 @@ def setup_logger(
         encoding="utf-8",
         utc=True,
     )
-    fh.setLevel(file_level)
+    fh.setLevel(file_level_value)
     fh.setFormatter(logging.Formatter(_LOG_FMT, "%Y-%m-%d %H:%M:%S"))
-    logging.getLogger().addHandler(fh)
+    root_logger.addHandler(fh)
 
     # ---------- ハンドラ: error.log ----------
     eh = logging.FileHandler(target_dir / "error.log", encoding="utf-8")
     eh.setLevel(logging.WARNING)
     eh.setFormatter(logging.Formatter(_LOG_FMT, "%Y-%m-%d %H:%M:%S"))
-    logging.getLogger().addHandler(eh)
+    root_logger.addHandler(eh)
 
     # ---------- ハンドラ: Discord ----------
     if discord_webhook:
         dh = DiscordHandler(discord_webhook, level=logging.ERROR)
         dh.setFormatter(logging.Formatter(_LOG_FMT, "%Y-%m-%d %H:%M:%S"))
-        logging.getLogger().addHandler(dh)
+        root_logger.addHandler(dh)
 
-    # ルートロガーのレベル
-    logging.getLogger().setLevel(file_level)
+    # ルートロガーと関連ロガーのレベル
+    _apply_effective_levels()
 
     # タイムゾーンを UTC に統一
     def _utc_converter(timestamp: float | None) -> _time.struct_time:
@@ -150,3 +207,4 @@ def setup_logger(
         return _dt.datetime.fromtimestamp(ts, tz=_TZ).timetuple()
 
     logging.Formatter.converter = _utc_converter  # type: ignore[assignment]
+    _LOGGER_CONFIGURED = True
