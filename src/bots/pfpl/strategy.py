@@ -220,14 +220,14 @@ class PFPLStrategy:
         fair_inputs_changed = False
 
         if ch == "allMids":  # 板 mid 群
-            mids = ((msg.get("data") or {}).get("mids") or {})
+            mids = (msg.get("data") or {}).get("mids") or {}
             mid_raw = mids.get("@1")
             new_mid = Decimal(str(mid_raw)) if mid_raw is not None else None
             if new_mid != self.mid:
                 self.mid = new_mid
                 should_eval = True
         elif ch == "indexPrices":  # インデックス価格
-            prices = ((msg.get("data") or {}).get("prices") or {})
+            prices = (msg.get("data") or {}).get("prices") or {}
             price_val = prices.get(self.base_coin)
             new_idx = Decimal(str(price_val)) if price_val is not None else None
             if new_idx != self.idx:
@@ -236,7 +236,7 @@ class PFPLStrategy:
                 if uses_index:
                     should_eval = True
         elif ch == "oraclePrices":  # オラクル価格
-            prices = ((msg.get("data") or {}).get("prices") or {})
+            prices = (msg.get("data") or {}).get("prices") or {}
             price_val = prices.get(self.base_coin)
             new_ora = Decimal(str(price_val)) if price_val is not None else None
             if new_ora != self.ora:
