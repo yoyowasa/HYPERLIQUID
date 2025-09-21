@@ -211,20 +211,40 @@ class PFPLStrategy:
     # ------------------------------------------------------------------ WS hook
     def on_message(self, msg: dict[str, Any]) -> None:
         ch = msg.get("channel")
+        feed = self.fair_feed
+        combined_feed = feed not in {"indexPrices", "oraclePrices"}
+        uses_index = feed == "indexPrices" or combined_feed
+        uses_oracle = feed == "oraclePrices" or combined_feed
+
+        should_eval = False
+        fair_inputs_changed = False
 
         if ch == "allMids":  # 板 mid 群
-            self.mid = Decimal(msg["data"]["mids"]["@1"])
+            mids = ((msg.get("data") or {}).get("mids") or {})
+            mid_raw = mids.get("@1")
+            new_mid = Decimal(str(mid_raw)) if mid_raw is not None else None
+            if new_mid != self.mid:
+                self.mid = new_mid
+                should_eval = True
         elif ch == "indexPrices":  # インデックス価格
-            prices = (msg.get("data") or {}).get("prices", {})
+            prices = ((msg.get("data") or {}).get("prices") or {})
             price_val = prices.get(self.base_coin)
-            if price_val is not None:
-                self.idx = Decimal(str(price_val))
+            new_idx = Decimal(str(price_val)) if price_val is not None else None
+            if new_idx != self.idx:
+                self.idx = new_idx
+                fair_inputs_changed = True
+                if uses_index:
+                    should_eval = True
         elif ch == "oraclePrices":  # オラクル価格
-            prices = (msg.get("data") or {}).get("prices", {})
+            prices = ((msg.get("data") or {}).get("prices") or {})
             price_val = prices.get(self.base_coin)
-            if price_val is not None:
-                self.ora = Decimal(str(price_val))
-        elif msg.get("channel") == "fundingInfo":
+            new_ora = Decimal(str(price_val)) if price_val is not None else None
+            if new_ora != self.ora:
+                self.ora = new_ora
+                fair_inputs_changed = True
+                if uses_oracle:
+                    should_eval = True
+        elif ch == "fundingInfo":
             data = msg.get("data", {})
             next_ts = data.get("nextFundingTime") if isinstance(data, dict) else None
             if next_ts is None and isinstance(data, dict):
@@ -239,10 +259,23 @@ class PFPLStrategy:
                 self.next_funding_ts = float(next_ts)
                 logger.debug("fundingInfo: next @ %s", self.next_funding_ts)
 
-        # fair が作れれば評価へ
-        if self.mid is not None and self.idx is not None and self.ora is not None:
-            self.fair = (self.idx + self.ora) / 2  # ★ 平均で公正価格
+        if fair_inputs_changed:
+            self._update_fair()
+
+        if should_eval and self.mid is not None and self.fair is not None:
             self.evaluate()
+
+    def _update_fair(self) -> None:
+        feed = self.fair_feed
+        if feed == "indexPrices":
+            self.fair = self.idx
+        elif feed == "oraclePrices":
+            self.fair = self.ora
+        else:
+            if self.idx is not None and self.ora is not None:
+                self.fair = (self.idx + self.ora) / Decimal("2")
+            else:
+                self.fair = None
 
     # ---------------------------------------------------------------- evaluate
 
