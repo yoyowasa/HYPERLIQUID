@@ -27,8 +27,7 @@ def test_on_message_updates_mid_from_base_coin(strategy: PFPLStrategy, caplog):
 
     assert strategy.mid == Decimal("123.45")
     assert any(
-        record.levelno == logging.DEBUG
-        and record.message == "allMids: mid[ETH]=123.45"
+        record.levelno == logging.DEBUG and record.message == "allMids: mid[ETH]=123.45"
         for record in caplog.records
     )
 
