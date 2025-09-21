@@ -2,6 +2,7 @@
 from asyncio import Semaphore
 from decimal import Decimal
 import logging
+from typing import Iterator
 
 import pytest
 
@@ -9,7 +10,7 @@ from bots.pfpl import PFPLStrategy
 
 
 @pytest.fixture
-def strategy(monkeypatch: pytest.MonkeyPatch) -> PFPLStrategy:
+def strategy(monkeypatch: pytest.MonkeyPatch) -> Iterator[PFPLStrategy]:
     monkeypatch.setenv("HL_ACCOUNT_ADDR", "0xTEST")
     monkeypatch.setenv("HL_API_SECRET", "0x" + "11" * 32)
     strat = PFPLStrategy(config={}, semaphore=Semaphore(1))
