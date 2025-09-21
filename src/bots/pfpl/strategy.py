@@ -180,18 +180,18 @@ class PFPLStrategy:
     # ── src/bots/pfpl/strategy.py ──
     async def _refresh_position(self) -> None:
         """
-        現在の ETH-PERP 建玉 USD を self.pos_usd に反映。
+        現在の建玉 USD を self.pos_usd に反映。
         perpPositions が無い口座でも落ちない。
         """
         try:
             state = self.exchange.info.user_state(self.account)
 
-            # ―― ETH の perp 建玉を抽出（無い場合は None）
+            # ―― 対象コインの perp 建玉を抽出（無い場合は None）
             perp_pos = next(
                 (
                     p
                     for p in state.get("perpPositions", [])  # ← 🔑 get(..., [])
-                    if p["position"]["coin"] == "ETH"
+                    if p["position"]["coin"] == self.base_coin
                 ),
                 None,
             )
