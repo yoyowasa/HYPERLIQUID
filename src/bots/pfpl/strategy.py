@@ -221,10 +221,37 @@ class PFPLStrategy:
 
         if ch == "allMids":  # 板 mid 群
             mids = (msg.get("data") or {}).get("mids") or {}
-            mid_raw = mids.get("@1")
-            new_mid = Decimal(str(mid_raw)) if mid_raw is not None else None
+
+            mid_key: str | None = None
+            mid_raw = None
+            for candidate in (self.base_coin, self.symbol):
+                if candidate and candidate in mids:
+                    mid_raw = mids[candidate]
+                    mid_key = candidate
+                    break
+
+            if mid_raw is None:
+                logger.debug(
+                    "allMids: waiting for mid for %s (base=%s)",
+                    self.symbol,
+                    self.base_coin,
+                )
+                return
+
+            try:
+                new_mid = Decimal(str(mid_raw))
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "allMids: failed to parse mid %r for %s: %s",
+                    mid_raw,
+                    mid_key or self.symbol,
+                    exc,
+                )
+                return
+
             if new_mid != self.mid:
                 self.mid = new_mid
+                logger.debug("allMids: mid[%s]=%s", mid_key, self.mid)
                 should_eval = True
         elif ch == "indexPrices":  # インデックス価格
             prices = (msg.get("data") or {}).get("prices") or {}
