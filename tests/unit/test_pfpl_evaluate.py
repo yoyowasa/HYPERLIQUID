@@ -29,7 +29,9 @@ def strategy(monkeypatch: pytest.MonkeyPatch) -> PFPLStrategy:
             handler.close()
 
 
-def test_evaluate_logs_signed_diff(strategy: PFPLStrategy, caplog: pytest.LogCaptureFixture):
+def test_evaluate_logs_signed_diff(
+    strategy: PFPLStrategy, caplog: pytest.LogCaptureFixture
+):
     caplog.set_level(logging.DEBUG, logger="bots.pfpl.strategy")
     caplog.clear()
 
