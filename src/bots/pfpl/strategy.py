@@ -373,7 +373,7 @@ class PFPLStrategy:
                 return
 
         # ⑤ 発注サイド決定
-        side = "BUY" if fair < mid else "SELL"
+        side = "BUY" if fair > mid else "SELL"
 
         # ⑥ 連続同方向防止
         if side == self.last_side and now - self.last_ts < self.cooldown:
