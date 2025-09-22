@@ -451,7 +451,9 @@ class PFPLStrategy:
             size = raw_size.quantize(self.qty_tick, rounding=ROUND_DOWN)
         except InvalidOperation:
             logger.error(
-                "quantize failed for raw size %s with qty_tick %s", raw_size, self.qty_tick
+                "quantize failed for raw size %s with qty_tick %s",
+                raw_size,
+                self.qty_tick,
             )
             return
         if size <= 0:
