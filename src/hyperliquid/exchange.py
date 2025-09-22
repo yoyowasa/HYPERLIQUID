@@ -18,7 +18,14 @@ class _Info:
     def meta(self) -> dict[str, Any]:
         # Return just enough structure for PFPLStrategy initialisation.
         return {
-            "universe": [{"name": "ETH", "pxTick": "0.01"}],
+            "universe": [
+                {
+                    "name": "ETH",
+                    "pxTick": "0.01",
+                    "qtyTick": "0.001",
+                    "szDecimals": 3,
+                }
+            ],
             "minSizeUsd": {"ETH": "1"},
         }
 

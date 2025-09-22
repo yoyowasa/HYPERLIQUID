@@ -8,7 +8,7 @@ import hmac
 import hashlib
 import json
 import time
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN, InvalidOperation
 from hl_core.config import load_settings
 from hl_core.utils.logger import setup_logger
 from pathlib import Path
@@ -179,6 +179,31 @@ class PFPLStrategy:
         tick_raw = uni_entry.get("pxTick") or uni_entry.get("pxTickSize", "0.01")
         self.tick = Decimal(str(tick_raw))
         logger.info("pxTick for %s: %s", self.base_coin, self.tick)
+
+        qty_tick_val: Decimal | None = None
+        qty_tick_raw = uni_entry.get("qtyTick")
+        if qty_tick_raw is not None:
+            try:
+                qty_tick_val = Decimal(str(qty_tick_raw))
+            except Exception:  # pragma: no cover - defensive parsing
+                qty_tick_val = None
+        if qty_tick_val is None:
+            sz_decimals = uni_entry.get("szDecimals")
+            try:
+                if sz_decimals is not None:
+                    qty_tick_val = Decimal("1").scaleb(-int(sz_decimals))
+            except Exception:  # pragma: no cover - defensive parsing
+                qty_tick_val = None
+        if qty_tick_val is None or qty_tick_val <= 0:
+            self.qty_tick = Decimal("0.0001")
+            logger.warning(
+                "qtyTick missing for %s ➜ fallback %s",
+                self.base_coin,
+                self.qty_tick,
+            )
+        else:
+            self.qty_tick = qty_tick_val
+            logger.info("qtyTick for %s: %s", self.base_coin, self.qty_tick)
 
         # ── Bot パラメータ ──────────────────────────────
         self.cooldown = float(self.config.get("cooldown_sec", 1.0))
@@ -421,7 +446,21 @@ class PFPLStrategy:
             return
 
         # ⑦ 発注サイズ計算
-        size = (self.order_usd / mid).quantize(self.tick)
+        raw_size = self.order_usd / mid
+        try:
+            size = raw_size.quantize(self.qty_tick, rounding=ROUND_DOWN)
+        except InvalidOperation:
+            logger.error(
+                "quantize failed for raw size %s with qty_tick %s", raw_size, self.qty_tick
+            )
+            return
+        if size <= 0:
+            logger.debug(
+                "size %.6f quantized to zero with tick %s → skip",
+                raw_size,
+                self.qty_tick,
+            )
+            return
         if size * mid < self.min_usd:
             logger.debug(
                 "size %.4f USD %.2f < min_usd %.2f → skip",
@@ -492,10 +531,28 @@ class PFPLStrategy:
             logger.error("unsupported order_type=%s", order_type)
             return
 
+        try:
+            size_dec = Decimal(str(size)).quantize(self.qty_tick, rounding=ROUND_DOWN)
+        except InvalidOperation:
+            logger.error(
+                "place_order: quantize failed for size %s with qty_tick %s",
+                size,
+                self.qty_tick,
+            )
+            return
+        if size_dec <= 0:
+            logger.debug(
+                "place_order: size %s → %s after quantize %s → skip",
+                size,
+                size_dec,
+                self.qty_tick,
+            )
+            return
+
         order_kwargs: dict[str, Any] = {
             "coin": self.base_coin,
             "is_buy": is_buy,
-            "sz": float(size),
+            "sz": float(size_dec),
             "order_type": order_type_payload,
             "reduce_only": reduce_only,
             **kwargs,
