@@ -4,12 +4,13 @@ from __future__ import annotations
 import copy
 import datetime as _dt
 import logging
+from pathlib import Path
+from logging.handlers import TimedRotatingFileHandler
 import logging.handlers
 import os
 import queue
 import threading
 import time as _time
-from pathlib import Path
 from typing import Final, Optional
 
 from colorama import Fore, Style, init as _color_init
@@ -209,3 +210,58 @@ def setup_logger(
 
     logging.Formatter.converter = _utc_converter  # type: ignore[assignment]
     _LOGGER_CONFIGURED = True
+
+
+def get_logger(name: Optional[str] = None) -> logging.Logger:
+    """Return a logger with daily rotating file handler attached."""
+
+    logger = logging.getLogger(name)
+    if name is None:
+        name = logger.name
+    _attach_daily_file_handler(logger, name)
+    return logger
+
+
+def _resolve_log_path(logger_name: str) -> Path:
+    """
+    logger名から logs/<bot>/<bot>.log を返す。
+    'pfpl'や'pfplstrategy'を含む場合は logs/pfpl/pfpl.log に正規化する。
+    ディレクトリが無ければ作成する。
+    """
+
+    raw = logger_name.split(".")[-1].lower()
+    bot = "pfpl" if ("pfpl" in raw or "pfplstrategy" in raw) else raw
+    log_dir = Path("logs") / bot
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / f"{bot}.log"
+
+
+def _attach_daily_file_handler(logger: logging.Logger, logger_name: str) -> None:
+    """
+    - 既に同じファイルに出すハンドラがあれば何もしない
+    - UTF-8で深夜ローテ、14世代保持
+    - 直ちにファイルを作成(delay=False)
+    """
+
+    path = _resolve_log_path(logger_name)
+    for handler in logger.handlers:
+        if getattr(handler, "baseFilename", None) == str(path):
+            return
+
+    file_handler = TimedRotatingFileHandler(
+        filename=str(path),
+        when="midnight",
+        backupCount=14,
+        encoding="utf-8",
+        utc=True,
+        delay=False,
+    )
+    file_handler.setLevel(logger.level)
+    file_handler.setFormatter(
+        logging.Formatter(
+            fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    logger.addHandler(file_handler)
+    logger.propagate = False
