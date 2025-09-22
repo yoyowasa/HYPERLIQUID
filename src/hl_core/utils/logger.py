@@ -162,55 +162,73 @@ def setup_logger(
         for name in _NOISY_NETWORK_LOGGERS:
             logging.getLogger(name).setLevel(quiet_network_level)
 
-    global _LOGGER_CONFIGURED
-    if _LOGGER_CONFIGURED:
-        _apply_effective_levels()
-        return
-
-    _color_init(strip=False)  # colorama 初期化
-
-    # ---------- パス周り ----------
     log_root = Path(log_root).resolve()
     target_dir = log_root / (bot_name or "common")
     target_dir.mkdir(parents=True, exist_ok=True)
+    rotating_log_path = target_dir / f"{bot_name or 'common'}.log"
+    error_log_path = target_dir / "error.log"
 
-    # ---------- ハンドラ: Console ----------
-    ch = logging.StreamHandler()
-    ch.setLevel(console_level_value)
-    ch.setFormatter(_ColorFormatter(_LOG_FMT, datefmt="%Y-%m-%d %H:%M:%S"))
-    root_logger.addHandler(ch)
+    def _ensure_rotating_file_handler() -> None:
+        for handler in root_logger.handlers:
+            if isinstance(handler, logging.handlers.TimedRotatingFileHandler) and (
+                getattr(handler, "baseFilename", None) == str(rotating_log_path)
+            ):
+                return
 
-    # ---------- ハンドラ: 日次ローテート ----------
-    fh = logging.handlers.TimedRotatingFileHandler(
-        target_dir / f"{bot_name or 'common'}.log",
-        when="midnight",
-        interval=1,
-        backupCount=7,
-        encoding="utf-8",
-        utc=True,
-    )
-    fh.setLevel(file_level_value)
-    fh.setFormatter(logging.Formatter(_LOG_FMT, "%Y-%m-%d %H:%M:%S"))
-    root_logger.addHandler(fh)
+        fh = logging.handlers.TimedRotatingFileHandler(
+            filename=str(rotating_log_path),
+            when="midnight",
+            interval=1,
+            backupCount=7,
+            encoding="utf-8",
+            utc=True,
+        )
+        fh.setLevel(file_level_value)
+        fh.setFormatter(logging.Formatter(_LOG_FMT, "%Y-%m-%d %H:%M:%S"))
+        root_logger.addHandler(fh)
 
-    # ---------- ハンドラ: error.log ----------
-    eh = logging.FileHandler(target_dir / "error.log", encoding="utf-8")
-    eh.setLevel(logging.WARNING)
-    eh.setFormatter(logging.Formatter(_LOG_FMT, "%Y-%m-%d %H:%M:%S"))
-    root_logger.addHandler(eh)
+    def _ensure_error_file_handler() -> None:
+        for handler in root_logger.handlers:
+            if isinstance(handler, logging.FileHandler) and not isinstance(
+                handler, logging.handlers.TimedRotatingFileHandler
+            ) and getattr(handler, "baseFilename", None) == str(error_log_path):
+                return
 
-    # ---------- ハンドラ: Discord ----------
-    if discord_webhook:
-        dh = DiscordHandler(discord_webhook, level=logging.ERROR)
-        dh.setFormatter(logging.Formatter(_LOG_FMT, "%Y-%m-%d %H:%M:%S"))
-        root_logger.addHandler(dh)
+        eh = logging.FileHandler(str(error_log_path), encoding="utf-8")
+        eh.setLevel(logging.WARNING)
+        eh.setFormatter(logging.Formatter(_LOG_FMT, "%Y-%m-%d %H:%M:%S"))
+        root_logger.addHandler(eh)
 
-    # ルートロガーと関連ロガーのレベル
+    global _LOGGER_CONFIGURED
+    if not _LOGGER_CONFIGURED:
+        _color_init(strip=False)  # colorama 初期化
+
+        # ---------- ハンドラ: Console ----------
+        ch = logging.StreamHandler()
+        ch.setLevel(console_level_value)
+        ch.setFormatter(_ColorFormatter(_LOG_FMT, datefmt="%Y-%m-%d %H:%M:%S"))
+        root_logger.addHandler(ch)
+
+        _ensure_rotating_file_handler()
+        _ensure_error_file_handler()
+
+        # ---------- ハンドラ: Discord ----------
+        if discord_webhook:
+            dh = DiscordHandler(discord_webhook, level=logging.ERROR)
+            dh.setFormatter(logging.Formatter(_LOG_FMT, "%Y-%m-%d %H:%M:%S"))
+            root_logger.addHandler(dh)
+
+        # ルートロガーと関連ロガーのレベル
+        _apply_effective_levels()
+
+        # タイムゾーンを UTC に統一
+        logging.Formatter.converter = staticmethod(_utc_converter)  # type: ignore[assignment]
+        _LOGGER_CONFIGURED = True
+        return
+
+    _ensure_rotating_file_handler()
+    _ensure_error_file_handler()
     _apply_effective_levels()
-
-    # タイムゾーンを UTC に統一
-    logging.Formatter.converter = staticmethod(_utc_converter)  # type: ignore[assignment]
-    _LOGGER_CONFIGURED = True
 
 
 def get_logger(name: Optional[str] = None) -> logging.Logger:
