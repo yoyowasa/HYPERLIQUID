@@ -9,8 +9,15 @@ TEST_ACCOUNT = "0xTEST"
 TEST_KEY = "0x" + "11" * 32
 
 
-def _set_credentials(monkeypatch: pytest.MonkeyPatch, account_key: str, secret_key: str) -> None:
-    for var in ("HL_ACCOUNT_ADDRESS", "HL_ACCOUNT_ADDR", "HL_PRIVATE_KEY", "HL_API_SECRET"):
+def _set_credentials(
+    monkeypatch: pytest.MonkeyPatch, account_key: str, secret_key: str
+) -> None:
+    for var in (
+        "HL_ACCOUNT_ADDRESS",
+        "HL_ACCOUNT_ADDR",
+        "HL_PRIVATE_KEY",
+        "HL_API_SECRET",
+    ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv(account_key, TEST_ACCOUNT)
     monkeypatch.setenv(secret_key, TEST_KEY)
@@ -71,7 +78,12 @@ def test_init_accepts_new_and_legacy_env(monkeypatch, account_env, secret_env):
 
 
 def test_init_missing_credentials_raises(monkeypatch):
-    for var in ("HL_ACCOUNT_ADDRESS", "HL_ACCOUNT_ADDR", "HL_PRIVATE_KEY", "HL_API_SECRET"):
+    for var in (
+        "HL_ACCOUNT_ADDRESS",
+        "HL_ACCOUNT_ADDR",
+        "HL_PRIVATE_KEY",
+        "HL_API_SECRET",
+    ):
         monkeypatch.delenv(var, raising=False)
 
     with pytest.raises(ValueError) as excinfo:
