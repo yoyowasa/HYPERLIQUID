@@ -9,6 +9,7 @@ import hashlib
 import json
 import time
 from decimal import Decimal
+from hl_core.config import load_settings
 from hl_core.utils.logger import setup_logger
 from pathlib import Path
 
@@ -92,10 +93,48 @@ class PFPLStrategy:
         # ------------------------------------------------------------------
 
         # ── 環境変数キー ────────────────────────────────
-        account = os.getenv("HL_ACCOUNT_ADDR")
-        secret = os.getenv("HL_API_SECRET")
-        if not (account and secret):
-            raise RuntimeError("HL_ACCOUNT_ADDR / HL_API_SECRET が未設定")
+        settings = load_settings()
+
+        def _first_nonempty(*values: Any) -> str | None:
+            for value in values:
+                if value is None:
+                    continue
+                if not isinstance(value, str):
+                    candidate = str(value)
+                else:
+                    candidate = value
+                candidate = candidate.strip()
+                if candidate:
+                    return candidate
+            return None
+
+        account = _first_nonempty(
+            self.config.get("account_address"),
+            settings.account_address,
+            os.getenv("HL_ACCOUNT_ADDRESS"),
+            os.getenv("HL_ACCOUNT_ADDR"),
+        )
+        secret = _first_nonempty(
+            self.config.get("private_key"),
+            settings.private_key,
+            os.getenv("HL_PRIVATE_KEY"),
+            os.getenv("HL_API_SECRET"),
+        )
+
+        missing_parts: list[str] = []
+        if not account:
+            missing_parts.append(
+                "account address (set HL_ACCOUNT_ADDRESS or legacy HL_ACCOUNT_ADDR)"
+            )
+        if not secret:
+            missing_parts.append(
+                "private key (set HL_PRIVATE_KEY or legacy HL_API_SECRET)"
+            )
+        if missing_parts:
+            raise ValueError(
+                "Missing Hyperliquid credentials: " + "; ".join(missing_parts)
+            )
+
         self.account: str = account
         self.secret: str = secret
 
