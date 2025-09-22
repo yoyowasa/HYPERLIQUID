@@ -68,12 +68,14 @@ def test_evaluate_quantizes_size_with_qty_tick(
 ) -> None:
     strategy.config["threshold"] = "0"
     strategy.config["threshold_pct"] = "0"
-    strategy.fair = strategy.mid + Decimal("5")
+    mid = strategy.mid
+    assert mid is not None
+    strategy.fair = mid + Decimal("5")
     strategy.order_usd = Decimal("25")
     strategy.min_usd = Decimal("0")
     strategy.qty_tick = Decimal("0.005")
 
-    recorded: list[dict[str, float]] = []
+    recorded: list[dict[str, object]] = []
 
     async def fake_place_order(self, side: str, size: float, **kwargs) -> None:
         recorded.append({"side": side, "size": size})
@@ -89,7 +91,9 @@ def test_evaluate_quantizes_size_with_qty_tick(
     strategy.evaluate()
 
     assert recorded, "evaluate should schedule an order"
-    expected = (strategy.order_usd / strategy.mid).quantize(
+    mid_after = strategy.mid
+    assert mid_after is not None
+    expected = (strategy.order_usd / mid_after).quantize(
         strategy.qty_tick, rounding=ROUND_DOWN
     )
     assert Decimal(str(recorded[0]["size"])) == expected
@@ -102,7 +106,9 @@ def test_evaluate_skips_when_size_rounds_to_zero(
 ) -> None:
     strategy.config["threshold"] = "0"
     strategy.config["threshold_pct"] = "0"
-    strategy.fair = strategy.mid + Decimal("5")
+    mid = strategy.mid
+    assert mid is not None
+    strategy.fair = mid + Decimal("5")
     strategy.order_usd = Decimal("0.0005")
     strategy.min_usd = Decimal("0")
     strategy.qty_tick = Decimal("0.001")
