@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 import logging
-from typing import Any
+from typing import Any, cast
 import asyncio
 import hmac
 import hashlib
@@ -135,6 +135,8 @@ class PFPLStrategy:
                 "Missing Hyperliquid credentials: " + "; ".join(missing_parts)
             )
 
+        account = cast(str, account)
+        secret = cast(str, secret)
         self.account: str = account
         self.secret: str = secret
 
