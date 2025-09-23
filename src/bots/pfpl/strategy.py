@@ -578,7 +578,7 @@ class PFPLStrategy:
                 raise AttributeError("exchange.order is not callable")
             for attempt in range(1, MAX_RETRY + 1):
                 try:
-                    resp = order_fn(**order_kwargs)
+                    resp = await asyncio.to_thread(order_fn, **order_kwargs)
                     logger.info("ORDER OK %s try=%d → %s", self.symbol, attempt, resp)
                     self._order_count += 1
                     self.last_ts = time.time()
