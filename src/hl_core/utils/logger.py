@@ -189,9 +189,11 @@ def setup_logger(
 
     def _ensure_error_file_handler() -> None:
         for handler in root_logger.handlers:
-            if isinstance(handler, logging.FileHandler) and not isinstance(
-                handler, logging.handlers.TimedRotatingFileHandler
-            ) and getattr(handler, "baseFilename", None) == str(error_log_path):
+            if (
+                isinstance(handler, logging.FileHandler)
+                and not isinstance(handler, logging.handlers.TimedRotatingFileHandler)
+                and getattr(handler, "baseFilename", None) == str(error_log_path)
+            ):
                 return
 
         eh = logging.FileHandler(str(error_log_path), encoding="utf-8")
