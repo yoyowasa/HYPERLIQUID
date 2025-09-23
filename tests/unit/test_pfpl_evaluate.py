@@ -1,11 +1,15 @@
 # tests/unit/test_pfpl_evaluate.py
 import asyncio
 from asyncio import Semaphore
+import contextlib
 from decimal import Decimal, ROUND_DOWN
 import logging
+import threading
+import time
 from typing import Iterator
 from types import SimpleNamespace
 
+import anyio
 import pytest
 
 from bots.pfpl import PFPLStrategy
@@ -165,3 +169,76 @@ async def test_place_order_skips_zero_after_rounding(
     await strategy.place_order("BUY", 0.004, order_type="market")
 
     assert called is False
+
+
+@pytest.mark.asyncio
+async def test_place_order_runs_in_thread_pool(
+    strategy: PFPLStrategy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = threading.Event()
+    calls: list[dict[str, object]] = []
+
+    def blocking_order(**kwargs):
+        started.set()
+        time.sleep(0.3)
+        calls.append(kwargs)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(strategy.exchange, "order", blocking_order, raising=False)
+
+    strategy.qty_tick = Decimal("0.001")
+
+    order_task = asyncio.create_task(
+        strategy.place_order("BUY", 0.01234, order_type="market")
+    )
+
+    for _ in range(50):
+        if started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    else:
+        order_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await order_task
+        pytest.fail("order thread did not start in time")
+
+    t0 = time.perf_counter()
+    await asyncio.sleep(0.05)
+    elapsed = time.perf_counter() - t0
+
+    assert elapsed < 0.2, "event loop should not be blocked by blocking order"
+    assert not order_task.done(), "order should still be running while sleep completes"
+
+    await order_task
+
+    assert calls and calls[0]["sz"] == pytest.approx(0.012)
+
+
+@pytest.mark.asyncio
+async def test_place_order_retry_waits_between_attempts(
+    strategy: PFPLStrategy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempts = 0
+
+    def flaky_order(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 2:
+            raise RuntimeError("boom")
+        return {"status": "ok"}
+
+    monkeypatch.setattr(strategy.exchange, "order", flaky_order, raising=False)
+
+    sleep_delays: list[float] = []
+
+    async def fake_sleep(delay: float, *args, **kwargs) -> None:
+        sleep_delays.append(delay)
+
+    monkeypatch.setattr(anyio, "sleep", fake_sleep)
+
+    strategy.qty_tick = Decimal("0.001")
+
+    await strategy.place_order("SELL", 0.02, order_type="market")
+
+    assert attempts == 2
+    assert sleep_delays == [0.5]
