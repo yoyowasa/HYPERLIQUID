@@ -109,3 +109,25 @@ def test_setup_logger_honours_manual_overrides(tmp_path, monkeypatch):
 
     for name in _NOISY_NETWORK_LOGGERS:
         assert logging.getLogger(name).getEffectiveLevel() == logging.INFO
+
+
+def test_setup_logger_adds_file_handler_for_new_bot(tmp_path, monkeypatch):
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+
+    log_root = tmp_path / "logs"
+
+    setup_logger(bot_name="runner", log_root=log_root)
+    setup_logger(bot_name="pfpl", log_root=log_root)
+
+    root = logging.getLogger()
+    file_handlers = [
+        handler
+        for handler in root.handlers
+        if isinstance(handler, logging.handlers.TimedRotatingFileHandler)
+    ]
+
+    base_filenames = {handler.baseFilename for handler in file_handlers}
+    expected_runner = str((log_root / "runner" / "runner.log").resolve())
+    expected_pfpl = str((log_root / "pfpl" / "pfpl.log").resolve())
+
+    assert base_filenames.issuperset({expected_runner, expected_pfpl})
