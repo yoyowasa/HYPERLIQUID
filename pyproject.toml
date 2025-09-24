@@ -37,13 +37,13 @@ pytest-asyncio = "*"   # function: asyncテストの補助（BOTはasyncが多�
 
 # function: ruff の最小設定（速く・壊さず）
 [tool.ruff]
-target-version = "py311"
+target-version = "py313"
 line-length = 120
 extend-exclude = ["build", "dist", ".venv", "node_modules"]
 
 # function: pyright の最小設定（まずはbasicでサクサク）
 [tool.pyright]
-pythonVersion = "3.11"
+pythonVersion = "3.13"
 typeCheckingMode = "basic"
 exclude = [".venv", "build", "dist", ".eggs"]
 
