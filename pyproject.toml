@@ -6,16 +6,16 @@ description = "Hyperliquid trading bot monorepo"      # function: 説明
 authors = ["Yoshi <yoshiyoshi@example.com>"]          # function: 著者
 readme = "README.md"                                   # function: リポのREADMEをメインに
 
-# function: srcレイアウトで配布対象を限定（app/hl_core/bots を src/ 配下から収集）
+# function: srcレイアウトで配布対象を限定（hyperliquid/hl_core/bots を src/ 配下から収集）
 packages = [
-  { include = "app",     from = "src" },
-  { include = "hl_core", from = "src" },
-  { include = "bots",    from = "src" }
+  { include = "hyperliquid", from = "src" },
+  { include = "hl_core",     from = "src" },
+  { include = "bots",        from = "src" }
 ]
 
 # function: ランタイム依存（本番・実行に必要なもの）
 [tool.poetry.dependencies]
-python = "^3.13"                                       # function: CIと揃える（setup-python:3.11）
+python = "^3.11"                                       # function: CIと揃える（setup-python:3.11）
 anyio = "^4.9.0"
 httpx = "^0.28.1"
 pydantic = "^2.11.7"
@@ -25,6 +25,7 @@ websockets = "^15.0.1"
 colorama = "^0.4.6"
 python-dotenv = "^1.1.1"
 hyperliquid-python-sdk = "^0.4.0"                     # function: SDKは実行時に使うので本体依存へ
+setuptools = "^75.0.0"                                 # function: pkg_resources を提供（eth-keyfile 依存の補完）
 
 # function: 開発時のみ使う依存（CIで --with dev して実行）
 [tool.poetry.group.dev.dependencies]
@@ -35,13 +36,13 @@ pytest-asyncio = "*"   # function: asyncテストの補助（BOTはasyncが多�
 
 # function: ruff の最小設定（速く・壊さず）
 [tool.ruff]
-target-version = "py313"
+target-version = "py311"
 line-length = 120
 extend-exclude = ["build", "dist", ".venv", "node_modules"]
 
 # function: pyright の最小設定（まずはbasicでサクサク）
 [tool.pyright]
-pythonVersion = "3.13"
+pythonVersion = "3.11"
 typeCheckingMode = "basic"
 exclude = [".venv", "build", "dist", ".eggs"]
 
