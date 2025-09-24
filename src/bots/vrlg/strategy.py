@@ -79,17 +79,24 @@ class VRLGStrategy:
         while not self._stopping.is_set():
             try:
                 feat = await self.q_features.get()
-                # if not self.rot.is_active():
-                #     continue
-                # phase = self.rot.current_phase(feat.t)
-                # sig = self.sigdet.update_and_maybe_signal(feat.t, feat.with_phase(phase))
-                sig = None  # プレースホルダ
+                sig = await self._process_feature(feat)
                 if sig:
                     await self.q_signals.put(sig)
             except asyncio.CancelledError:
                 break
             except Exception as e:  # pragma: no cover
                 logger.exception("signal_loop error: %s", e)
+
+    async def _process_feature(self, feat: object) -> Optional[object]:
+        """〔このメソッドがすること〕
+        特徴量 1 件からシグナル候補を生成します（骨組みでは常に None を返す）。
+        """
+        # if not self.rot or not self.rot.is_active():
+        #     return None
+        # phase = self.rot.current_phase(feat.t)
+        # return self.sigdet.update_and_maybe_signal(feat.t, feat.with_phase(phase))
+        del feat
+        return None
 
     async def _exec_loop(self) -> None:
         """〔このメソッドがすること〕
@@ -99,14 +106,24 @@ class VRLGStrategy:
         while not self._stopping.is_set():
             try:
                 sig = await self.q_signals.get()
-                # order_ids = await self.exe.place_two_sided(sig.mid, sig.size)
-                # await self.exe.wait_fill_or_ttl(order_ids, timeout_s=self.cfg.exec.order_ttl_ms/1000)
-                # await self.exe.flatten_ioc()
-                await asyncio.sleep(0)
+                await self._handle_signal(sig)
             except asyncio.CancelledError:
                 break
             except Exception as e:  # pragma: no cover
                 logger.exception("exec_loop error: %s", e)
+
+    async def _handle_signal(self, sig: object) -> None:
+        """〔このメソッドがすること〕
+        シグナル 1 件を受けて執行/リスクに渡します（骨組みでは何もしない）。
+        """
+        # order_ids = await self.exe.place_two_sided(sig.mid, sig.size)
+        # await self.exe.wait_fill_or_ttl(
+        #     order_ids,
+        #     timeout_s=self.cfg.exec.order_ttl_ms / 1000,
+        # )
+        # await self.exe.flatten_ioc()
+        del sig
+        await asyncio.sleep(0)
 
     async def shutdown(self) -> None:
         """〔このメソッドがすること〕
