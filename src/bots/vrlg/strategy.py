@@ -8,7 +8,7 @@ import argparse
 import asyncio
 import signal
 import sys
-from typing import Optional
+from typing import Any, Optional
 
 # uvloop があれば高速化（なくても動く）
 try:
@@ -46,7 +46,7 @@ class VRLGStrategy:
         """
         self.config_path = config_path
         self.paper = paper
-        self.cfg = load_config(config_path)
+        self.cfg: Any = load_config(config_path)
         self._tasks: list[asyncio.Task] = []
         self._stopping = asyncio.Event()
 
