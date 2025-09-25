@@ -9,7 +9,7 @@ import asyncio
 import signal
 import sys
 import time  # 〔この import がすること〕 ブロック間隔の計算（秒）に使用します
-from typing import Any, Optional
+from typing import Optional, TYPE_CHECKING
 
 # uvloop があれば高速化（なくても動く）
 try:
@@ -20,6 +20,9 @@ except Exception:  # pragma: no cover
 # 〔この関数がすること〕: 共通ロガー/コンフィグ読込は PFPL と共有（hl_core）を使います。
 from hl_core.utils.logger import get_logger
 from hl_core.utils.config import load_config
+
+if TYPE_CHECKING:
+    from .config import VRLGConfig
 
 # 〔この import 群がすること〕
 # データ購読・位相検出・シグナル判定・発注・リスク管理の各コンポーネントを司令塔に読ませます。
@@ -48,7 +51,10 @@ class VRLGStrategy:
         """
         self.config_path = config_path
         self.paper = paper
-        self.cfg: Any = load_config(config_path)
+        raw_cfg = load_config(config_path)
+        from .config import coerce_vrlg_config  # 局所 import（循環回避と単一ステップ適用のため）
+
+        self.cfg: VRLGConfig = coerce_vrlg_config(raw_cfg)
         self._tasks: list[asyncio.Task] = []
         self._stopping = asyncio.Event()
 
