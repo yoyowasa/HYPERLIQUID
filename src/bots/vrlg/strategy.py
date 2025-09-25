@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib  # 〔この import がすること〕 タイマータスクを安全にキャンセル（例外抑止）するために使います
 import signal
 import sys
 import time  # 〔この import がすること〕 ブロック間隔の計算（秒）に使用します
@@ -177,6 +178,10 @@ class VRLGStrategy:
                     display = min(clip, max(clip * self.exe.display_ratio, self.exe.min_display))
                     self.risk.register_order_post(display_size=display, top_depth=self._last_features.dob)
 
+                # 〔この行がすること〕 Time-Stop を開始（ms後に IOC で強制クローズ）します
+                time_stop_ms = int(getattr(self.cfg.risk, "time_stop_ms", 1200))
+                ts_task = asyncio.create_task(self.exe.time_stop_after(time_stop_ms), name="time_stop")
+
                 order_ids = await self.exe.place_two_sided(sig.mid, clip)
                 self.metrics.inc_orders_submitted(len(order_ids))  # 〔この行がすること〕 提示した注文（maker）の件数を加算
                 await self.exe.wait_fill_or_ttl(order_ids, timeout_s=self.cfg.exec.order_ttl_ms / 1000)
@@ -186,6 +191,11 @@ class VRLGStrategy:
 
                 # 成行禁止でなければ IOC で素早く解消
                 if not adv.forbid_market:
+                    # 〔このブロックがすること〕 自前で IOC クローズしたので Time-Stop タイマーを安全にキャンセルします
+                    if not ts_task.done():
+                        ts_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await ts_task
                     await self.exe.flatten_ioc()
             except asyncio.CancelledError:
                 break
