@@ -104,6 +104,68 @@ class ExecutionEngine:
         except Exception as e:
             logger.warning("flatten_ioc failed: %s", e)
 
+    async def place_reverse_stop(self, fill_side: str, ref_mid: float, stop_ticks: float) -> Optional[str]:
+        """〔このメソッドがすること〕
+        充足したポジションを守る「逆指値（STOP）」を 1 本だけ出します（OCOの片翼）。
+        - fill_side="BUY" のとき: 防御は SELL STOP（ref_mid − stop_ticks×tick）
+        - fill_side="SELL" のとき: 防御は BUY  STOP（ref_mid + stop_ticks×tick）
+        - 取引所APIが未実装ならプレースホルダで安全にログだけ出し、疑似 order_id を返します。
+        """
+        side = str(fill_side).upper()
+        if side not in ("BUY", "SELL"):
+            logger.warning("place_reverse_stop: invalid side=%s", fill_side)
+            return None
+        stop_px = ref_mid - stop_ticks * self.tick if side == "BUY" else ref_mid + stop_ticks * self.tick
+        stop_px = _round_to_tick(stop_px, self.tick)
+
+        payload = {
+            "symbol": self.symbol,
+            "side": "SELL" if side == "BUY" else "BUY",
+            "stop_price": stop_px,
+            "size": min(self.max_exposure, 1.0),  # 後で実ポジションサイズに合わせて上書き想定
+            "time_in_force": "GTC",
+            "reduce_only": True,
+            "type": "STOP",
+            "paper": self.paper,
+        }
+        try:
+            from hl_core.api.http import place_order  # type: ignore
+        except Exception:
+            logger.info("[paper=%s] place_reverse_stop placeholder: %s", self.paper, payload)
+            return f"paper-stop-{payload['side']}-{int(time.time()*1000)}"
+
+        try:
+            resp = await place_order(**payload)  # type: ignore[misc]
+            return str(resp.get("order_id", "")) or None  # type: ignore[union-attr]
+        except Exception as e:
+            logger.warning("place_reverse_stop failed: %s", e)
+            return None
+
+    async def cancel_order_safely(self, order_id: Optional[str]) -> None:
+        """〔このメソッドがすること〕 単一注文のキャンセルを安全に実行します（存在しなくてもOK）。"""
+        if not order_id:
+            return
+        try:
+            from hl_core.api.http import cancel_order  # type: ignore
+        except Exception:
+            logger.info("[paper=%s] cancel placeholder: %s", self.paper, order_id)
+            return
+        try:
+            await cancel_order(self.symbol, order_id)  # type: ignore[misc]
+        except Exception as e:
+            logger.debug("cancel_order (safe) ignored: %s", e)
+
+    async def time_stop_after(self, ms: int) -> None:
+        """〔このメソッドがすること〕
+        指定ミリ秒だけ待ってから **IOC で即時クローズ**します（Time‑Stop）。
+        - 発注/充足状況に関わらず「時間で逃げる」最後の安全装置です。
+        """
+        try:
+            await asyncio.sleep(max(0.0, float(ms) / 1000.0))
+        except Exception:
+            return
+        await self.flatten_ioc()
+
     # ─────────────── 内部ユーティリティ（APIアダプタ呼び出し） ───────────────
 
     async def _post_only_iceberg(
