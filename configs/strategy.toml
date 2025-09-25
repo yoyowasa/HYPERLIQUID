@@ -1,0 +1,37 @@
+# 〔このファイルがすること〕
+# VRLG 戦略の全コンポーネント（データ/位相/シグナル/発注/リスク）が参照する設定をまとめます。
+# PFPL と共通の設定ローダ（hl_core.utils.config）で読み込みます。
+
+[symbol]
+# 〔このセクションがすること〕 銘柄とティックサイズの定義
+name = "BTCUSD-PERP"   # 取引シンボル名
+tick_size = 0.5        # 価格の最小刻み
+
+[signal]
+# 〔このセクションがすること〕 シグナルの4条件ゲートと周期検出のパラメータ
+N = 80                 # DoB ローリング中央値の窓サイズ
+x = 0.25               # DoB 閾: dob < median * (1 - x)
+y = 2                  # スプレッド閾（ティック）
+z = 0.6                # 位相ゲートの半幅（比率, 0<z<0.5に自動クリップ）
+obi_limit = 0.6        # 板不均衡 |OBI| の上限
+T_roll = 30.0          # 周期推定のロール窓（秒, RotationDetector 用）
+
+[exec]
+# 〔このセクションがすること〕 発注ロジック（post-only Iceberg/TTL/クールダウン）の設定
+order_ttl_ms = 1000        # 指値の寿命（ミリ秒）
+display_ratio = 0.25       # Iceberg display = total * display_ratio（min/maxで挟む）
+min_display_btc = 0.01     # Iceberg の最小表示数量
+max_exposure_btc = 0.8     # 総エクスポージャ上限（片側合計）
+cooldown_factor = 2.0      # フィル後の同方向クールダウン時間 = 2×R* 秒
+
+[risk]
+# 〔このセクションがすること〕 ルールベースのリスク管理の閾値
+max_slippage_ticks = 1     # 1分平均の滑りがこれを超えたら成行禁止/深置き
+max_book_impact = 0.02     # 5秒の板消費率合計（TopDepth比）が2%超でサイズ半減
+time_stop_ms = 1200        # タイムストップの上限（ミリ秒）
+stop_ticks = 3             # OCO用の逆指値距離（ティック）
+
+[latency]
+# 〔このセクションがすること〕 レイテンシ想定（バックテスト/監視のメトリクスに使用）
+ingest_ms = 10             # 購読（WS）遅延の想定
+order_rt_ms = 60           # 発注/キャンセルの往復遅延の想定
