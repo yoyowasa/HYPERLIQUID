@@ -61,13 +61,15 @@ class ExecutionEngine:
         if period_s > 0:
             self._period_s = float(period_s)
 
-    async def place_two_sided(self, mid: float, total: float) -> list[str]:
+    async def place_two_sided(self, mid: float, total: float, deepen: bool = False) -> list[str]:
         """〔このメソッドがすること〕
-        ミッド±0.5tick に post-only Iceberg を両面で出し、作成された order_id を返します。
+        ミッド±offset_ticks×tick に post-only Iceberg を両面で出し、order_id を返します。
+        deepen=True のときは offset_ticks=1.5（深置き）、通常は 0.5 を使います。
         display サイズは total×display_ratio を min/max で挟みます。
         """
-        px_bid = _round_to_tick(mid - 0.5 * self.tick, self.tick)
-        px_ask = _round_to_tick(mid + 0.5 * self.tick, self.tick)
+        offset_ticks = 1.5 if deepen else 0.5
+        px_bid = _round_to_tick(mid - offset_ticks * self.tick, self.tick)
+        px_ask = _round_to_tick(mid + offset_ticks * self.tick, self.tick)
         display = max(self.min_display, min(total, total * self.display_ratio))
 
         ids: list[str] = []
