@@ -169,7 +169,6 @@ class VRLGBacktester:
         dt = 0.1
         t0 = time.time()
         steps = int(duration_s / dt)
-        tick = self.tick
         mid0 = 70000.0
         for i in range(steps):
             t = t0 + i * dt
