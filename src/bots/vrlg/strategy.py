@@ -182,6 +182,28 @@ class VRLGStrategy:
                 time_stop_ms = int(getattr(self.cfg.risk, "time_stop_ms", 1200))
                 ts_task = asyncio.create_task(self.exe.time_stop_after(time_stop_ms), name="time_stop")
 
+                # 〔このブロックがすること〕
+                # 逆指値（Reduce‑Only の STOP）を両方向に“仮置き”し、Time‑Stop 終了後に自動で片付けます。
+                stop_ticks = float(getattr(self.cfg.risk, "stop_ticks", 3))
+                stop_ids: list[str] = []
+                sid_buy = await self.exe.place_reverse_stop("BUY", sig.mid, stop_ticks)
+                sid_sell = await self.exe.place_reverse_stop("SELL", sig.mid, stop_ticks)
+                for _sid in (sid_buy, sid_sell):
+                    if _sid:
+                        stop_ids.append(_sid)
+
+                async def _cleanup_stops_after_ts() -> None:
+                    """〔この内部関数がすること〕
+                    Time‑Stop タイマーが発火してクローズした後、残存 STOP を安全にキャンセルします。
+                    """
+
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await ts_task
+                        for _sid in stop_ids:
+                            await self.exe.cancel_order_safely(_sid)
+
+                stops_cleanup_task = asyncio.create_task(_cleanup_stops_after_ts(), name="stops_cleanup")
+
                 order_ids = await self.exe.place_two_sided(sig.mid, clip)
                 self.metrics.inc_orders_submitted(len(order_ids))  # 〔この行がすること〕 提示した注文（maker）の件数を加算
                 await self.exe.wait_fill_or_ttl(order_ids, timeout_s=self.cfg.exec.order_ttl_ms / 1000)
@@ -191,12 +213,20 @@ class VRLGStrategy:
 
                 # 成行禁止でなければ IOC で素早く解消
                 if not adv.forbid_market:
-                    # 〔このブロックがすること〕 自前で IOC クローズしたので Time-Stop タイマーを安全にキャンセルします
+                    await self.exe.flatten_ioc()
+                    # STOP を先に片付ける
+                    for _sid in stop_ids:
+                        await self.exe.cancel_order_safely(_sid)
+                    # Time‑Stop を停止
                     if not ts_task.done():
                         ts_task.cancel()
                         with contextlib.suppress(asyncio.CancelledError):
                             await ts_task
-                    await self.exe.flatten_ioc()
+                    # 自動片付けタスクも停止
+                    if not stops_cleanup_task.done():
+                        stops_cleanup_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await stops_cleanup_task
             except asyncio.CancelledError:
                 break
             except Exception as e:  # pragma: no cover
