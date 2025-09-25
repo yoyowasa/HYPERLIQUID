@@ -33,6 +33,7 @@ from .signal_detector import SignalDetector
 from .execution_engine import ExecutionEngine
 from .risk_management import RiskManager
 from .metrics import Metrics  # 〔この import がすること〕 Prometheus 送信ラッパを使えるようにする
+from .size_allocator import SizeAllocator  # 〔この import がすること〕 口座割合ベースのサイズ決定を使えるようにする
 
 logger = get_logger("VRLG")
 
@@ -72,6 +73,7 @@ class VRLGStrategy:
         self.sigdet = SignalDetector(self.cfg)
         self.exe = ExecutionEngine(self.cfg, paper=self.paper)
         self.risk = RiskManager(self.cfg)
+        self.sizer = SizeAllocator(self.cfg)  # 〔この行がすること〕 0.2–0.5% 基準のサイズ決定器を用意
 
     async def start(self) -> None:
         """〔このメソッドがすること〕
@@ -167,11 +169,8 @@ class VRLGStrategy:
                         await self.exe.flatten_ioc()  # 念のため即フラット
                     continue
 
-                # クリップサイズ: 最大エクスポージャの5%を基準にリスク倍率を反映
-                max_expo = self.exe.max_exposure
-                clip = max_expo * 0.05
-                clip *= adv.size_multiplier
-                clip = max(0.0, min(clip, max_expo))
+                # 〔この行がすること〕 口座残高の0.2–0.5%を基準に、リスク倍率を反映して1クリップのBTCサイズを決める
+                clip = self.sizer.next_size(mid=sig.mid, risk_mult=adv.size_multiplier)
 
                 # 板消費率トラッキングのため display を事前計算（Feature の DoB 使用）
                 if self._last_features is not None:
