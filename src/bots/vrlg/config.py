@@ -117,6 +117,11 @@ class ExecCfg(_BaseConfig):
     min_display_btc: float = 0.01
     max_exposure_btc: float = 0.8
     cooldown_factor: float = 2.0
+    percent_min: float = 0.002     # 〔このフィールドがすること〕 口座残高に対する最小割合（0.2%）
+    percent_max: float = 0.005     # 〔このフィールドがすること〕 口座残高に対する最大割合（0.5%）
+    splits: int = 1                # 〔このフィールドがすること〕 クリップ分割数（>1 で均等割り）
+    min_clip_btc: float = 0.001    # 〔このフィールドがすること〕 1クリップの最小BTC数量
+    equity_usd: float = 10000.0    # 〔このフィールドがすること〕 口座残高USD（API未接続時の既定値）
 
 
 @_decorate
@@ -185,6 +190,11 @@ def coerce_vrlg_config(raw: Any) -> VRLGConfig:
         "min_display_btc": float(sec_exec.get("min_display_btc", 0.01)),
         "max_exposure_btc": float(sec_exec.get("max_exposure_btc", 0.8)),
         "cooldown_factor": float(sec_exec.get("cooldown_factor", 2.0)),
+        "percent_min": float(sec_exec.get("percent_min", 0.002)),
+        "percent_max": float(sec_exec.get("percent_max", 0.005)),
+        "splits": int(sec_exec.get("splits", 1)),
+        "min_clip_btc": float(sec_exec.get("min_clip_btc", 0.001)),
+        "equity_usd": float(sec_exec.get("equity_usd", 10000.0)),
     })
     risk = RiskCfg(**{
         "max_slippage_ticks": float(sec_risk.get("max_slippage_ticks", 1.0)),
