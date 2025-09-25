@@ -91,6 +91,8 @@ class VRLGStrategy:
         self._tasks.append(asyncio.create_task(self._exec_loop(), name="exec_loop"))
         # 〔この行がすること〕 ブロックWSを購読し、ブロック間隔を Risk/Metrics に渡すループを起動します
         self._tasks.append(asyncio.create_task(self._blocks_loop(), name="blocks_loop"))
+        # 〔この行がすること〕 約定WSを購読し、滑り・クールダウン・メトリクスを更新するループを起動します
+        self._tasks.append(asyncio.create_task(self._fills_loop(), name="fills_loop"))
 
     async def _signal_loop(self) -> None:
         """〔このメソッドがすること〕
@@ -153,6 +155,58 @@ class VRLGStrategy:
                 except Exception:
                     logger.debug("metrics.observe_block_interval_ms failed (ignored)")
             last_ts = blk_ts
+
+    async def _fills_loop(self) -> None:
+        """〔このメソッドがすること〕
+        fills（約定）WSを購読し、滑り（ticks）を算出→RiskManagerへ登録→Prometheusへ送信し、
+        さらに ExecutionEngine のクールダウン（register_fill）を開始します。
+        """
+        try:
+            from hl_core.api.ws import subscribe_fills  # type: ignore
+        except Exception as e:
+            logger.warning("fills WS adapter not available: %s; fills_loop idle.", e)
+            await self._stopping.wait()
+            return
+
+        # シンボル名とティックサイズ（設定から安全取得）
+        try:
+            symbol = getattr(self.cfg.symbol, "name")
+            tick = float(getattr(self.cfg.symbol, "tick_size"))
+        except Exception:
+            symbol = self.cfg["symbol"]["name"]  # type: ignore[index]
+            tick = float(self.cfg["symbol"]["tick_size"])  # type: ignore[index]
+
+        async for fill in subscribe_fills(symbol):
+            if self._stopping.is_set():
+                break
+
+            # 約定から side/price を安全取得
+            try:
+                side = str(getattr(fill, "side", None) or fill.get("side", "")).upper()
+                price = float(getattr(fill, "price", None) or fill.get("price"))
+            except Exception:
+                continue
+
+            # 直近の mid（100ms特徴）と比較して滑りを算出（直近が無ければ自分自身を参照）
+            ref_mid = float(self._last_features.mid) if self._last_features else price
+            try:
+                self.risk.register_fill(fill_price=price, ref_mid=ref_mid, tick_size=tick)  # 滑り→リスク評価
+            except Exception:
+                logger.debug("risk.register_fill failed (ignored)")
+
+            # メトリクス（滑り＆fillsカウント）
+            try:
+                slip_ticks = abs(price - ref_mid) / max(tick, 1e-12)
+                self.metrics.observe_slippage(slip_ticks)
+                self.metrics.inc_fills(1)
+            except Exception:
+                logger.debug("metrics(slippage/fills) failed (ignored)")
+
+            # クールダウン開始（同方向の再エントリー抑制）
+            try:
+                self.exe.register_fill(side)
+            except Exception:
+                logger.debug("exe.register_fill failed (ignored)")
 
     async def _exec_loop(self) -> None:
         """〔このメソッドがすること〕

@@ -23,6 +23,11 @@ display_ratio = 0.25       # Iceberg display = total * display_ratio（min/max�
 min_display_btc = 0.01     # Iceberg の最小表示数量
 max_exposure_btc = 0.8     # 総エクスポージャ上限（片側合計）
 cooldown_factor = 2.0      # フィル後の同方向クールダウン時間 = 2×R* 秒
+percent_min = 0.002        # 〔この設定がすること〕 口座残高に対する最小割合（0.2%）
+percent_max = 0.005        # 〔この設定がすること〕 口座残高に対する最大割合（0.5%）
+splits = 1                 # 〔この設定がすること〕 クリップ分割数（>1 で均等割り）
+min_clip_btc = 0.001       # 〔この設定がすること〕 1クリップの最小BTC数量
+equity_usd = 10000.0       # 〔この設定がすること〕 口座残高USD（API未接続時の既定値）
 
 [risk]
 # 〔このセクションがすること〕 ルールベースのリスク管理の閾値
