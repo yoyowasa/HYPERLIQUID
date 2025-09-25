@@ -27,6 +27,7 @@ from .rotation_detector import RotationDetector
 from .signal_detector import SignalDetector
 from .execution_engine import ExecutionEngine
 from .risk_management import RiskManager
+from .metrics import Metrics  # 〔この import がすること〕 Prometheus 送信ラッパを使えるようにする
 
 logger = get_logger("VRLG")
 
@@ -40,7 +41,7 @@ class VRLGStrategy:
     - 将来、Prometheus のメトリクス公開を行う
     """
 
-    def __init__(self, config_path: str, paper: bool) -> None:
+    def __init__(self, config_path: str, paper: bool, prom_port: Optional[int] = None) -> None:  # 〔この行がすること〕 --prom-port を受け取り Metrics を起動できるようにする
         """〔このメソッドがすること〕
         TOML/YAML 設定を読み込み、実行モード（paper/live）を保持します。
         """
@@ -53,6 +54,7 @@ class VRLGStrategy:
         # 〔この属性がすること〕: 各段の非同期パイプ
         self.q_features: asyncio.Queue = asyncio.Queue(maxsize=1024)
         self.q_signals: asyncio.Queue = asyncio.Queue(maxsize=1024)
+        self.metrics = Metrics(port=prom_port)  # 〔この行がすること〕 /metrics を起動し、以降の観測値を送れるようにする
 
         # 〔この属性がすること〕直近の特徴量を保持し、発注時に板消費率などの参照に使います。
         self._last_features: Optional[FeatureSnapshot] = None
@@ -86,7 +88,10 @@ class VRLGStrategy:
         while not self._stopping.is_set():
             try:
                 feat = await self.q_features.get()
+                self.metrics.observe_spread(float(feat.spread_ticks))  # 〔この行がすること〕 観測スプレッド（ticks）をヒストグラムへ
                 self.rot.update(feat.t, feat.dob, feat.spread_ticks)
+                self.metrics.set_period(self.rot.current_period() or 0.0)   # 〔この行がすること〕 推定された周期R*をGaugeへ
+                self.metrics.set_active(self.rot.is_active())               # 〔この行がすること〕 稼働可能=1/観察モード=0 をGaugeへ
                 self._last_features = feat
                 if not self.rot.is_active():
                     continue
@@ -94,6 +99,7 @@ class VRLGStrategy:
                 self.exe.set_period_hint(self.rot.current_period() or 1.0)
                 sig = self.sigdet.update_and_maybe_signal(feat.t, feat.with_phase(phase))
                 if sig:
+                    self.metrics.inc_signal()  # 〔この行がすること〕 シグナル発火回数をカウントアップ
                     await self.q_signals.put(sig)
             except asyncio.CancelledError:
                 break
@@ -127,7 +133,11 @@ class VRLGStrategy:
                     self.risk.register_order_post(display_size=display, top_depth=self._last_features.dob)
 
                 order_ids = await self.exe.place_two_sided(sig.mid, clip)
+                self.metrics.inc_orders_submitted(len(order_ids))  # 〔この行がすること〕 提示した注文（maker）の件数を加算
                 await self.exe.wait_fill_or_ttl(order_ids, timeout_s=self.cfg.exec.order_ttl_ms / 1000)
+                self.metrics.inc_orders_canceled(len(order_ids))  # 〔この行がすること〕 TTL経過でキャンセルした件数を加算（簡易近似）
+                cd = self.exe.cooldown_factor * (self.rot.current_period() or 1.0)
+                self.metrics.set_cooldown(cd)                     # 〔この行がすること〕 現在のクールダウン秒数をGaugeへ
 
                 # 成行禁止でなければ IOC で素早く解消
                 if not adv.forbid_market:
@@ -163,6 +173,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     g.add_argument("--paper", action="store_true", help="paper trading mode")
     g.add_argument("--live", action="store_true", help="live trading mode")
     p.add_argument("--log-level", default="INFO", help="logging level")
+    p.add_argument("--prom-port", type=int, default=None, help="Prometheus metrics port (optional)")  # 〔この行がすること〕 /metrics を公開するポート番号の受け取り
     return p.parse_args(argv)
 
 
@@ -173,7 +184,7 @@ async def _run(argv: list[str]) -> int:
     args = parse_args(argv)
     if uvloop is not None:
         uvloop.install()
-    strategy = VRLGStrategy(config_path=args.config, paper=not args.live)
+    strategy = VRLGStrategy(config_path=args.config, paper=not args.live, prom_port=args.prom_port)  # 〔この行がすること〕 --prom-port を Strategy へ受け渡す
     await strategy.start()
 
     loop = asyncio.get_running_loop()
