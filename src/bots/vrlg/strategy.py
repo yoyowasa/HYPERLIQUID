@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import signal
 import sys
+import time  # 〔この import がすること〕 ブロック間隔の計算（秒）に使用します
 from typing import Any, Optional
 
 # uvloop があれば高速化（なくても動く）
@@ -79,6 +80,8 @@ class VRLGStrategy:
 
         self._tasks.append(asyncio.create_task(self._signal_loop(), name="signal_loop"))
         self._tasks.append(asyncio.create_task(self._exec_loop(), name="exec_loop"))
+        # 〔この行がすること〕 ブロックWSを購読し、ブロック間隔を Risk/Metrics に渡すループを起動します
+        self._tasks.append(asyncio.create_task(self._blocks_loop(), name="blocks_loop"))
 
     async def _signal_loop(self) -> None:
         """〔このメソッドがすること〕
@@ -105,6 +108,42 @@ class VRLGStrategy:
                 break
             except Exception as e:  # pragma: no cover
                 logger.exception("signal_loop error: %s", e)
+
+    async def _blocks_loop(self) -> None:
+        """〔このメソッドがすること〕
+        ブロックWSを購読し、前回ブロックとの「間隔(秒)」を測ります。
+        - RiskManager.update_block_interval() に渡してキルスイッチ判定に利用
+        - Metrics.observe_block_interval_ms() に渡して Prometheus に記録
+        """
+        try:
+            from hl_core.api.ws import subscribe_blocks  # type: ignore
+        except Exception as e:
+            logger.warning("blocks WS adapter not available: %s; blocks_loop idle.", e)
+            # アダプタ未導入環境では停止指示が来るまで待機
+            await self._stopping.wait()
+            return
+
+        last_ts = None
+        async for msg in subscribe_blocks():
+            if self._stopping.is_set():
+                break
+            # WSメッセージからブロック時刻を安全に取り出す（無ければ現在時刻）
+            try:
+                blk_ts = float(getattr(msg, "timestamp", None) or msg.get("timestamp"))  # type: ignore[attr-defined]
+            except Exception:
+                blk_ts = time.time()
+            # 前回ブロックがあれば間隔を計算して Risk/Metrics へ反映
+            if last_ts is not None:
+                interval = max(0.0, blk_ts - last_ts)
+                try:
+                    self.risk.update_block_interval(interval)          # キルスイッチ判定に寄与
+                except Exception:
+                    logger.debug("risk.update_block_interval failed (ignored)")
+                try:
+                    self.metrics.observe_block_interval_ms(interval)   # Prometheus へ記録
+                except Exception:
+                    logger.debug("metrics.observe_block_interval_ms failed (ignored)")
+            last_ts = blk_ts
 
     async def _exec_loop(self) -> None:
         """〔このメソッドがすること〕
