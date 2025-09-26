@@ -230,6 +230,11 @@ class VRLGStrategy:
                 if self._last_features is not None:
                     display = min(clip, max(clip * self.exe.display_ratio, self.exe.min_display))
                     self.risk.register_order_post(display_size=display, top_depth=self._last_features.dob)
+                    # 〔この行がすること〕 直近5秒の板消費率合計をメトリクスに反映します
+                    try:
+                        self.metrics.set_book_impact_5s(self.risk.book_impact_sum_5s())
+                    except Exception:
+                        logger.debug("metrics.set_book_impact_5s failed (ignored)")
 
                 # 〔この行がすること〕 Time-Stop を開始（ms後に IOC で強制クローズ）します
                 time_stop_ms = int(getattr(self.cfg.risk, "time_stop_ms", 1200))
