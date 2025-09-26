@@ -378,6 +378,11 @@ async def _run(argv: list[str]) -> int:
     uvloop を可能なら有効化し、VRLGStrategy を起動してシグナルで停止します。
     """
     args = parse_args(argv)
+    # 〔この行がすること〕 CLI の --log-level を VRLG ロガーへ反映する
+    try:
+        logger.setLevel(str(args.log_level).upper())
+    except Exception:
+        pass
     if uvloop is not None:
         uvloop.install()
     strategy = VRLGStrategy(config_path=args.config, paper=not args.live, prom_port=args.prom_port, decisions_file=args.decisions_file)  # 〔この行がすること〕 CLI からロガーへ出力先を渡す
