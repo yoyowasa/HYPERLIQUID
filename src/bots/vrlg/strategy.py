@@ -330,7 +330,6 @@ class VRLGStrategy:
                     self.decisions.log("exit_policy", policy="forbid_market")  # 〔この行がすること〕 早期IOCを行わない方針であることを記録
                     # 成行は禁止 → 通常通り TTL まで待ってキャンセル（Time‑Stopは別途走る）
                     await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
-                    canceled_count = len(order_ids)
                     self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
                 else:
                     # 早期エグジット候補：スプレッドが 1 tick に縮小したら即クローズ
@@ -345,14 +344,12 @@ class VRLGStrategy:
                         self.decisions.log("exit", reason="spread_collapse")  # 〔この行がすること〕 スプレッド縮小で早期IOCしたことを記録
                         # 先に maker を素早くキャンセルしてから IOC で解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=0.0)
-                        canceled_count = len(order_ids)
                         await self.exe.flatten_ioc()
                         await _cancel_stops_and_timers()
                     else:
                         self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
                         # 縮小しなかった → TTL まで待って通常解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
-                        canceled_count = len(order_ids)
                         await self.exe.flatten_ioc()
                         await _cancel_stops_and_timers()
 
