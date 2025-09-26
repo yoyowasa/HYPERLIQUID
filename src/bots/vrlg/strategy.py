@@ -308,6 +308,7 @@ class VRLGStrategy:
                         timeout_s=ttl_s,
                         poll_s=0.02,
                     )
+
                     if collapsed:
                         # 先に maker を素早くキャンセルしてから IOC で解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=0.0)
