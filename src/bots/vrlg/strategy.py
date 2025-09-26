@@ -257,7 +257,7 @@ class VRLGStrategy:
 
                 stops_cleanup_task = asyncio.create_task(_cleanup_stops_after_ts(), name="stops_cleanup")
 
-                order_ids = await self.exe.place_two_sided(sig.mid, clip)
+                order_ids = await self.exe.place_two_sided(sig.mid, clip, deepen=adv.deepen_post_only)  # 〔この行がすること〕 リスク助言に応じて「深置き」を切り替える
                 self.metrics.inc_orders_submitted(len(order_ids))  # 〔この行がすること〕 提示した注文（maker）の件数を加算
                 await self.exe.wait_fill_or_ttl(order_ids, timeout_s=self.cfg.exec.order_ttl_ms / 1000)
                 self.metrics.inc_orders_canceled(len(order_ids))  # 〔この行がすること〕 TTL経過でキャンセルした件数を加算（簡易近似）
