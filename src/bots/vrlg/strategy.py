@@ -33,6 +33,7 @@ from .signal_detector import SignalDetector
 from .execution_engine import ExecutionEngine
 from .risk_management import RiskManager
 from .metrics import Metrics  # 〔この import がすること〕 Prometheus 送信ラッパを使えるようにする
+from .decision_log import DecisionLogger  # 〔この import がすること〕 意思決定のJSONログを使えるようにする
 from .size_allocator import SizeAllocator  # 〔この import がすること〕 口座割合ベースのサイズ決定を使えるようにする
 
 logger = get_logger("VRLG")
@@ -47,7 +48,7 @@ class VRLGStrategy:
     - 将来、Prometheus のメトリクス公開を行う
     """
 
-    def __init__(self, config_path: str, paper: bool, prom_port: Optional[int] = None) -> None:  # 〔この行がすること〕 --prom-port を受け取り Metrics を起動できるようにする
+    def __init__(self, config_path: str, paper: bool, prom_port: Optional[int] = None, decisions_file: Optional[str] = None) -> None:  # 〔この行がすること〕 意思決定ログの出力先を受け取れるようにする
         """〔このメソッドがすること〕
         TOML/YAML 設定を読み込み、実行モード（paper/live）を保持します。
         """
@@ -64,6 +65,7 @@ class VRLGStrategy:
         self.q_features: asyncio.Queue = asyncio.Queue(maxsize=1024)
         self.q_signals: asyncio.Queue = asyncio.Queue(maxsize=1024)
         self.metrics = Metrics(port=prom_port)  # 〔この行がすること〕 /metrics を起動し、以降の観測値を送れるようにする
+        self.decisions = DecisionLogger(filepath=decisions_file)  # 〔この行がすること〕 意思決定ログの出力を初期化
 
         # 〔この属性がすること〕直近の特徴量を保持し、発注時に板消費率などの参照に使います。
         self._last_features: Optional[FeatureSnapshot] = None
@@ -113,6 +115,7 @@ class VRLGStrategy:
                 self.exe.set_period_hint(self.rot.current_period() or 1.0)
                 sig = self.sigdet.update_and_maybe_signal(feat.t, feat.with_phase(phase))
                 if sig:
+                    self.decisions.log("signal", phase=phase, spread_ticks=float(feat.spread_ticks), dob=float(feat.dob), obi=float(feat.obi))  # 〔この行がすること〕 シグナルの根拠となる特徴量を記録
                     self.metrics.inc_signal()  # 〔この行がすること〕 シグナル発火回数をカウントアップ
                     await self.q_signals.put(sig)
             except asyncio.CancelledError:
@@ -154,6 +157,7 @@ class VRLGStrategy:
                     self.metrics.observe_block_interval_ms(interval)   # Prometheus へ記録
                 except Exception:
                     logger.debug("metrics.observe_block_interval_ms failed (ignored)")
+                self.decisions.log("block_interval", interval_s=float(interval))  # 〔この行がすること〕 観測したブロック間隔を記録
             last_ts = blk_ts
 
     async def _fills_loop(self) -> None:
@@ -199,6 +203,7 @@ class VRLGStrategy:
                 slip_ticks = abs(price - ref_mid) / max(tick, 1e-12)
                 self.metrics.observe_slippage(slip_ticks)
                 self.metrics.inc_fills(1)
+                self.decisions.log("fill", side=side, price=float(price), ref_mid=float(ref_mid), slip_ticks=float(slip_ticks))  # 〔この行がすること〕 約定と滑りを記録
             except Exception:
                 logger.debug("metrics(slippage/fills) failed (ignored)")
 
@@ -234,12 +239,14 @@ class VRLGStrategy:
                 # リスク助言（キル/一時停止/サイズ倍率/成行禁止など）
                 adv = self.risk.advice()
                 if self.risk.should_pause() or adv.killswitch:
+                    self.decisions.log("risk_pause", killswitch=bool(adv.killswitch), paused_until=adv.paused_until, reason=str(adv.reason))  # 〔この行がすること〕 リスク由来の停止理由を記録
                     if adv.killswitch:
                         await self.exe.flatten_ioc()  # 念のため即フラット
                     continue
 
                 # 〔この行がすること〕 口座残高の0.2–0.5%を基準に、リスク倍率を反映して1クリップのBTCサイズを決める
                 clip = self.sizer.next_size(mid=sig.mid, risk_mult=adv.size_multiplier)
+                self.decisions.log("order_intent", mid=float(sig.mid), clip=float(clip), deepen=bool(adv.deepen_post_only))  # 〔この行がすること〕 置くサイズと深さの意図を記録
 
                 # 板消費率トラッキングのため display を事前計算（Feature の DoB 使用）
                 if self._last_features is not None:
@@ -278,6 +285,7 @@ class VRLGStrategy:
                 stops_cleanup_task = asyncio.create_task(_cleanup_stops_after_ts(), name="stops_cleanup")
 
                 order_ids = await self.exe.place_two_sided(sig.mid, clip, deepen=adv.deepen_post_only)  # 〔この行がすること〕 リスク助言に応じて「深置き」を切り替える
+                self.decisions.log("order_submitted", count=int(len(order_ids)))  # 〔この行がすること〕 実際に何件出したかを記録
                 self.metrics.inc_orders_submitted(len(order_ids))  # 〔この行がすること〕 提示した注文（maker）の件数を加算
 
                 async def _cancel_stops_and_timers() -> None:
@@ -297,9 +305,11 @@ class VRLGStrategy:
                 ttl_s = float(self.cfg.exec.order_ttl_ms) / 1000.0
 
                 if adv.forbid_market:
+                    self.decisions.log("exit_policy", policy="forbid_market")  # 〔この行がすること〕 早期IOCを行わない方針であることを記録
                     # 成行は禁止 → 通常通り TTL まで待ってキャンセル（Time‑Stopは別途走る）
                     await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
                     canceled_count = len(order_ids)
+                    self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
                 else:
                     # 早期エグジット候補：スプレッドが 1 tick に縮小したら即クローズ
                     # 〔この行がすること〕 しきい値を設定から受け取り、縮小判定に使う
@@ -310,12 +320,14 @@ class VRLGStrategy:
                     )
 
                     if collapsed:
+                        self.decisions.log("exit", reason="spread_collapse")  # 〔この行がすること〕 スプレッド縮小で早期IOCしたことを記録
                         # 先に maker を素早くキャンセルしてから IOC で解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=0.0)
                         canceled_count = len(order_ids)
                         await self.exe.flatten_ioc()
                         await _cancel_stops_and_timers()
                     else:
+                        self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
                         # 縮小しなかった → TTL まで待って通常解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
                         canceled_count = len(order_ids)
@@ -357,6 +369,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     g.add_argument("--live", action="store_true", help="live trading mode")
     p.add_argument("--log-level", default="INFO", help="logging level")
     p.add_argument("--prom-port", type=int, default=None, help="Prometheus metrics port (optional)")  # 〔この行がすること〕 /metrics を公開するポート番号の受け取り
+    p.add_argument("--decisions-file", default=None, help="path to JSONL file for decision logs (optional)")  # 〔この行がすること〕 意思決定ログの保存先を受け取る
     return p.parse_args(argv)
 
 
@@ -365,9 +378,14 @@ async def _run(argv: list[str]) -> int:
     uvloop を可能なら有効化し、VRLGStrategy を起動してシグナルで停止します。
     """
     args = parse_args(argv)
+    # 〔この行がすること〕 CLI の --log-level を VRLG ロガーへ反映する
+    try:
+        logger.setLevel(str(args.log_level).upper())
+    except Exception:
+        pass
     if uvloop is not None:
         uvloop.install()
-    strategy = VRLGStrategy(config_path=args.config, paper=not args.live, prom_port=args.prom_port)  # 〔この行がすること〕 --prom-port を Strategy へ受け渡す
+    strategy = VRLGStrategy(config_path=args.config, paper=not args.live, prom_port=args.prom_port, decisions_file=args.decisions_file)  # 〔この行がすること〕 CLI からロガーへ出力先を渡す
     await strategy.start()
 
     loop = asyncio.get_running_loop()
