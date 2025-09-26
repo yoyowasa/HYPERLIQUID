@@ -18,11 +18,13 @@ except Exception:  # pragma: no cover - テスト環境差分用
 
 try:
     from bots.vrlg.execution_engine import ExecutionEngine
+    from bots.vrlg.rotation_detector import RotationDetector
 except Exception:  # pragma: no cover - テスト環境差分用
     from src.bots.vrlg.execution_engine import ExecutionEngine  # type: ignore
+    from src.bots.vrlg.rotation_detector import RotationDetector  # type: ignore
 
 
-class DummyRot:
+class DummyRot(RotationDetector):
     """〔このクラスがすること〕
     周期検出のダミー実装:
       - is_active() は常に True
