@@ -704,3 +704,26 @@ class PFPLStrategy:
         if side.upper() == "BUY":
             return base_px * (1 - self.eps_pct)
         return base_px * (1 + self.eps_pct)
+
+
+def log_order_decision(
+    logger,
+    symbol: str,
+    side: str,
+    qty: float,
+    price: float | None,
+    reason: str,
+    will_send: bool,
+) -> None:
+    """この関数がすること: 発注する/しない の判定結果と理由を1行でログに残す。送るならINFO、送らないならDEBUG。"""
+    level = logging.INFO if will_send else logging.DEBUG
+    logger.log(
+        level,
+        "order_decision symbol=%s side=%s qty=%s price=%s will_send=%s reason=%s",
+        symbol,
+        side,
+        qty,
+        price,
+        will_send,
+        reason,
+    )
