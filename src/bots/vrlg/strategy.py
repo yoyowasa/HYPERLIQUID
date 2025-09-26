@@ -330,6 +330,7 @@ class VRLGStrategy:
                     self.decisions.log("exit_policy", policy="forbid_market")  # 〔この行がすること〕 早期IOCを行わない方針であることを記録
                     # 成行は禁止 → 通常通り TTL まで待ってキャンセル（Time‑Stopは別途走る）
                     await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
+
                     self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
                 else:
                     # 早期エグジット候補：スプレッドが 1 tick に縮小したら即クローズ
