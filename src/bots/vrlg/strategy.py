@@ -208,6 +208,21 @@ class VRLGStrategy:
             except Exception:
                 logger.debug("exe.register_fill failed (ignored)")
 
+    async def _wait_spread_collapse(self, threshold_ticks: float = 1.0, timeout_s: float = 1.0, poll_s: float = 0.02) -> bool:
+        """〔このメソッドがすること〕
+        一定時間内に「スプレッドが threshold_ticks 以下」に縮小したら True を返します。
+        - self._last_features（100ms特徴）をポーリングして判定します。
+        - タイムアウトまたは停止指示で False を返します。
+        """
+
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        while time.monotonic() < deadline and not self._stopping.is_set():
+            snap = self._last_features
+            if snap is not None and float(snap.spread_ticks) <= float(threshold_ticks):
+                return True
+            await asyncio.sleep(float(poll_s))
+        return False
+
     async def _exec_loop(self) -> None:
         """〔このメソッドがすること〕
         シグナルを受けてリスク判定→post-only Iceberg の発注→TTL待ち→IOC解消を実行します。
@@ -230,6 +245,11 @@ class VRLGStrategy:
                 if self._last_features is not None:
                     display = min(clip, max(clip * self.exe.display_ratio, self.exe.min_display))
                     self.risk.register_order_post(display_size=display, top_depth=self._last_features.dob)
+                    # 〔この行がすること〕 直近5秒の板消費率合計をメトリクスに反映します
+                    try:
+                        self.metrics.set_book_impact_5s(self.risk.book_impact_sum_5s())
+                    except Exception:
+                        logger.debug("metrics.set_book_impact_5s failed (ignored)")
 
                 # 〔この行がすること〕 Time-Stop を開始（ms後に IOC で強制クローズ）します
                 time_stop_ms = int(getattr(self.cfg.risk, "time_stop_ms", 1200))
@@ -259,27 +279,51 @@ class VRLGStrategy:
 
                 order_ids = await self.exe.place_two_sided(sig.mid, clip, deepen=adv.deepen_post_only)  # 〔この行がすること〕 リスク助言に応じて「深置き」を切り替える
                 self.metrics.inc_orders_submitted(len(order_ids))  # 〔この行がすること〕 提示した注文（maker）の件数を加算
-                await self.exe.wait_fill_or_ttl(order_ids, timeout_s=self.cfg.exec.order_ttl_ms / 1000)
-                self.metrics.inc_orders_canceled(len(order_ids))  # 〔この行がすること〕 TTL経過でキャンセルした件数を加算（簡易近似）
-                cd = self.exe.cooldown_factor * (self.rot.current_period() or 1.0)
-                self.metrics.set_cooldown(cd)                     # 〔この行がすること〕 現在のクールダウン秒数をGaugeへ
 
-                # 成行禁止でなければ IOC で素早く解消
-                if not adv.forbid_market:
-                    await self.exe.flatten_ioc()
-                    # STOP を先に片付ける
+                async def _cancel_stops_and_timers() -> None:
                     for _sid in stop_ids:
                         await self.exe.cancel_order_safely(_sid)
-                    # Time‑Stop を停止
                     if not ts_task.done():
                         ts_task.cancel()
                         with contextlib.suppress(asyncio.CancelledError):
                             await ts_task
-                    # 自動片付けタスクも停止
                     if not stops_cleanup_task.done():
                         stops_cleanup_task.cancel()
                         with contextlib.suppress(asyncio.CancelledError):
                             await stops_cleanup_task
+
+                # 〔このブロックがすること〕
+                # 「TTL経過」 vs 「スプレッド≤1tick縮小」の先着で処理を分岐します。
+                ttl_s = float(self.cfg.exec.order_ttl_ms) / 1000.0
+
+                if adv.forbid_market:
+                    # 成行は禁止 → 通常通り TTL まで待ってキャンセル（Time‑Stopは別途走る）
+                    await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
+                    canceled_count = len(order_ids)
+                else:
+                    # 早期エグジット候補：スプレッドが 1 tick に縮小したら即クローズ
+                    # 〔この行がすること〕 しきい値を設定から受け取り、縮小判定に使う
+                    collapsed = await self._wait_spread_collapse(
+                        threshold_ticks=float(getattr(self.cfg.exec, "spread_collapse_ticks", 1.0)),
+                        timeout_s=ttl_s,
+                        poll_s=0.02,
+                    )
+                    if collapsed:
+                        # 先に maker を素早くキャンセルしてから IOC で解消
+                        await self.exe.wait_fill_or_ttl(order_ids, timeout_s=0.0)
+                        canceled_count = len(order_ids)
+                        await self.exe.flatten_ioc()
+                        await _cancel_stops_and_timers()
+                    else:
+                        # 縮小しなかった → TTL まで待って通常解消
+                        await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
+                        canceled_count = len(order_ids)
+                        await self.exe.flatten_ioc()
+                        await _cancel_stops_and_timers()
+
+                self.metrics.inc_orders_canceled(canceled_count)  # 〔この行がすること〕 TTLや早期解消でキャンセルした件数を加算（簡易近似）
+                cd = self.exe.cooldown_factor * (self.rot.current_period() or 1.0)
+                self.metrics.set_cooldown(cd)                     # 〔この行がすること〕 現在のクールダウン秒数をGaugeへ
             except asyncio.CancelledError:
                 break
             except Exception as e:  # pragma: no cover
