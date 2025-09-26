@@ -302,7 +302,13 @@ class VRLGStrategy:
                     canceled_count = len(order_ids)
                 else:
                     # 早期エグジット候補：スプレッドが 1 tick に縮小したら即クローズ
-                    collapsed = await self._wait_spread_collapse(threshold_ticks=1.0, timeout_s=ttl_s, poll_s=0.02)
+                    # 〔この行がすること〕 しきい値を設定から受け取り、縮小判定に使う
+                    collapsed = await self._wait_spread_collapse(
+                        threshold_ticks=float(getattr(self.cfg.exec, "spread_collapse_ticks", 1.0)),
+                        timeout_s=ttl_s,
+                        poll_s=0.02,
+                    )
+
                     if collapsed:
                         # 先に maker を素早くキャンセルしてから IOC で解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=0.0)

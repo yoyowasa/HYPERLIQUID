@@ -117,6 +117,9 @@ class ExecCfg(_BaseConfig):
     min_display_btc: float = 0.01
     max_exposure_btc: float = 0.8
     cooldown_factor: float = 2.0
+    offset_ticks_normal: float = 0.5   # 〔このフィールドがすること〕 通常置きの価格オフセット（±tick）
+    offset_ticks_deep: float = 1.5     # 〔このフィールドがすること〕 深置きの価格オフセット（±tick）
+    spread_collapse_ticks: float = 1.0 # 〔このフィールドがすること〕 早期IOCの縮小判定のしきい値（tick）
     percent_min: float = 0.002     # 〔このフィールドがすること〕 口座残高に対する最小割合（0.2%）
     percent_max: float = 0.005     # 〔このフィールドがすること〕 口座残高に対する最大割合（0.5%）
     splits: int = 1                # 〔このフィールドがすること〕 クリップ分割数（>1 で均等割り）
@@ -190,6 +193,9 @@ def coerce_vrlg_config(raw: Any) -> VRLGConfig:
         "min_display_btc": float(sec_exec.get("min_display_btc", 0.01)),
         "max_exposure_btc": float(sec_exec.get("max_exposure_btc", 0.8)),
         "cooldown_factor": float(sec_exec.get("cooldown_factor", 2.0)),
+        "offset_ticks_normal": float(sec_exec.get("offset_ticks_normal", 0.5)),
+        "offset_ticks_deep": float(sec_exec.get("offset_ticks_deep", 1.5)),
+        "spread_collapse_ticks": float(sec_exec.get("spread_collapse_ticks", 1.0)),
         "percent_min": float(sec_exec.get("percent_min", 0.002)),
         "percent_max": float(sec_exec.get("percent_max", 0.005)),
         "splits": int(sec_exec.get("splits", 1)),
