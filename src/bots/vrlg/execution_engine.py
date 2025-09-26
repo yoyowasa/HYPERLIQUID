@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Optional
+from typing import Optional, Callable, Dict, Any  # 〔この行がすること〕 オーダーイベント用のコールバック型を使えるようにする
 
 from hl_core.utils.logger import get_logger
 
@@ -59,6 +59,7 @@ class ExecutionEngine:
         self._last_fill_side: Optional[str] = None  # "BUY" or "SELL"
         self._last_fill_time: float = 0.0
         self._period_s: float = 1.0  # RotationDetector から更新注入予定
+        self.on_order_event: Optional[Callable[[str, Dict[str, Any]], None]] = None  # 〔この行がすること〕 'skip'/'submitted'/'reject'/'cancel' を Strategy 側へ通知するコールバック
 
     def set_period_hint(self, period_s: float) -> None:
         """〔このメソッドがすること〕 R*（推定周期）ヒントを注入し、クールダウン計算に使います。"""
@@ -81,10 +82,29 @@ class ExecutionEngine:
         for side, price in (("BUY", px_bid), ("SELL", px_ask)):
             if self._in_cooldown(side):
                 logger.debug("cooldown active: skip %s", side)
+                # 〔このブロックがすること〕 クールダウンによるスキップを上位へ通知（意思決定ログ用）
+                try:
+                    if self.on_order_event:
+                        self.on_order_event("skip", {"side": side, "reason": "cooldown"})
+                except Exception:
+                    pass
                 continue
             oid = await self._post_only_iceberg(side, price, total, display, self.ttl_ms / 1000.0)
             if oid:
+                # 〔このブロックがすること〕 発注が通った事実を通知（片側ごと）
+                try:
+                    if self.on_order_event:
+                        self.on_order_event("submitted", {"side": side, "price": float(price), "order_id": str(oid)})
+                except Exception:
+                    pass
                 ids.append(oid)
+            else:
+                # 〔このブロックがすること〕 取引所から拒否/未受理（None）を通知
+                try:
+                    if self.on_order_event:
+                        self.on_order_event("reject", {"side": side, "price": float(price)})
+                except Exception:
+                    pass
         return ids
 
     async def wait_fill_or_ttl(self, order_ids: list[str], timeout_s: float) -> None:
@@ -98,6 +118,13 @@ class ExecutionEngine:
             await asyncio.sleep(timeout_s)
         finally:
             await self._cancel_many(order_ids)
+            # 〔このブロックがすること〕 TTL/解消でキャンセルした事実を片側ごとに通知
+            try:
+                if self.on_order_event:
+                    for _oid in order_ids:
+                        self.on_order_event("cancel", {"order_id": str(_oid)})
+            except Exception:
+                pass
 
     async def flatten_ioc(self) -> None:
         """〔このメソッドがすること〕 市場成行（IOC）で素早くフラット化します（スケルトン）。"""
