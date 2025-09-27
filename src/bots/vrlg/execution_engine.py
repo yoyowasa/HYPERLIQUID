@@ -60,8 +60,6 @@ class ExecutionEngine:
         self._last_fill_time: float = 0.0
         self._period_s: float = 1.0  # RotationDetector から更新注入予定
         self.on_order_event: Optional[Callable[[str, Dict[str, Any]], None]] = None  # 〔この行がすること〕 'skip'/'submitted'/'reject'/'cancel' を Strategy 側へ通知するコールバック
-        self._open_maker_btc: float = 0.0  # 〔この属性がすること〕 未キャンセルの maker 注文サイズ合計（BTC）を管理
-        self._order_size: Dict[str, float] = {}  # 〔この属性がすること〕 order_id → 発注 total サイズの対応
 
     def set_period_hint(self, period_s: float) -> None:
         """〔このメソッドがすること〕 R*（推定周期）ヒントを注入し、クールダウン計算に使います。"""
@@ -101,9 +99,7 @@ class ExecutionEngine:
                 continue
             oid = await self._post_only_iceberg(side, price, total, display, self.ttl_ms / 1000.0)
             if oid:
-                # 〔この行がすること〕 受理された maker 注文の露出を加算し、order_id を記録
-                self._open_maker_btc += float(total)
-                self._order_size[str(oid)] = float(total)
+
                 # 〔このブロックがすること〕 発注が通った事実を通知（片側ごと）
                 try:
                     if self.on_order_event:
@@ -138,9 +134,7 @@ class ExecutionEngine:
                         self.on_order_event("cancel", {"order_id": str(_oid)})
             except Exception:
                 pass
-            # 〔このブロックがすること〕 キャンセル完了後に、未約定メーカー露出を減算
-            for _oid in order_ids:
-                self._reduce_open_maker(_oid)
+
 
     async def flatten_ioc(self) -> None:
         """〔このメソッドがすること〕 市場成行（IOC）で素早くフラット化します（スケルトン）。"""

@@ -48,7 +48,10 @@ class VRLGStrategy:
     - 将来、Prometheus のメトリクス公開を行う
     """
 
+
+
     def __init__(self, config_path: str, paper: bool, prom_port: Optional[int] = None, decisions_file: Optional[str] = None) -> None:  # 〔この行がすること〕 意思決定ログの出力先を受け取れるようにする
+
         """〔このメソッドがすること〕
         TOML/YAML 設定を読み込み、実行モード（paper/live）を保持します。
         """
@@ -64,6 +67,7 @@ class VRLGStrategy:
         # 〔この属性がすること〕: 各段の非同期パイプ
         self.q_features: asyncio.Queue = asyncio.Queue(maxsize=1024)
         self.q_signals: asyncio.Queue = asyncio.Queue(maxsize=1024)
+        self.decisions = DecisionLogger(filepath=decisions_file)  # 〔この行がすること〕 意思決定ログの出力を初期化
         self.metrics = Metrics(port=prom_port)  # 〔この行がすること〕 /metrics を起動し、以降の観測値を送れるようにする
         self.decisions = DecisionLogger(filepath=decisions_file)  # 〔この行がすること〕 意思決定ログの出力を初期化
 
@@ -157,6 +161,7 @@ class VRLGStrategy:
                     logger.debug("risk.update_block_interval failed (ignored)")
                 try:
                     self.metrics.observe_block_interval_ms(interval)   # Prometheus へ記録
+                    self.decisions.log("block_interval", interval_s=float(interval))  # 〔この行がすること〕 観測したブロック間隔を記録
                 except Exception:
                     logger.debug("metrics.observe_block_interval_ms failed (ignored)")
                 self.decisions.log("block_interval", interval_s=float(interval))  # 〔この行がすること〕 観測したブロック間隔を記録
@@ -329,8 +334,11 @@ class VRLGStrategy:
                 if adv.forbid_market:
                     self.decisions.log("exit_policy", policy="forbid_market")  # 〔この行がすること〕 早期IOCを行わない方針であることを記録
                     # 成行は禁止 → 通常通り TTL まで待ってキャンセル（Time‑Stopは別途走る）
+
                     await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
+
                     self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
+
                 else:
                     # 早期エグジット候補：スプレッドが 1 tick に縮小したら即クローズ
                     # 〔この行がすること〕 しきい値を設定から受け取り、縮小判定に使う
@@ -344,12 +352,14 @@ class VRLGStrategy:
                         self.decisions.log("exit", reason="spread_collapse")  # 〔この行がすること〕 スプレッド縮小で早期IOCしたことを記録
                         # 先に maker を素早くキャンセルしてから IOC で解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=0.0)
+
                         await self.exe.flatten_ioc()
                         await _cancel_stops_and_timers()
                     else:
                         self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
                         # 縮小しなかった → TTL まで待って通常解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
+
                         await self.exe.flatten_ioc()
                         await _cancel_stops_and_timers()
 
@@ -403,7 +413,9 @@ async def _run(argv: list[str]) -> int:
         pass
     if uvloop is not None:
         uvloop.install()
+
     strategy = VRLGStrategy(config_path=args.config, paper=not args.live, prom_port=args.prom_port, decisions_file=args.decisions_file)  # 〔この行がすること〕 CLI からロガーへ出力先を渡す
+
     await strategy.start()
 
     loop = asyncio.get_running_loop()
