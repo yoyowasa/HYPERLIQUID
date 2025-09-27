@@ -48,13 +48,9 @@ class VRLGStrategy:
     - 将来、Prometheus のメトリクス公開を行う
     """
 
-    def __init__(
-        self,
-        config_path: str,
-        paper: bool,
-        prom_port: Optional[int] = None,
-        decisions_file: Optional[str] = None,
-    ) -> None:  # 〔この行がすること〕 --prom-port を受け取り Metrics を起動できるようにする
+
+    def __init__(self, config_path: str, paper: bool, prom_port: Optional[int] = None, decisions_file: Optional[str] = None) -> None:  # 〔この行がすること〕 意思決定ログの出力先を受け取れるようにする
+
         """〔このメソッドがすること〕
         TOML/YAML 設定を読み込み、実行モード（paper/live）を保持します。
         """
@@ -72,6 +68,7 @@ class VRLGStrategy:
         self.q_signals: asyncio.Queue = asyncio.Queue(maxsize=1024)
         self.decisions = DecisionLogger(filepath=decisions_file)  # 〔この行がすること〕 意思決定ログの出力を初期化
         self.metrics = Metrics(port=prom_port)  # 〔この行がすること〕 /metrics を起動し、以降の観測値を送れるようにする
+        self.decisions = DecisionLogger(filepath=decisions_file)  # 〔この行がすること〕 意思決定ログの出力を初期化
 
         # 〔この属性がすること〕直近の特徴量を保持し、発注時に板消費率などの参照に使います。
         self._last_features: Optional[FeatureSnapshot] = None
@@ -80,6 +77,8 @@ class VRLGStrategy:
         self.rot = RotationDetector(self.cfg)
         self.sigdet = SignalDetector(self.cfg)
         self.exe = ExecutionEngine(self.cfg, paper=self.paper)
+        # 〔この行がすること〕 発注イベント（skip/submitted/reject/cancel）を Strategy で受け取れるよう接続
+        self.exe.on_order_event = self._on_order_event
         self.risk = RiskManager(self.cfg)
         self.sizer = SizeAllocator(self.cfg)  # 〔この行がすること〕 0.2–0.5% 基準のサイズ決定器を用意
 
@@ -164,7 +163,28 @@ class VRLGStrategy:
                     self.decisions.log("block_interval", interval_s=float(interval))  # 〔この行がすること〕 観測したブロック間隔を記録
                 except Exception:
                     logger.debug("metrics.observe_block_interval_ms failed (ignored)")
+                self.decisions.log("block_interval", interval_s=float(interval))  # 〔この行がすること〕 観測したブロック間隔を記録
             last_ts = blk_ts
+
+    def _on_order_event(self, kind: str, fields: dict) -> None:
+        """〔この関数がすること〕
+        ExecutionEngine からのオーダーイベントを受け取り、意思決定ログとメトリクスへ反映します。
+        kind: 'skip' | 'submitted' | 'reject' | 'cancel'
+        """
+        # 1) 意思決定ログへ（order_skip / order_submitted / order_reject / order_cancel のイベント名で統一）
+        try:
+            self.decisions.log(f"order_{kind}", **fields)
+        except Exception:
+            pass
+
+        # 2) メトリクスへ（submitted は既に別で集計しているため二重加算を避ける）
+        try:
+            if kind == "reject":
+                self.metrics.inc_orders_rejected(1)
+            elif kind == "cancel":
+                self.metrics.inc_orders_canceled(1)
+        except Exception:
+            pass
 
     async def _fills_loop(self) -> None:
         """〔このメソッドがすること〕
@@ -313,9 +333,11 @@ class VRLGStrategy:
                 if adv.forbid_market:
                     self.decisions.log("exit_policy", policy="forbid_market")  # 〔この行がすること〕 早期IOCを行わない方針であることを記録
                     # 成行は禁止 → 通常通り TTL まで待ってキャンセル（Time‑Stopは別途走る）
-                    self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
+
                     await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
-                    canceled_count = len(order_ids)
+
+                    self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
+
                 else:
                     # 早期エグジット候補：スプレッドが 1 tick に縮小したら即クローズ
                     # 〔この行がすること〕 しきい値を設定から受け取り、縮小判定に使う
@@ -324,22 +346,24 @@ class VRLGStrategy:
                         timeout_s=ttl_s,
                         poll_s=0.02,
                     )
+
                     if collapsed:
                         self.decisions.log("exit", reason="spread_collapse")  # 〔この行がすること〕 スプレッド縮小で早期IOCしたことを記録
                         # 先に maker を素早くキャンセルしてから IOC で解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=0.0)
+
                         canceled_count = len(order_ids)
+
                         await self.exe.flatten_ioc()
                         await _cancel_stops_and_timers()
                     else:
                         self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
                         # 縮小しなかった → TTL まで待って通常解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
-                        canceled_count = len(order_ids)
+
                         await self.exe.flatten_ioc()
                         await _cancel_stops_and_timers()
 
-                self.metrics.inc_orders_canceled(canceled_count)  # 〔この行がすること〕 TTLや早期解消でキャンセルした件数を加算（簡易近似）
                 cd = self.exe.cooldown_factor * (self.rot.current_period() or 1.0)
                 self.metrics.set_cooldown(cd)                     # 〔この行がすること〕 現在のクールダウン秒数をGaugeへ
             except asyncio.CancelledError:
@@ -383,14 +407,16 @@ async def _run(argv: list[str]) -> int:
     uvloop を可能なら有効化し、VRLGStrategy を起動してシグナルで停止します。
     """
     args = parse_args(argv)
+    # 〔この行がすること〕 CLI の --log-level を VRLG ロガーへ反映する
+    try:
+        logger.setLevel(str(args.log_level).upper())
+    except Exception:
+        pass
     if uvloop is not None:
         uvloop.install()
-    strategy = VRLGStrategy(
-        config_path=args.config,
-        paper=not args.live,
-        prom_port=args.prom_port,
-        decisions_file=args.decisions_file,
-    )  # 〔この行がすること〕 --prom-port を Strategy へ受け渡す
+
+    strategy = VRLGStrategy(config_path=args.config, paper=not args.live, prom_port=args.prom_port, decisions_file=args.decisions_file)  # 〔この行がすること〕 CLI からロガーへ出力先を渡す
+
     await strategy.start()
 
     loop = asyncio.get_running_loop()
