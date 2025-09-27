@@ -79,3 +79,9 @@ jobs:
       # function: ユニットテスト（live印のテストは除外して速く安全に）
       - name: Unit tests (skip live)
         run: poetry run pytest -q -m "not live" --maxfail=1
+  sanity:
+    name: sanity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo OK

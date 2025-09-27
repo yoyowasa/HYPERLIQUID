@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Callable, Deque, Optional
 from uuid import uuid4
 
+
 from hl_core.utils.logger import get_logger
 
 from .data_feed import FeatureSnapshot
@@ -20,6 +21,7 @@ class Signal:
     t: float
     mid: float
     trace_id: str  # trace: シグナル→発注→解消を結ぶ相関ID（Step40で配線）
+
 
 
 def _get(section: object, key: str, default):

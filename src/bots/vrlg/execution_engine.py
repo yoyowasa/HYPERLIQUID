@@ -59,6 +59,7 @@ class ExecutionEngine:
         self.max_exposure: float = float(_safe(cfg, "exec", "max_exposure_btc", 0.8))
         self.cooldown_factor: float = float(_safe(cfg, "exec", "cooldown_factor", 2.0))
         self.side_mode: str = str(_safe(cfg, "exec", "side_mode", "both")).lower()  # 〔この行がすること〕 片面/両面モード設定を保持
+
         self.splits: int = int(_safe(cfg, "exec", "splits", 1))  # 〔この行がすること〕 1クリップを何分割で出すか（片面あたりの子注文本数）
         # 〔この行がすること〕 通常置きのオフセットを保持
         self.offset_ticks_normal: float = float(_safe(cfg, "exec", "offset_ticks_normal", 0.5))
@@ -97,17 +98,21 @@ class ExecutionEngine:
         if total <= 0.0:
             return []
 
+
         sides = [("BUY", px_bid), ("SELL", px_ask)]
         if getattr(self, "side_mode", "both") == "buy":
             sides = [("BUY", px_bid)]
         elif getattr(self, "side_mode", "both") == "sell":
             sides = [("SELL", px_ask)]
 
+
         splits = max(1, int(self.splits))
         child_total = float(total) / float(splits)
 
         ids: list[str] = []
         for side, price in sides:
+
+
             if self._in_cooldown(side):
                 try:
                     if self.on_order_event:
@@ -179,6 +184,7 @@ class ExecutionEngine:
                             )
                     except Exception:
                         pass
+
         return ids
 
     async def wait_fill_or_ttl(self, order_ids: list[str], timeout_s: float) -> None:
