@@ -1,17 +1,26 @@
 # src/bots/pfpl/strategy.py
 from __future__ import annotations
-import os
-import logging
-from typing import Any, cast
+
 import asyncio
 import hmac
 import hashlib
 import json
+import logging
+import os
 import time
+from datetime import datetime, timezone  # ← 追加
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
+from pathlib import Path
+from typing import Any, cast
+
+import anyio
 from hl_core.config import load_settings
 from hl_core.utils.logger import setup_logger
-from pathlib import Path
+# 既存 import 群の最後あたりに追加
+from hyperliquid.exchange import Exchange
+
+# 目的: 取引API(hl_core.api)のログレベルをDEBUGに上げ、注文送信の詳細ログを必ず出す
+logging.getLogger("hl_core.api").setLevel(logging.DEBUG)
 
 try:  # pragma: no cover - PyYAML may be absent in the test environment
     import yaml  # type: ignore
@@ -27,12 +36,6 @@ except Exception:  # noqa: F401 - fallback when PyYAML isn't installed
                 return {}
 
     yaml = _YAMLModule()  # type: ignore
-
-import anyio
-from datetime import datetime, timezone  # ← 追加
-
-# 既存 import 群の最後あたりに追加
-from hyperliquid.exchange import Exchange
 
 try:  # pragma: no cover - eth_account is optional for tests
     from eth_account.account import Account  # type: ignore
@@ -578,6 +581,14 @@ class PFPLStrategy:
                 raise AttributeError("exchange.order is not callable")
             for attempt in range(1, MAX_RETRY + 1):
                 try:
+                    logger.info(
+                        "ORDER_SIGNAL symbol=%s side=%s qty=%s price=%s extra=%s",
+                        locals().get("symbol"),
+                        locals().get("side"),
+                        locals().get("qty", locals().get("size")),
+                        locals().get("price"),
+                        {"mid": locals().get("mid"), "reason": locals().get("reason")},
+                    )
                     resp = await asyncio.to_thread(order_fn, **order_kwargs)
                     logger.info("ORDER OK %s try=%d → %s", self.symbol, attempt, resp)
                     self._order_count += 1
