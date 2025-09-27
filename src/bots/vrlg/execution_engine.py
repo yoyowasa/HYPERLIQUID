@@ -58,6 +58,7 @@ class ExecutionEngine:
         self.min_display: float = float(_safe(cfg, "exec", "min_display_btc", 0.01))
         self.max_exposure: float = float(_safe(cfg, "exec", "max_exposure_btc", 0.8))
         self.cooldown_factor: float = float(_safe(cfg, "exec", "cooldown_factor", 2.0))
+        self.side_mode: str = str(_safe(cfg, "exec", "side_mode", "both")).lower()  # 〔この行がすること〕 片面/両面モード設定を保持
         # 〔この行がすること〕 通常置きのオフセットを保持
         self.offset_ticks_normal: float = float(_safe(cfg, "exec", "offset_ticks_normal", 0.5))
         # 〔この行がすること〕 深置きのオフセットを保持
@@ -69,6 +70,7 @@ class ExecutionEngine:
         self._period_s: float = 1.0  # RotationDetector から更新注入予定
 
         self.on_order_event: Optional[Callable[[str, Dict[str, Any]], None]] = None  # 〔この行がすること〕 'skip'/'submitted'/'reject'/'cancel' を Strategy 側へ通知するコールバック
+        self.trace_id: Optional[str] = None  # 〔この行がすること〕 Strategy から注入される相関IDを保持します
 
         self._open_maker_btc: float = 0.0  # 〔この属性がすること〕 未キャンセルの maker 注文サイズ合計（BTC）を管理
         self._order_size: Dict[str, float] = {}  # 〔この属性がすること〕 order_id → 発注 total サイズの対応
@@ -90,22 +92,28 @@ class ExecutionEngine:
         px_ask = _round_to_tick(mid + offset_ticks * self.tick, self.tick)
         display = max(self.min_display, min(total, total * self.display_ratio))
 
+        # 〔このブロックがすること〕 設定に応じて発注する向きを選択（両面/BUYのみ/SELLのみ）
+        sides = [("BUY", px_bid), ("SELL", px_ask)]
+        if self.side_mode == "buy":
+            sides = [("BUY", px_bid)]
+        elif self.side_mode == "sell":
+            sides = [("SELL", px_ask)]
+
         ids: list[str] = []
-        for side, price in (("BUY", px_bid), ("SELL", px_ask)):
+        for side, price in sides:  # 〔この行がすること〕 上で決めた向きだけをループする
             # 〔このブロックがすること〕 上限を超えるならその片側はスキップ（意思決定ログへ通知）
             if (self._open_maker_btc + total) > self.max_exposure:
                 try:
                     if self.on_order_event:
-
                         self.on_order_event(
                             "skip",
                             {
                                 "side": side,
                                 "reason": "exposure",
                                 "open_maker_btc": float(self._open_maker_btc),
+                                "trace_id": self.trace_id,
                             },
                         )
-
                 except Exception:
                     pass
                 continue
@@ -114,16 +122,15 @@ class ExecutionEngine:
                 # 〔このブロックがすること〕 クールダウンによるスキップを上位へ通知（意思決定ログ用）
                 try:
                     if self.on_order_event:
-
                         self.on_order_event(
                             "skip",
                             {
                                 "side": side,
                                 "reason": "cooldown",
                                 "open_maker_btc": float(self._open_maker_btc),
+                                "trace_id": self.trace_id,
                             },
                         )
-
                 except Exception:
                     pass
                 continue
@@ -143,9 +150,9 @@ class ExecutionEngine:
                                 "price": float(price),
                                 "order_id": str(oid),
                                 "open_maker_btc": float(self._open_maker_btc),
+                                "trace_id": self.trace_id,
                             },
                         )
-
                 except Exception:
                     pass
                 ids.append(oid)
@@ -153,16 +160,15 @@ class ExecutionEngine:
                 # 〔このブロックがすること〕 取引所から拒否/未受理（None）を通知
                 try:
                     if self.on_order_event:
-
                         self.on_order_event(
                             "reject",
                             {
                                 "side": side,
                                 "price": float(price),
                                 "open_maker_btc": float(self._open_maker_btc),
+                                "trace_id": self.trace_id,
                             },
                         )
-
                 except Exception:
                     pass
         return ids
@@ -190,6 +196,7 @@ class ExecutionEngine:
                             {
                                 "order_id": str(_oid),
                                 "open_maker_btc": float(self._open_maker_btc),
+                                "trace_id": self.trace_id,
                             },
                         )
             except Exception:
@@ -263,7 +270,11 @@ class ExecutionEngine:
                 if self.on_order_event:
                     self.on_order_event(
                         "cancel",
-                        {"order_id": str(order_id), "open_maker_btc": float(self._open_maker_btc)},
+                        {
+                            "order_id": str(order_id),
+                            "open_maker_btc": float(self._open_maker_btc),
+                            "trace_id": self.trace_id,
+                        },
                     )
             except Exception:
                 pass
