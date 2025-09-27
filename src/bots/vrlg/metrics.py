@@ -208,6 +208,7 @@ class Metrics:
         except Exception:
             pass
 
+
     def set_data_staleness_ms(self, value_ms: float) -> None:
         """〔この関数がすること〕 最新特徴量の鮮度（ms）を Gauge に設定します。"""
         try:
@@ -221,6 +222,7 @@ class Metrics:
             self.staleness_skips.inc()
         except Exception:
             pass
+
 
     def inc_gate_phase_miss(self) -> None:
         """〔この関数がすること〕 位相ゲート不成立を +1 カウントする。"""
