@@ -50,6 +50,10 @@ class ExecutionEngine:
         self.min_display: float = float(_safe(cfg, "exec", "min_display_btc", 0.01))
         self.max_exposure: float = float(_safe(cfg, "exec", "max_exposure_btc", 0.8))
         self.cooldown_factor: float = float(_safe(cfg, "exec", "cooldown_factor", 2.0))
+        # 〔この行がすること〕 通常置きのオフセットを保持
+        self.offset_ticks_normal: float = float(_safe(cfg, "exec", "offset_ticks_normal", 0.5))
+        # 〔この行がすること〕 深置きのオフセットを保持
+        self.offset_ticks_deep: float = float(_safe(cfg, "exec", "offset_ticks_deep", 1.5))
 
         # 内部状態
         self._last_fill_side: Optional[str] = None  # "BUY" or "SELL"
@@ -67,7 +71,8 @@ class ExecutionEngine:
         deepen=True のときは offset_ticks=1.5（深置き）、通常は 0.5 を使います。
         display サイズは total×display_ratio を min/max で挟みます。
         """
-        offset_ticks = 1.5 if deepen else 0.5
+        # 〔この行がすること〕 設定のオフセット値を採用
+        offset_ticks = self.offset_ticks_deep if deepen else self.offset_ticks_normal
         px_bid = _round_to_tick(mid - offset_ticks * self.tick, self.tick)
         px_ask = _round_to_tick(mid + offset_ticks * self.tick, self.tick)
         display = max(self.min_display, min(total, total * self.display_ratio))

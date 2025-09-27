@@ -121,6 +121,15 @@ class RiskManager:
         self._slip_stream.append((time.time(), slip_ticks))
         self._trim_slippage()
 
+    def book_impact_sum_5s(self) -> float:
+        """〔このメソッドがすること〕
+        直近5秒の板消費率（display/TopDepth）の合計を返します（Gauge更新用）。
+        内部のイベントをトリムしてから合計します。
+        """
+
+        self._trim_impacts()
+        return float(sum(x for _, x in self._impact_events))
+
     def register_stopout(self) -> None:
         """〔このメソッドがすること〕
         損切り発生を記録します。10 分内に 3 回で一時停止（10 分）に入ります。
