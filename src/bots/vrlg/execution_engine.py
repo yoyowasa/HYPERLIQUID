@@ -61,9 +61,6 @@ class ExecutionEngine:
         self.side_mode: str = str(_safe(cfg, "exec", "side_mode", "both")).lower()  # 〔この行がすること〕 片面/両面モード設定を保持
 
         self.splits: int = int(_safe(cfg, "exec", "splits", 1))  # 〔この行がすること〕 1クリップを何分割で出すか（片面あたりの子注文本数）
-
-
-
         # 〔この行がすること〕 通常置きのオフセットを保持
         self.offset_ticks_normal: float = float(_safe(cfg, "exec", "offset_ticks_normal", 0.5))
         # 〔この行がすること〕 深置きのオフセットを保持
@@ -98,7 +95,6 @@ class ExecutionEngine:
         px_bid = _round_to_tick(mid - offset_ticks * self.tick, self.tick)
         px_ask = _round_to_tick(mid + offset_ticks * self.tick, self.tick)
 
-
         if total <= 0.0:
             return []
 
@@ -116,6 +112,7 @@ class ExecutionEngine:
         ids: list[str] = []
         for side, price in sides:
 
+
             if self._in_cooldown(side):
                 try:
                     if self.on_order_event:
@@ -131,7 +128,6 @@ class ExecutionEngine:
                 except Exception:
                     pass
                 continue
-
 
             for _ in range(splits):
                 if (self._open_maker_btc + child_total) > self.max_exposure:
