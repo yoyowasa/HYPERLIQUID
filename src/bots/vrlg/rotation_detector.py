@@ -35,9 +35,12 @@ class RotationDetector:
         # 設定（存在しない場合に備え安全に既定値）
         self.window_s = float(getattr(getattr(cfg, "signal", {}), "T_roll", 30.0))
         self.dt = 0.1  # 100ms 特徴量クロック想定
-        self.period_min_s = 0.8
-        self.period_max_s = 5.0
-        self.p_thresh = 0.01
+        # 〔この行がすること〕 周期レンジ / p値しきい値 / 必要サンプル数を設定から読み取る（既定値は従来通り）
+        self.period_min_s = float(getattr(getattr(cfg, "signal", {}), "period_min_s", 0.8))
+        self.period_max_s = float(getattr(getattr(cfg, "signal", {}), "period_max_s", 5.0))
+        self.p_thresh = float(getattr(getattr(cfg, "signal", {}), "p_thresh", 0.01))
+        self.min_boundary_samples = int(getattr(getattr(cfg, "signal", {}), "min_boundary_samples", 200))
+        self.min_off_samples = int(getattr(getattr(cfg, "signal", {}), "min_off_samples", 50))
         # 位相ウィンドウ幅（半幅の比。物理的に意味が保てるよう [0.01, 0.45] にクランプ）
         z = getattr(getattr(cfg, "signal", {}), "z", 0.6)
         self.phase_halfwidth = min(max(float(z), 0.01), 0.45)
@@ -141,7 +144,7 @@ class RotationDetector:
         p_spr = None
         active = False
 
-        if n_on >= 200 and n_off >= 50:
+        if n_on >= self.min_boundary_samples and n_off >= self.min_off_samples:
             dob_on = [xs_dob[i] for i in boundary_idx]
             dob_off = [xs_dob[i] for i in off_idx]
             spr_on = [xs_spr[i] for i in boundary_idx]
