@@ -76,6 +76,8 @@ class VRLGStrategy:
         # 〔この属性がすること〕: 各コンポーネントの実体を生成し司令塔に保持します。
         self.rot = RotationDetector(self.cfg)
         self.sigdet = SignalDetector(self.cfg)
+        # 〔この行がすること〕 シグナル判定のゲート評価を受け取り、メトリクス/意思決定ログへ反映できるようにする
+        self.sigdet.on_gate_eval = self._on_gate_eval
         self.exe = ExecutionEngine(self.cfg, paper=self.paper)
         # 〔この行がすること〕 発注イベント（skip/submitted/reject/cancel）を Strategy で受け取れるよう接続
         self.exe.on_order_event = self._on_order_event
@@ -196,6 +198,52 @@ class VRLGStrategy:
         try:
             if "open_maker_btc" in fields:
                 self.metrics.set_open_maker_btc(float(fields["open_maker_btc"]))
+        except Exception:
+            pass
+
+    def _on_gate_eval(self, g: dict) -> None:
+        """〔この関数がすること〕
+        SignalDetector から受け取ったゲート評価をメトリクスに反映し、
+        位相ゲートは通過しているのに他ゲートで不成立のときだけ decision log に記録します。
+        """
+        try:
+            phase_gate = bool(g.get("phase_gate", False))
+            dob_thin = bool(g.get("dob_thin", False))
+            spread_ok = bool(g.get("spread_ok", False))
+            obi_ok = bool(g.get("obi_ok", False))
+            all_pass = phase_gate and dob_thin and spread_ok and obi_ok
+
+            if all_pass:
+                self.metrics.inc_gate_all_pass()
+                return
+
+            # 個別ミスをカウント
+            if not phase_gate:
+                self.metrics.inc_gate_phase_miss()
+            if not dob_thin:
+                self.metrics.inc_gate_dob_miss()
+            if not spread_ok:
+                self.metrics.inc_gate_spread_miss()
+            if not obi_ok:
+                self.metrics.inc_gate_obi_miss()
+
+            # 位相ゲートは通っていて他で落ちたときだけ、軽量にログへ（スパム防止）
+            if phase_gate and not all_pass:
+                missing = []
+                if not dob_thin:
+                    missing.append("dob")
+                if not spread_ok:
+                    missing.append("spread")
+                if not obi_ok:
+                    missing.append("obi")
+                self.decisions.log(
+                    "gate_fail",
+                    missing=missing,
+                    phase=float(g.get("phase", 0.0)),
+                    spread_ticks=float(g.get("spread_ticks", 0.0)),
+                    dob=float(g.get("dob", 0.0)),
+                    obi=float(g.get("obi", 0.0)),
+                )
         except Exception:
             pass
 
