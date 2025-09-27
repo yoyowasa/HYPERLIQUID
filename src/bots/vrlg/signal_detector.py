@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from collections import deque
 from typing import Deque, Optional, Callable  # 〔この import がすること〕 ゲート評価通知のコールバック型を使う
 
+
+import uuid  # 〔この行がすること〕 trace_id を生成するための標準ライブラリを使います
+
+
 from hl_core.utils.logger import get_logger
 from .data_feed import FeatureSnapshot
 
@@ -16,9 +20,11 @@ class Signal:
     シグナル発火の事実を表します。
     t: 生成時刻（秒）
     mid: 発火時点のミッド価格
+    trace_id: 後続の発注・キャンセル・解消イベントと紐づけるための相関ID
     """
     t: float
     mid: float
+    trace_id: str  # 〔このフィールドがすること〕 シグナル→発注→解消までの相関ID
 
 
 def _safe_get(cfg, section: str, key: str, default):
@@ -121,5 +127,5 @@ class SignalDetector:
             pass
 
         if phase_gate and dob_thin and spread_ok and obi_ok:
-            return Signal(t=t, mid=float(features.mid))
+            return Signal(t=t, mid=float(features.mid), trace_id=uuid.uuid4().hex[:12])  # 〔この行がすること〕 一意な相関IDを付けて返します
         return None

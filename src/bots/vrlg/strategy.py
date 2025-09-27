@@ -122,7 +122,14 @@ class VRLGStrategy:
                 self.exe.set_period_hint(self.rot.current_period() or 1.0)
                 sig = self.sigdet.update_and_maybe_signal(feat.t, feat.with_phase(phase))
                 if sig:
-                    self.decisions.log("signal", phase=phase, spread_ticks=float(feat.spread_ticks), dob=float(feat.dob), obi=float(feat.obi))  # 〔この行がすること〕 シグナルの根拠となる特徴量を記録
+                    self.decisions.log(
+                        "signal",
+                        phase=phase,
+                        spread_ticks=float(feat.spread_ticks),
+                        dob=float(feat.dob),
+                        obi=float(feat.obi),
+                        trace_id=sig.trace_id,
+                    )  # 〔この行がすること〕 シグナルの根拠となる特徴量を記録
                     self.metrics.inc_signal()  # 〔この行がすること〕 シグナル発火回数をカウントアップ
                     await self.q_signals.put(sig)
             except asyncio.CancelledError:
@@ -333,8 +340,15 @@ class VRLGStrategy:
                     continue
 
                 # 〔この行がすること〕 口座残高の0.2–0.5%を基準に、リスク倍率を反映して1クリップのBTCサイズを決める
+                self.exe.trace_id = getattr(sig, "trace_id", None)  # 〔この行がすること〕 発注エンジンへ相関IDを注入し、以降のイベントに載せる
                 clip = self.sizer.next_size(mid=sig.mid, risk_mult=adv.size_multiplier)
-                self.decisions.log("order_intent", mid=float(sig.mid), clip=float(clip), deepen=bool(adv.deepen_post_only))  # 〔この行がすること〕 置くサイズと深さの意図を記録
+                self.decisions.log(
+                    "order_intent",
+                    mid=float(sig.mid),
+                    clip=float(clip),
+                    deepen=bool(adv.deepen_post_only),
+                    trace_id=getattr(sig, "trace_id", None),
+                )  # 〔この行がすること〕 置くサイズと深さの意図を記録
 
                 # 板消費率トラッキングのため display を事前計算（Feature の DoB 使用）
                 if self._last_features is not None:
@@ -398,7 +412,7 @@ class VRLGStrategy:
 
                     await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
 
-                    self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
+                    self.decisions.log("exit", reason="ttl", trace_id=getattr(sig, "trace_id", None))  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
 
                 else:
                     # 早期エグジット候補：スプレッドが 1 tick に縮小したら即クローズ
@@ -410,14 +424,14 @@ class VRLGStrategy:
                     )
 
                     if collapsed:
-                        self.decisions.log("exit", reason="spread_collapse")  # 〔この行がすること〕 スプレッド縮小で早期IOCしたことを記録
+                        self.decisions.log("exit", reason="spread_collapse", trace_id=getattr(sig, "trace_id", None))  # 〔この行がすること〕 スプレッド縮小で早期IOCしたことを記録
                         # 先に maker を素早くキャンセルしてから IOC で解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=0.0)
 
                         await self.exe.flatten_ioc()
                         await _cancel_stops_and_timers()
                     else:
-                        self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
+                        self.decisions.log("exit", reason="ttl", trace_id=getattr(sig, "trace_id", None))  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
                         # 縮小しなかった → TTL まで待って通常解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
 
