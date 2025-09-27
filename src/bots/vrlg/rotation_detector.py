@@ -84,6 +84,7 @@ class RotationDetector:
     """
 
     def __init__(self, cfg) -> None:
+
         """〔このメソッドがすること〕
         パラメータ（T_roll, z, 期間レンジ, p値しきい値, 必要サンプル数）を設定から読み込みます。
         """
@@ -101,6 +102,7 @@ class RotationDetector:
         self._dob: Deque[float] = deque(maxlen=int(self.T_roll / self._dt) + 8)
         self._spr: Deque[float] = deque(maxlen=int(self.T_roll / self._dt) + 8)
         self._tim: Deque[float] = deque(maxlen=int(self.T_roll / self._dt) + 8)
+
 
         self._period_s: Optional[float] = None
         self._active: bool = False
@@ -218,6 +220,7 @@ class RotationDetector:
             self._set_inactive("insufficient samples")
             return
 
+
         def _mean_var(xs: list[float]) -> Tuple[float, float]:
             if not xs:
                 return 0.0, 0.0
@@ -245,6 +248,7 @@ class RotationDetector:
             p_dob=self._p_dob,
             p_spread=self._p_spr,
             ts=time.time(),
+
         )
 
     def _set_inactive(self, reason: str) -> None:
