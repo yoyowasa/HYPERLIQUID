@@ -40,6 +40,10 @@ class ExecutionEngine:
     - フィル後の同方向クールダウン（2×R* 秒）を管理
     """
 
+    on_order_event: Optional[Callable[[str, Dict[str, Any]], None]]
+    _open_maker_btc: float
+    _order_size: dict[str, float]
+
     def __init__(self, cfg, paper: bool) -> None:
         """〔このメソッドがすること〕 コンフィグを読み込み、発注パラメータと内部状態を初期化します。"""
         self.paper = paper
@@ -61,6 +65,7 @@ class ExecutionEngine:
         self._period_s: float = 1.0  # RotationDetector から更新注入予定
         self.on_order_event: Optional[Callable[[str, Dict[str, Any]], None]] = None  # 〔この行がすること〕 'skip'/'submitted'/'reject'/'cancel' を Strategy 側へ通知するコールバック
 
+
     def set_period_hint(self, period_s: float) -> None:
         """〔このメソッドがすること〕 R*（推定周期）ヒントを注入し、クールダウン計算に使います。"""
         if period_s > 0:
@@ -80,21 +85,40 @@ class ExecutionEngine:
 
         ids: list[str] = []
         for side, price in (("BUY", px_bid), ("SELL", px_ask)):
+            # 〔このブロックがすること〕 上限を超えるならその片側はスキップ（意思決定ログへ通知）
+            if (self._open_maker_btc + total) > self.max_exposure:
+                try:
+                    if self.on_order_event:
+                        self.on_order_event(
+                            "skip",
+                            {
+                                "side": side,
+                                "reason": "exposure",
+                                "open_maker_btc": float(self._open_maker_btc),
+                            },
+                        )
+                except Exception:
+                    pass
+                continue
             if self._in_cooldown(side):
                 logger.debug("cooldown active: skip %s", side)
                 # 〔このブロックがすること〕 クールダウンによるスキップを上位へ通知（意思決定ログ用）
                 try:
                     if self.on_order_event:
+
                         self.on_order_event("skip", {"side": side, "reason": "cooldown"})
+
                 except Exception:
                     pass
                 continue
             oid = await self._post_only_iceberg(side, price, total, display, self.ttl_ms / 1000.0)
             if oid:
+
                 # 〔このブロックがすること〕 発注が通った事実を通知（片側ごと）
                 try:
                     if self.on_order_event:
                         self.on_order_event("submitted", {"side": side, "price": float(price), "order_id": str(oid)})
+
                 except Exception:
                     pass
                 ids.append(oid)
@@ -102,7 +126,9 @@ class ExecutionEngine:
                 # 〔このブロックがすること〕 取引所から拒否/未受理（None）を通知
                 try:
                     if self.on_order_event:
+
                         self.on_order_event("reject", {"side": side, "price": float(price)})
+
                 except Exception:
                     pass
         return ids
@@ -118,11 +144,13 @@ class ExecutionEngine:
             await asyncio.sleep(timeout_s)
         finally:
             await self._cancel_many(order_ids)
+
             # 〔このブロックがすること〕 TTL/解消でキャンセルした事実を片側ごとに通知
             try:
                 if self.on_order_event:
                     for _oid in order_ids:
                         self.on_order_event("cancel", {"order_id": str(_oid)})
+
             except Exception:
                 pass
 
@@ -186,6 +214,17 @@ class ExecutionEngine:
             return
         try:
             await cancel_order(self.symbol, order_id)  # type: ignore[misc]
+            # 〔この行がすること〕 手動キャンセルでも露出を減算
+            self._reduce_open_maker(order_id)
+            # 〔このブロックがすること〕 手動キャンセルの通知（露出も併記）
+            try:
+                if self.on_order_event:
+                    self.on_order_event(
+                        "cancel",
+                        {"order_id": str(order_id), "open_maker_btc": float(self._open_maker_btc)},
+                    )
+            except Exception:
+                pass
         except Exception as e:
             logger.debug("cancel_order (safe) ignored: %s", e)
 
@@ -247,6 +286,18 @@ class ExecutionEngine:
                 await cancel_order(self.symbol, oid)  # type: ignore[misc]
             except Exception as e:
                 logger.debug("cancel_order failed (ignored): %s", e)
+
+    def _reduce_open_maker(self, order_id: str) -> None:
+        """〔このメソッドがすること〕
+        指定 order_id の発注サイズを台帳から引き当て、未約定メーカー露出を減算します。
+        （同じ order_id に対しては一度だけ作用）
+        """
+        try:
+            size = float(self._order_size.pop(order_id, 0.0))
+        except Exception:
+            size = 0.0
+        if size > 0.0:
+            self._open_maker_btc = max(0.0, self._open_maker_btc - size)
 
     # ─────────────── クールダウン管理（簡易） ───────────────
 
