@@ -76,6 +76,8 @@ class VRLGStrategy:
         # 〔この属性がすること〕: 各コンポーネントの実体を生成し司令塔に保持します。
         self.rot = RotationDetector(self.cfg)
         self.sigdet = SignalDetector(self.cfg)
+        # 〔この行がすること〕 シグナル判定のゲート評価を受け取り、メトリクス/意思決定ログへ反映できるようにする
+        self.sigdet.on_gate_eval = self._on_gate_eval
         self.exe = ExecutionEngine(self.cfg, paper=self.paper)
         # 〔この行がすること〕 発注イベント（skip/submitted/reject/cancel）を Strategy で受け取れるよう接続
         self.exe.on_order_event = self._on_order_event
@@ -120,7 +122,14 @@ class VRLGStrategy:
                 self.exe.set_period_hint(self.rot.current_period() or 1.0)
                 sig = self.sigdet.update_and_maybe_signal(feat.t, feat.with_phase(phase))
                 if sig:
-                    self.decisions.log("signal", phase=phase, spread_ticks=float(feat.spread_ticks), dob=float(feat.dob), obi=float(feat.obi))  # 〔この行がすること〕 シグナルの根拠となる特徴量を記録
+                    self.decisions.log(
+                        "signal",
+                        phase=phase,
+                        spread_ticks=float(feat.spread_ticks),
+                        dob=float(feat.dob),
+                        obi=float(feat.obi),
+                        trace_id=sig.trace_id,
+                    )  # 〔この行がすること〕 シグナルの根拠となる特徴量を記録
                     self.metrics.inc_signal()  # 〔この行がすること〕 シグナル発火回数をカウントアップ
                     await self.q_signals.put(sig)
             except asyncio.CancelledError:
@@ -196,6 +205,52 @@ class VRLGStrategy:
         try:
             if "open_maker_btc" in fields:
                 self.metrics.set_open_maker_btc(float(fields["open_maker_btc"]))
+        except Exception:
+            pass
+
+    def _on_gate_eval(self, g: dict) -> None:
+        """〔この関数がすること〕
+        SignalDetector から受け取ったゲート評価をメトリクスに反映し、
+        位相ゲートは通過しているのに他ゲートで不成立のときだけ decision log に記録します。
+        """
+        try:
+            phase_gate = bool(g.get("phase_gate", False))
+            dob_thin = bool(g.get("dob_thin", False))
+            spread_ok = bool(g.get("spread_ok", False))
+            obi_ok = bool(g.get("obi_ok", False))
+            all_pass = phase_gate and dob_thin and spread_ok and obi_ok
+
+            if all_pass:
+                self.metrics.inc_gate_all_pass()
+                return
+
+            # 個別ミスをカウント
+            if not phase_gate:
+                self.metrics.inc_gate_phase_miss()
+            if not dob_thin:
+                self.metrics.inc_gate_dob_miss()
+            if not spread_ok:
+                self.metrics.inc_gate_spread_miss()
+            if not obi_ok:
+                self.metrics.inc_gate_obi_miss()
+
+            # 位相ゲートは通っていて他で落ちたときだけ、軽量にログへ（スパム防止）
+            if phase_gate and not all_pass:
+                missing = []
+                if not dob_thin:
+                    missing.append("dob")
+                if not spread_ok:
+                    missing.append("spread")
+                if not obi_ok:
+                    missing.append("obi")
+                self.decisions.log(
+                    "gate_fail",
+                    missing=missing,
+                    phase=float(g.get("phase", 0.0)),
+                    spread_ticks=float(g.get("spread_ticks", 0.0)),
+                    dob=float(g.get("dob", 0.0)),
+                    obi=float(g.get("obi", 0.0)),
+                )
         except Exception:
             pass
 
@@ -285,8 +340,15 @@ class VRLGStrategy:
                     continue
 
                 # 〔この行がすること〕 口座残高の0.2–0.5%を基準に、リスク倍率を反映して1クリップのBTCサイズを決める
+                self.exe.trace_id = getattr(sig, "trace_id", None)  # 〔この行がすること〕 発注エンジンへ相関IDを注入し、以降のイベントに載せる
                 clip = self.sizer.next_size(mid=sig.mid, risk_mult=adv.size_multiplier)
-                self.decisions.log("order_intent", mid=float(sig.mid), clip=float(clip), deepen=bool(adv.deepen_post_only))  # 〔この行がすること〕 置くサイズと深さの意図を記録
+                self.decisions.log(
+                    "order_intent",
+                    mid=float(sig.mid),
+                    clip=float(clip),
+                    deepen=bool(adv.deepen_post_only),
+                    trace_id=getattr(sig, "trace_id", None),
+                )  # 〔この行がすること〕 置くサイズと深さの意図を記録
 
                 # 板消費率トラッキングのため display を事前計算（Feature の DoB 使用）
                 if self._last_features is not None:
@@ -350,7 +412,7 @@ class VRLGStrategy:
 
                     await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
 
-                    self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
+                    self.decisions.log("exit", reason="ttl", trace_id=getattr(sig, "trace_id", None))  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
 
                 else:
                     # 早期エグジット候補：スプレッドが 1 tick に縮小したら即クローズ
@@ -362,14 +424,14 @@ class VRLGStrategy:
                     )
 
                     if collapsed:
-                        self.decisions.log("exit", reason="spread_collapse")  # 〔この行がすること〕 スプレッド縮小で早期IOCしたことを記録
+                        self.decisions.log("exit", reason="spread_collapse", trace_id=getattr(sig, "trace_id", None))  # 〔この行がすること〕 スプレッド縮小で早期IOCしたことを記録
                         # 先に maker を素早くキャンセルしてから IOC で解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=0.0)
 
                         await self.exe.flatten_ioc()
                         await _cancel_stops_and_timers()
                     else:
-                        self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
+                        self.decisions.log("exit", reason="ttl", trace_id=getattr(sig, "trace_id", None))  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
                         # 縮小しなかった → TTL まで待って通常解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
 
