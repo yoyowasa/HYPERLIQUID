@@ -89,14 +89,10 @@ class ExecutionEngine:
             if (self._open_maker_btc + total) > self.max_exposure:
                 try:
                     if self.on_order_event:
-                        self.on_order_event(
-                            "skip",
-                            {
-                                "side": side,
-                                "reason": "exposure",
-                                "open_maker_btc": float(self._open_maker_btc),
-                            },
-                        )
+
+                        self.on_order_event("skip", {"side": side, "reason": "exposure"})
+
+
                 except Exception:
                     pass
                 continue
@@ -153,6 +149,7 @@ class ExecutionEngine:
 
             except Exception:
                 pass
+
 
     async def flatten_ioc(self) -> None:
         """〔このメソッドがすること〕 市場成行（IOC）で素早くフラット化します（スケルトン）。"""
@@ -216,15 +213,7 @@ class ExecutionEngine:
             await cancel_order(self.symbol, order_id)  # type: ignore[misc]
             # 〔この行がすること〕 手動キャンセルでも露出を減算
             self._reduce_open_maker(order_id)
-            # 〔このブロックがすること〕 手動キャンセルの通知（露出も併記）
-            try:
-                if self.on_order_event:
-                    self.on_order_event(
-                        "cancel",
-                        {"order_id": str(order_id), "open_maker_btc": float(self._open_maker_btc)},
-                    )
-            except Exception:
-                pass
+
         except Exception as e:
             logger.debug("cancel_order (safe) ignored: %s", e)
 
