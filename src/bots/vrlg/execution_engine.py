@@ -40,6 +40,10 @@ class ExecutionEngine:
     - フィル後の同方向クールダウン（2×R* 秒）を管理
     """
 
+    on_order_event: Optional[Callable[[str, Dict[str, Any]], None]]
+    _open_maker_btc: float
+    _order_size: dict[str, float]
+
     def __init__(self, cfg, paper: bool) -> None:
         """〔このメソッドがすること〕 コンフィグを読み込み、発注パラメータと内部状態を初期化します。"""
         self.paper = paper
@@ -60,6 +64,7 @@ class ExecutionEngine:
         self._last_fill_time: float = 0.0
         self._period_s: float = 1.0  # RotationDetector から更新注入予定
         self.on_order_event: Optional[Callable[[str, Dict[str, Any]], None]] = None  # 〔この行がすること〕 'skip'/'submitted'/'reject'/'cancel' を Strategy 側へ通知するコールバック
+
 
     def set_period_hint(self, period_s: float) -> None:
         """〔このメソッドがすること〕 R*（推定周期）ヒントを注入し、クールダウン計算に使います。"""
@@ -84,7 +89,10 @@ class ExecutionEngine:
             if (self._open_maker_btc + total) > self.max_exposure:
                 try:
                     if self.on_order_event:
+
                         self.on_order_event("skip", {"side": side, "reason": "exposure"})
+
+
                 except Exception:
                     pass
                 continue
@@ -93,7 +101,9 @@ class ExecutionEngine:
                 # 〔このブロックがすること〕 クールダウンによるスキップを上位へ通知（意思決定ログ用）
                 try:
                     if self.on_order_event:
+
                         self.on_order_event("skip", {"side": side, "reason": "cooldown"})
+
                 except Exception:
                     pass
                 continue
@@ -104,6 +114,7 @@ class ExecutionEngine:
                 try:
                     if self.on_order_event:
                         self.on_order_event("submitted", {"side": side, "price": float(price), "order_id": str(oid)})
+
                 except Exception:
                     pass
                 ids.append(oid)
@@ -111,7 +122,9 @@ class ExecutionEngine:
                 # 〔このブロックがすること〕 取引所から拒否/未受理（None）を通知
                 try:
                     if self.on_order_event:
+
                         self.on_order_event("reject", {"side": side, "price": float(price)})
+
                 except Exception:
                     pass
         return ids
@@ -127,11 +140,13 @@ class ExecutionEngine:
             await asyncio.sleep(timeout_s)
         finally:
             await self._cancel_many(order_ids)
+
             # 〔このブロックがすること〕 TTL/解消でキャンセルした事実を片側ごとに通知
             try:
                 if self.on_order_event:
                     for _oid in order_ids:
                         self.on_order_event("cancel", {"order_id": str(_oid)})
+
             except Exception:
                 pass
 
@@ -198,6 +213,7 @@ class ExecutionEngine:
             await cancel_order(self.symbol, order_id)  # type: ignore[misc]
             # 〔この行がすること〕 手動キャンセルでも露出を減算
             self._reduce_open_maker(order_id)
+
         except Exception as e:
             logger.debug("cancel_order (safe) ignored: %s", e)
 
