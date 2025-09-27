@@ -222,6 +222,7 @@ class Metrics:
         except Exception:
             pass
 
+
     def inc_gate_phase_miss(self) -> None:
         """〔この関数がすること〕 位相ゲート不成立を +1 カウントする。"""
         try:
