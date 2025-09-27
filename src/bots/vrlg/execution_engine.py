@@ -58,6 +58,7 @@ class ExecutionEngine:
         self.min_display: float = float(_safe(cfg, "exec", "min_display_btc", 0.01))
         self.max_exposure: float = float(_safe(cfg, "exec", "max_exposure_btc", 0.8))
         self.cooldown_factor: float = float(_safe(cfg, "exec", "cooldown_factor", 2.0))
+        self.side_mode: str = str(_safe(cfg, "exec", "side_mode", "both")).lower()  # 〔この行がすること〕 片面/両面モード設定を保持
         # 〔この行がすること〕 通常置きのオフセットを保持
         self.offset_ticks_normal: float = float(_safe(cfg, "exec", "offset_ticks_normal", 0.5))
         # 〔この行がすること〕 深置きのオフセットを保持
@@ -90,8 +91,15 @@ class ExecutionEngine:
         px_ask = _round_to_tick(mid + offset_ticks * self.tick, self.tick)
         display = max(self.min_display, min(total, total * self.display_ratio))
 
+        # 〔このブロックがすること〕 設定に応じて発注する向きを選択（両面/BUYのみ/SELLのみ）
+        sides = [("BUY", px_bid), ("SELL", px_ask)]
+        if self.side_mode == "buy":
+            sides = [("BUY", px_bid)]
+        elif self.side_mode == "sell":
+            sides = [("SELL", px_ask)]
+
         ids: list[str] = []
-        for side, price in (("BUY", px_bid), ("SELL", px_ask)):
+        for side, price in sides:  # 〔この行がすること〕 上で決めた向きだけをループする
             # 〔このブロックがすること〕 上限を超えるならその片側はスキップ（意思決定ログへ通知）
             if (self._open_maker_btc + total) > self.max_exposure:
                 try:

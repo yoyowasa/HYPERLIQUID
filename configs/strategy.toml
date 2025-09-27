@@ -31,6 +31,7 @@ equity_usd = 10000.0       # 〔この設定がすること〕 口座残高USD�
 offset_ticks_normal = 0.5     # 〔この設定がすること〕 通常置きの価格オフセット（±tick）
 offset_ticks_deep   = 1.5     # 〔この設定がすること〕 深置きの価格オフセット（±tick）
 spread_collapse_ticks = 1.0   # 〔この設定がすること〕 早期IOCの縮小判定のしきい値（tick）
+side_mode = "both"        # 〔この設定がすること〕 発注の向き: "both" | "buy" | "sell"
 
 [risk]
 # 〔このセクションがすること〕 ルールベースのリスク管理の閾値
