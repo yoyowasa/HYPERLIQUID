@@ -127,6 +127,7 @@ async def _feature_pump(
     last_mid = 0.0
     next_ts = time.time()
 
+
     try:
         while True:
             try:
@@ -135,6 +136,7 @@ async def _feature_pump(
             except asyncio.QueueEmpty:
                 pass
 
+
             bb, ba, bs, asz = last
             if bb > 0.0 and ba > 0.0:
                 last_mid = (bb + ba) / 2.0
@@ -142,10 +144,12 @@ async def _feature_pump(
             else:
                 spread_ticks = 0.0
 
+
             if last_mid <= 0.0:
                 await asyncio.sleep(dt)
                 next_ts = time.time() + dt
                 continue
+
 
             dob = bs + asz
             obi = 0.0 if dob <= 0.0 else (bs - asz) / max(dob, 1e-9)
@@ -161,11 +165,13 @@ async def _feature_pump(
             try:
                 out_queue.put_nowait(snap)
             except asyncio.QueueFull:
+
                 try:
                     _ = out_queue.get_nowait()
                 except Exception:
                     pass
                 try:
+
                     out_queue.put_nowait(snap)
                 except Exception:
                     pass
@@ -182,6 +188,8 @@ async def run_feeds(cfg, out_queue: "asyncio.Queue[FeatureSnapshot]") -> None:
     symbol = getattr(getattr(cfg, "symbol", {}), "name", "BTCUSD-PERP")
     tick = float(getattr(getattr(cfg, "symbol", {}), "tick_size", 0.5))
     lv1_queue: "asyncio.Queue[Tuple[float, float, float, float]]" = asyncio.Queue(maxsize=1024)
+
+
 
     try:
         from hl_core.api.ws import subscribe_level2  # type: ignore
@@ -222,6 +230,7 @@ async def run_feeds(cfg, out_queue: "asyncio.Queue[FeatureSnapshot]") -> None:
     tasks = [pump_task, producer_task]
 
     try:
+
         while tasks:
             done, pending = await asyncio.wait(
                 [t for t in tasks if t is not None],
@@ -229,6 +238,7 @@ async def run_feeds(cfg, out_queue: "asyncio.Queue[FeatureSnapshot]") -> None:
             )
 
             # If the producer failed and we were using WS, fall back to synthetic once.
+
 
             if producer_task in done and producer_task and producer_task.exception():
                 if not using_synthetic:
@@ -244,6 +254,7 @@ async def run_feeds(cfg, out_queue: "asyncio.Queue[FeatureSnapshot]") -> None:
                     tasks = [pump_task, producer_task]
                     continue
                 raise producer_task.exception()
+
 
 
             # If any task completed without exception we simply exit (likely cancellation).

@@ -62,6 +62,8 @@ class ExecutionEngine:
 
         self.splits: int = int(_safe(cfg, "exec", "splits", 1))  # 〔この行がすること〕 1クリップを何分割で出すか（片面あたりの子注文本数）
 
+
+
         # 〔この行がすること〕 通常置きのオフセットを保持
         self.offset_ticks_normal: float = float(_safe(cfg, "exec", "offset_ticks_normal", 0.5))
         # 〔この行がすること〕 深置きのオフセットを保持
