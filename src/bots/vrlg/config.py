@@ -144,6 +144,7 @@ class LatencyCfg(_BaseConfig):
 
     ingest_ms: int = 10
     order_rt_ms: int = 60
+    max_staleness_ms: int = 300  # 〔このフィールドがすること〕 この ms を超えて古い特徴量は発注ロジックから除外
 
 
 @_decorate
@@ -213,6 +214,7 @@ def coerce_vrlg_config(raw: Any) -> VRLGConfig:
     latency = LatencyCfg(**{
         "ingest_ms": int(sec_latency.get("ingest_ms", 10)),
         "order_rt_ms": int(sec_latency.get("order_rt_ms", 60)),
+        "max_staleness_ms": int(sec_latency.get("max_staleness_ms", 300)),
     })
 
     return VRLGConfig(symbol=symbol, signal=signal, exec=exec_, risk=risk, latency=latency)

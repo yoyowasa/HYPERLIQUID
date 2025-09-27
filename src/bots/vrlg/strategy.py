@@ -111,6 +111,19 @@ class VRLGStrategy:
         while not self._stopping.is_set():
             try:
                 feat = await self.q_features.get()
+                # 〔このブロックがすること〕 特徴量の「鮮度」を計算し、メトリクス更新＆しきい値超過なら処理をスキップします
+                now_ts = time.time()
+                feat_ts = float(feat.t)
+                enforce_guard = feat_ts > 1e6  # 〔この条件がすること〕 epoch 秒である場合のみ鮮度ガードを有効化します
+                staleness_ms = 0.0
+                if enforce_guard:
+                    staleness_ms = max(0.0, (now_ts - feat_ts) * 1000.0)
+                self.metrics.set_data_staleness_ms(staleness_ms)
+                max_stale = float(getattr(self.cfg.latency, "max_staleness_ms", 300))
+                if enforce_guard and staleness_ms > max_stale:
+                    self.metrics.inc_staleness_skips()
+                    self.decisions.log("stale_feature", staleness_ms=float(staleness_ms), max_allowed_ms=float(max_stale))
+                    continue
                 self.metrics.observe_spread(float(feat.spread_ticks))  # 〔この行がすること〕 観測スプレッド（ticks）をヒストグラムへ
                 self.rot.update(feat.t, feat.dob, feat.spread_ticks)
                 self.metrics.set_period(self.rot.current_period() or 0.0)   # 〔この行がすること〕 推定された周期R*をGaugeへ
@@ -385,6 +398,24 @@ class VRLGStrategy:
                             await self.exe.cancel_order_safely(_sid)
 
                 stops_cleanup_task = asyncio.create_task(_cleanup_stops_after_ts(), name="stops_cleanup")
+
+                # 〔このブロックがすること〕 発注直前の最終鮮度チェック（安全弁）
+                snap = self._last_features
+                if snap is None:
+                    self.metrics.inc_staleness_skips()
+                    self.decisions.log("stale_exec_skip", reason="no_feature")
+                    continue
+                snap_ts = float(snap.t)
+                enforce_guard = snap_ts > 1e6  # 〔この条件がすること〕 epoch 秒である場合のみ鮮度ガードを有効化します
+                staleness_ms = 0.0
+                if enforce_guard:
+                    staleness_ms = max(0.0, (time.time() - snap_ts) * 1000.0)
+                self.metrics.set_data_staleness_ms(staleness_ms)
+                max_stale = float(getattr(self.cfg.latency, "max_staleness_ms", 300))
+                if enforce_guard and staleness_ms > max_stale:
+                    self.metrics.inc_staleness_skips()
+                    self.decisions.log("stale_exec_skip", staleness_ms=float(staleness_ms), max_allowed_ms=float(max_stale))
+                    continue
 
                 order_ids = await self.exe.place_two_sided(sig.mid, clip, deepen=adv.deepen_post_only)  # 〔この行がすること〕 リスク助言に応じて「深置き」を切り替える
                 self.decisions.log("order_submitted", count=int(len(order_ids)))  # 〔この行がすること〕 実際に何件出したかを記録

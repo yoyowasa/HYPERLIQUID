@@ -3,11 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from collections import deque
 from typing import Deque, Optional, Callable  # 〔この import がすること〕 ゲート評価通知のコールバック型を使う
-
-
 import uuid  # 〔この行がすること〕 trace_id を生成するための標準ライブラリを使います
-
-
 from hl_core.utils.logger import get_logger
 from .data_feed import FeatureSnapshot
 
