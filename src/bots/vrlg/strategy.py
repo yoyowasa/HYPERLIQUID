@@ -159,7 +159,10 @@ class VRLGStrategy:
                     self.metrics.observe_block_interval_ms(interval)   # Prometheus へ記録
                 except Exception:
                     logger.debug("metrics.observe_block_interval_ms failed (ignored)")
-                self.decisions.log("block_interval", interval_s=float(interval))  # 〔この行がすること〕 観測したブロック間隔を記録
+                try:
+                    self.decisions.log("block_interval", interval_s=float(interval))  # 〔この行がすること〕 観測したブロック間隔を記録
+                except Exception:
+                    logger.debug("decision log (block_interval) failed (ignored)")
             last_ts = blk_ts
 
     def _on_order_event(self, kind: str, fields: dict) -> None:
