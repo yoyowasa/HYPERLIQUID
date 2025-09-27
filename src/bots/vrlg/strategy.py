@@ -363,7 +363,7 @@ class VRLGStrategy:
                         self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
                         # 縮小しなかった → TTL まで待って通常解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
-
+<
                         await self.exe.flatten_ioc()
                         await _cancel_stops_and_timers()
 

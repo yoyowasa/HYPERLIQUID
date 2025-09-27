@@ -40,6 +40,10 @@ class ExecutionEngine:
     - フィル後の同方向クールダウン（2×R* 秒）を管理
     """
 
+    on_order_event: Optional[Callable[[str, Dict[str, Any]], None]]
+    _open_maker_btc: float
+    _order_size: dict[str, float]
+
     def __init__(self, cfg, paper: bool) -> None:
         """〔このメソッドがすること〕 コンフィグを読み込み、発注パラメータと内部状態を初期化します。"""
         self.paper = paper
@@ -85,6 +89,7 @@ class ExecutionEngine:
             if (self._open_maker_btc + total) > self.max_exposure:
                 try:
                     if self.on_order_event:
+
                         self.on_order_event(
                             "skip",
                             {
@@ -93,6 +98,7 @@ class ExecutionEngine:
                                 "open_maker_btc": float(self._open_maker_btc),
                             },
                         )
+
                 except Exception:
                     pass
                 continue
@@ -149,6 +155,7 @@ class ExecutionEngine:
 
             except Exception:
                 pass
+
 
     async def flatten_ioc(self) -> None:
         """〔このメソッドがすること〕 市場成行（IOC）で素早くフラット化します（スケルトン）。"""
@@ -212,6 +219,7 @@ class ExecutionEngine:
             await cancel_order(self.symbol, order_id)  # type: ignore[misc]
             # 〔この行がすること〕 手動キャンセルでも露出を減算
             self._reduce_open_maker(order_id)
+
             # 〔このブロックがすること〕 手動キャンセルの通知（露出も併記）
             try:
                 if self.on_order_event:
@@ -221,6 +229,7 @@ class ExecutionEngine:
                     )
             except Exception:
                 pass
+
         except Exception as e:
             logger.debug("cancel_order (safe) ignored: %s", e)
 
