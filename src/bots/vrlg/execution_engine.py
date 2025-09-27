@@ -16,7 +16,7 @@ logger = get_logger("VRLG.exec")
 
 
 def _safe(cfg, section: str, key: str, default):
-    """〔この関数がすること〕 設定オブジェクト/辞書の両対応で値を安全に取得します。"""
+    """〔この関数がすること〕 設定（属性 or dict）の両対応で値を安全に取得します。"""
     try:
         sec = getattr(cfg, section)
         return getattr(sec, key, default)
@@ -27,11 +27,11 @@ def _safe(cfg, section: str, key: str, default):
             return default
 
 
-def _round_to_tick(x: float, tick: float) -> float:
-    """〔この関数がすること〕 価格をティックサイズに丸めます。"""
+def _round_to_tick(px: float, tick: float) -> float:
+    """〔この関数がすること〕 価格を最も近い tick 境界に丸めます。"""
     if tick <= 0:
-        return x
-    return round(x / tick) * tick
+        return float(px)
+    return round(float(px) / float(tick)) * float(tick)
 
 
 class ExecutionEngine:
@@ -67,8 +67,6 @@ class ExecutionEngine:
         self.offset_ticks_deep: float = float(_safe(cfg, "exec", "offset_ticks_deep", 1.5))
 
         # 内部状態
-        self._last_fill_side: Optional[str] = None  # "BUY" or "SELL"
-        self._last_fill_time: float = 0.0
         self._period_s: float = 1.0  # RotationDetector から更新注入予定
 
         self.on_order_event: Optional[Callable[[str, Dict[str, Any]], None]] = None  # 〔この行がすること〕 'skip'/'submitted'/'reject'/'cancel' を Strategy 側へ通知するコールバック
@@ -78,9 +76,13 @@ class ExecutionEngine:
         self._order_size: Dict[str, float] = {}  # 〔この属性がすること〕 order_id → 発注 total サイズの対応
 
     def set_period_hint(self, period_s: float) -> None:
-        """〔このメソッドがすること〕 R*（推定周期）ヒントを注入し、クールダウン計算に使います。"""
-        if period_s > 0:
-            self._period_s = float(period_s)
+        """〔このメソッドがすること〕
+        周期検出（R*）からのヒントを受け取り、クールダウン秒数の基準に使います。
+        """
+        try:
+            self._period_s = max(0.1, float(period_s))
+        except Exception:
+            self._period_s = 1.0
 
     async def place_two_sided(self, mid: float, total: float, deepen: bool = False) -> list[str]:
         """〔このメソッドがすること〕
@@ -189,45 +191,47 @@ class ExecutionEngine:
 
     async def wait_fill_or_ttl(self, order_ids: list[str], timeout_s: float) -> None:
         """〔このメソッドがすること〕
-        TTL またはフィル完了のどちらか早い方まで待機し、その後に未約定分をキャンセルします。
-        実約定検知は後続（fills stream）で置き換え可能なように簡易に実装します。
+        TTL まで待って（ここではシンプルに sleep）、未充足分をまとめてキャンセルします。
+        - 実環境では約定/板更新を監視して早期キャンセルに置き換えます。
         """
         if not order_ids:
             return
         try:
-            await asyncio.sleep(timeout_s)
-        finally:
-            await self._cancel_many(order_ids)
-            # 〔このブロックがすること〕 キャンセル完了後に、未約定メーカー露出を減算
-            for _oid in order_ids:
-                self._reduce_open_maker(_oid)
-            # 〔このブロックがすること〕 TTL/解消でキャンセルした事実を片側ごとに通知（露出も併記）
-            try:
-                if self.on_order_event:
-                    for _oid in order_ids:
-                        self.on_order_event(
-                            "cancel",
-                            {
-                                "order_id": str(_oid),
-                                "open_maker_btc": float(self._open_maker_btc),
-                                "trace_id": self.trace_id,
-                            },
-                        )
-            except Exception:
-                pass
+            await asyncio.sleep(max(0.0, float(timeout_s)))
+        except Exception:
+            pass
+        await self._cancel_many(order_ids)
+        for _oid in order_ids:
+            self._reduce_open_maker(_oid)
+        try:
+            if self.on_order_event:
+                for _oid in order_ids:
+                    self.on_order_event(
+                        "cancel",
+                        {
+                            "order_id": str(_oid),
+                            "open_maker_btc": float(self._open_maker_btc),
+                            "trace_id": self.trace_id,
+                        },
+                    )
+        except Exception:
+            pass
 
 
     async def flatten_ioc(self) -> None:
-        """〔このメソッドがすること〕 市場成行（IOC）で素早くフラット化します（スケルトン）。"""
+        """〔このメソッドがすること〕
+        可能な範囲で保有を即時解消（IOC）します。API 未導入時はログのみ。
+        実運用ではポジション照会→反対成行（IOC）を実装します。
+        """
         try:
-            from hl_core.api.http import flatten_ioc  # type: ignore
+            from hl_core.api.http import close_all_ioc  # type: ignore
         except Exception:
-            logger.info("[paper=%s] IOC flatten (placeholder) executed.", self.paper)
+            logger.info("[paper=%s] flatten_ioc placeholder (no-op)", self.paper)
             return
         try:
-            await flatten_ioc(self.symbol)  # type: ignore[misc]
+            await close_all_ioc(self.symbol)  # type: ignore[misc]
         except Exception as e:
-            logger.warning("flatten_ioc failed: %s", e)
+            logger.debug("flatten_ioc failed (ignored): %s", e)
 
     async def place_reverse_stop(self, fill_side: str, ref_mid: float, stop_ticks: float) -> Optional[str]:
         """〔このメソッドがすること〕
@@ -311,25 +315,29 @@ class ExecutionEngine:
 
     async def _post_only_iceberg(
         self, side: str, price: float, total: float, display: float, ttl_s: float
-    ) -> Optional[str]:
-        """〔このメソッドがすること〕 post-only のアイスバーグ指値を発注し、order_id を返します。"""
+    ) -> str | None:
+        """〔このメソッドがすること〕
+        postOnly + Iceberg（表示量=display）で 1 本の指値を出し、order_id を返します。
+        - API 未導入時はダミー order_id を返してテスト/紙運用を可能にします。
+        """
         payload = {
             "symbol": self.symbol,
             "side": side,
-            "price": price,
-            "size": total,
-            "display_size": display,
-            "time_in_force": "PO",   # Post Only
-            "iceberg": True,
-            "ttl_s": ttl_s,
+            "price": float(price),
+            "size": float(total),
+            "display": float(display),
+            "post_only": True,
+            "time_in_force": "GTT",
+            "ttl_ms": int(max(1.0, ttl_s) * 1000.0),
+            "reduce_only": False,
             "paper": self.paper,
         }
         try:
             from hl_core.api.http import place_order  # type: ignore
         except Exception:
-            logger.info("[paper=%s] place_order placeholder: %s", self.paper, payload)
-            # 擬似 order_id（テスト用）
-            return f"paper-{side}-{price}-{int(time.time()*1000)}"
+            oid = f"paper-{side}-{int(time.time()*1000)}-{abs(hash((price,total)))%10000}"
+            logger.info("[paper=%s] post_only_iceberg placeholder: %s -> %s", self.paper, payload, oid)
+            return oid
 
         try:
             resp = await place_order(**payload)  # type: ignore[misc]
@@ -340,13 +348,18 @@ class ExecutionEngine:
             return None
 
     async def _cancel_many(self, order_ids: list[str]) -> None:
-        """〔このメソッドがすること〕 複数注文をキャンセルします（存在しなくても安全）。"""
+        """〔このメソッドがすること〕
+        与えられた order_id 群を安全にキャンセルします（一部失敗しても続行）。
+        place_two_sided/splits で複数の子注文を出すため、まとめて扱います。
+        """
         if not order_ids:
             return
         try:
             from hl_core.api.http import cancel_order  # type: ignore
         except Exception:
-            logger.info("[paper=%s] cancel placeholder: %s", self.paper, order_ids)
+            # API が無い環境ではログだけ
+            for oid in order_ids:
+                logger.info("[paper=%s] cancel placeholder: %s", self.paper, oid)
             return
 
         for oid in order_ids:
@@ -369,14 +382,26 @@ class ExecutionEngine:
 
     # ─────────────── クールダウン管理（簡易） ───────────────
 
-    def _in_cooldown(self, side: str) -> bool:
-        """〔このメソッドがすること〕 直近フィルの同方向に対するクールダウン中かを返します。"""
-        if self._last_fill_side != side:
-            return False
-        cool = self.cooldown_factor * max(self._period_s, 0.5)
-        return (time.time() - self._last_fill_time) < cool
-
     def register_fill(self, side: str) -> None:
-        """〔このメソッドがすること〕 フィル発生を記録し、クールダウンを開始します。"""
-        self._last_fill_side = side
-        self._last_fill_time = time.time()
+        """〔このメソッドがすること〕
+        充足方向にクールダウンを設定します（同方向の再発注を一時的に抑止）。
+        クールダウン長 = cooldown_factor × R*（秒）
+        """
+        try:
+            side_u = str(side).upper()
+            cd = float(self.cooldown_factor) * float(getattr(self, "_period_s", 1.0))
+            until = time.time() + max(0.0, cd)
+            if not hasattr(self, "_cooldown_until"):
+                self._cooldown_until = {"BUY": 0.0, "SELL": 0.0}
+            self._cooldown_until[side_u] = until
+        except Exception:
+            pass
+
+    def _in_cooldown(self, side: str) -> bool:
+        """〔このメソッドがすること〕 指定方向がクールダウン中かどうかを返します。"""
+        try:
+            side_u = str(side).upper()
+            until = getattr(self, "_cooldown_until", {}).get(side_u, 0.0)
+            return time.time() < float(until)
+        except Exception:
+            return False
