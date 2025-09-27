@@ -100,11 +100,13 @@ class ExecutionEngine:
         if total <= 0.0:
             return []
 
+
         sides = [("BUY", px_bid), ("SELL", px_ask)]
         if getattr(self, "side_mode", "both") == "buy":
             sides = [("BUY", px_bid)]
         elif getattr(self, "side_mode", "both") == "sell":
             sides = [("SELL", px_ask)]
+
 
         splits = max(1, int(self.splits))
         child_total = float(total) / float(splits)
