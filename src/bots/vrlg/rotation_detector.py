@@ -1,293 +1,263 @@
 from __future__ import annotations
 
 import math
+import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Optional
+from typing import Deque, Optional, Tuple
 
 from hl_core.utils.logger import get_logger
 
 logger = get_logger("VRLG.rotation")
 
 
-@dataclass(frozen=True)
-class PeriodEstimation:
-    """〔このデータクラスがすること〕 現在の周期推定の結果を保持します。"""
+@dataclass
+class RotationEstimation:
+    """〔このデータクラスがすること〕
+    直近の推定結果と品質指標をひとまとめに保持します。
+    """
 
     period_s: Optional[float]
     score: float
+    n_boundary: int
+    n_off: int
     p_dob: Optional[float]
     p_spread: Optional[float]
-    n_boundary: int
-    active: bool
+    ts: float
+
+
+def _pearson_corr(a: list[float], b: list[float]) -> float:
+    """〔この関数がすること〕
+    a,b（同長）のピアソン相関を計算します。分散ゼロのときは 0 を返します。
+    """
+
+    n = len(a)
+    if n == 0 or n != len(b):
+        return 0.0
+    ma = sum(a) / n
+    mb = sum(b) / n
+    va = sum((x - ma) ** 2 for x in a)
+    vb = sum((y - mb) ** 2 for y in b)
+    if va <= 0.0 or vb <= 0.0:
+        return 0.0
+    cov = sum((a[i] - ma) * (b[i] - mb) for i in range(n))
+    return cov / math.sqrt(va * vb)
+
+
+def _normal_sf(x: float) -> float:
+    """〔この関数がすること〕
+    標準正規分布の片側上側確率（survival function）を返します。
+    p = 1 - Phi(x) ≒ 0.5 * erfc(x / sqrt(2))
+    """
+
+    return 0.5 * math.erfc(x / math.sqrt(2.0))
+
+
+def _welch_t_onesided(mean_a: float, var_a: float, n_a: int,
+                      mean_b: float, var_b: float, n_b: int,
+                      alt: str) -> float:
+    """〔この関数がすること〕
+    Welch の t を正規近似で片側検定します（SciPy 非依存の軽量近似）。
+    alt: "a<b" のとき H1: mean_a < mean_b（左側）、"a>b" のとき H1: mean_a > mean_b（右側）
+    戻り値: 片側 p 値（小さいほど有意）
+    """
+
+    if n_a <= 1 or n_b <= 1:
+        return 1.0
+    var_a = max(var_a, 1e-12)
+    var_b = max(var_b, 1e-12)
+    se = math.sqrt(var_a / n_a + var_b / n_b)
+    if se <= 0.0:
+        return 1.0
+    t = (mean_a - mean_b) / se
+    if alt == "a<b":
+        return 1.0 - (0.5 * math.erfc(t / math.sqrt(2.0)))
+    else:
+        return _normal_sf(t)
 
 
 class RotationDetector:
     """〔このクラスがすること〕
-    - ローリング時系列（DoB, Spread）を保持
-    - 自己相関から最強周期 R* を推定
-    - R* の境界位相で DoB↓ / Spread↑ の有意性（p≤閾値）を評価
-    - 戦略の有効/無効判定（is_active）と、現在の位相（current_phase）を提供
+    直近 T_roll 秒の DoB / Spread を保持し、自己相関で周期 R* を推定。
+    位相ゲート（z）近傍で「DoB が薄い」「Spread が広い」が十分に再現される
+    （p 値がしきい値未満 & サンプル閾以上）とき is_active() を True にします。
     """
 
     def __init__(self, cfg) -> None:
-        """〔このメソッドがすること〕 設定からウィンドウ長やしきい値を読み込み、バッファを初期化します。"""
-        # 設定（存在しない場合に備え安全に既定値）
-        self.window_s = float(getattr(getattr(cfg, "signal", {}), "T_roll", 30.0))
-        self.dt = 0.1  # 100ms 特徴量クロック想定
-        self.period_min_s = 0.8
-        self.period_max_s = 5.0
-        self.p_thresh = 0.01
-        # 位相ウィンドウ幅（半幅の比。物理的に意味が保てるよう [0.01, 0.45] にクランプ）
-        z = getattr(getattr(cfg, "signal", {}), "z", 0.6)
-        self.phase_halfwidth = min(max(float(z), 0.01), 0.45)
+        """〔このメソッドがすること〕
+        パラメータ（T_roll, z, 期間レンジ, p値しきい値, 必要サンプル数）を設定から読み込みます。
+        """
 
-        # ローリングバッファ
-        maxlen = int(self.window_s / self.dt) + 4
-        self.ts: Deque[float] = deque(maxlen=maxlen)
-        self.dob: Deque[float] = deque(maxlen=maxlen)
-        self.spr: Deque[float] = deque(maxlen=maxlen)
+        sig = getattr(cfg, "signal", {})
+        self.T_roll: float = float(getattr(sig, "T_roll", 30.0))
+        self.z: float = float(getattr(sig, "z", 0.6))
+        self.period_min_s = float(getattr(sig, "period_min_s", 0.8))
+        self.period_max_s = float(getattr(sig, "period_max_s", 5.0))
+        self.p_thresh = float(getattr(sig, "p_thresh", 0.01))
+        self.min_boundary_samples = int(getattr(sig, "min_boundary_samples", 200))
+        self.min_off_samples = int(getattr(sig, "min_off_samples", 50))
 
-        # 推定結果
+        self._dt: float = 0.1
+        self._dob: Deque[float] = deque(maxlen=int(self.T_roll / self._dt) + 8)
+        self._spr: Deque[float] = deque(maxlen=int(self.T_roll / self._dt) + 8)
+        self._tim: Deque[float] = deque(maxlen=int(self.T_roll / self._dt) + 8)
+
         self._period_s: Optional[float] = None
         self._active: bool = False
-        self._last_eval_t: float = 0.0
-        self._last_est: PeriodEstimation = PeriodEstimation(None, 0.0, None, None, 0, False)
+        self._score: float = 0.0
+        self._p_dob: Optional[float] = None
+        self._p_spr: Optional[float] = None
+        self._n_on: int = 0
+        self._n_off: int = 0
+        self._last_est = RotationEstimation(None, 0.0, 0, 0, None, None, time.time())
 
     def update(self, t: float, dob: float, spread_ticks: float) -> None:
-        """〔このメソッドがすること〕 新しい観測を追加し、一定間隔で周期推定と有意性評価を行います。"""
-        self.ts.append(t)
-        self.dob.append(float(dob))
-        self.spr.append(float(spread_ticks))
+        """〔このメソッドがすること〕
+        新しい観測（時刻・DoB・Spread）を保持し、必要なら R* と品質を再推定します。
+        """
 
-        # 計算負荷を抑えるため 0.5s ごとに評価
-        if (t - self._last_eval_t) >= 0.5:
-            self._last_eval_t = t
-            self._recompute()
+        self._tim.append(float(t))
+        self._dob.append(float(dob))
+        self._spr.append(float(spread_ticks))
 
-    def current_phase(self, t: float) -> float:
-        """〔このメソッドがすること〕 現在時刻 t における位相（0〜1）を返します。R* 未確定なら 0.0。"""
-        if not self._period_s or self._period_s <= 0:
-            return 0.0
-        p = self._period_s
-        return (t % p) / p
+        if len(self._tim) < max(20, int(self.period_max_s / self._dt) + 5):
+            self._set_inactive("insufficient data")
+            return
+
+        self._estimate_period_and_quality()
 
     def is_active(self) -> bool:
-        """〔このメソッドがすること〕 p値・サンプル数の条件を満たしているか（=戦略稼働可）を返します。"""
-        return self._active
+        """〔このメソッドがすること〕 構造が有意に観測できている（稼働可能）かを返します。"""
+
+        return bool(self._active)
 
     def current_period(self) -> Optional[float]:
-        """〔このメソッドがすること〕 推定された R*（秒）を返します。未確定なら None。"""
+        """〔このメソッドがすること〕 推定した周期 R*（秒）を返します（未確定なら None）。"""
+
         return self._period_s
 
-    def last_estimation(self) -> PeriodEstimation:
-        """〔このメソッドがすること〕 直近の推定詳細（デバッグ/監視用）を返します。"""
+    def current_phase(self, t: float) -> float:
+        """〔このメソッドがすること〕 与えた時刻 t に対する位相（0..1）を返します。"""
+
+        p = self._period_s or 1.0
+        if p <= 0.0:
+            p = 1.0
+        ph = (float(t) % p) / p
+        if ph >= 1.0:
+            ph -= 1.0
+        if ph < 0.0:
+            ph += 1.0
+        return ph
+
+    def last_estimation(self) -> RotationEstimation:
+        """〔このメソッドがすること〕 直近の推定結果と品質指標を返します。"""
+
         return self._last_est
 
-    # ─────────────────────────── 内部実装 ───────────────────────────
-
-    def _recompute(self) -> None:
+    def _estimate_period_and_quality(self) -> None:
         """〔このメソッドがすること〕
-        バッファから
-        1) 自己相関スコア最大のラグ → R* を推定し、
-        2) 境界位相の集合と非境界の集合で DoB/Spread の片側検定を行い、
-        3) 稼働可否を更新します。
+        候補周期レンジで自己相関スコアを評価し、最良の R* を選びます。
+        その R* に基づいて位相ゲート境界/非境界での DoB/Spread の差を検定し、active を更新します。
         """
-        if len(self.ts) < 40:
-            self._active = False
-            self._period_s = None
-            self._last_est = PeriodEstimation(None, 0.0, None, None, 0, False)
+
+        dob = list(self._dob)
+        spr = list(self._spr)
+        tim = list(self._tim)
+        n = len(tim)
+        if n < 5:
+            self._set_inactive("insufficient data")
             return
 
-        # 1) 不規則タイムスタンプを 100ms グリッドに再ビン詰め（ラストホールド）
-        grid, xs_dob, xs_spr = self._make_grid()
+        Lmin = max(1, int(round(self.period_min_s / self._dt)))
+        Lmax = max(Lmin + 1, int(round(self.period_max_s / self._dt)))
+        best_score = -1.0
+        best_L = None
 
-        # 自己相関スキャン
-        lag_min = max(1, int(self.period_min_s / self.dt))
-        lag_max = min(len(grid) // 2, int(self.period_max_s / self.dt))
-        if lag_max <= lag_min:
-            self._active = False
-            self._period_s = None
-            self._last_est = PeriodEstimation(None, 0.0, None, None, 0, False)
+        for L in range(Lmin, min(Lmax, n - 2)):
+            a_dob = dob[:-L]
+            b_dob = dob[L:]
+            a_spr = spr[:-L]
+            b_spr = spr[L:]
+            if len(a_dob) < 5 or len(a_spr) < 5:
+                continue
+            r_d = abs(_pearson_corr(a_dob, b_dob))
+            r_s = abs(_pearson_corr(a_spr, b_spr))
+            score = 0.5 * (r_d + r_s)
+            if score > best_score:
+                best_score = score
+                best_L = L
+
+        if best_L is None:
+            self._set_inactive("no lag chosen")
             return
 
-        score_best = -1.0
-        lag_best = None
-        for L in range(lag_min, lag_max + 1):
-            c1 = self._acf(xs_dob, L)
-            c2 = self._acf(xs_spr, L)
-            score = 0.5 * (abs(c1) + abs(c2))
-            if score > score_best:
-                score_best = score
-                lag_best = L
+        R = best_L * self._dt
+        self._period_s = R
+        self._score = float(best_score)
 
-        if lag_best is None:
-            self._active = False
-            self._period_s = None
-            self._last_est = PeriodEstimation(None, 0.0, None, None, 0, False)
+        z = max(0.01, min(self.z, 0.45))
+        on_dob, off_dob = [], []
+        on_spr, off_spr = [], []
+        for i in range(n):
+            ph = (tim[i] % R) / R
+            boundary = (ph < z) or (ph > 1.0 - z)
+            if boundary:
+                on_dob.append(dob[i])
+                on_spr.append(spr[i])
+            else:
+                off_dob.append(dob[i])
+                off_spr.append(spr[i])
+
+        n_on = len(on_dob)
+        n_off = len(off_dob)
+        self._n_on, self._n_off = n_on, n_off
+
+        if n_on < self.min_boundary_samples or n_off < self.min_off_samples:
+            self._p_dob = None
+            self._p_spr = None
+            self._set_inactive("insufficient samples")
             return
 
-        period_s = lag_best * self.dt
+        def _mean_var(xs: list[float]) -> Tuple[float, float]:
+            if not xs:
+                return 0.0, 0.0
+            m = sum(xs) / len(xs)
+            v = sum((x - m) ** 2 for x in xs) / max(1, len(xs) - 1)
+            return m, v
 
-        # 2) 位相境界の統計（DoB: 境界で小さい / Spread: 境界で大きい）
-        phases = [((grid[i] % period_s) / period_s) for i in range(len(grid))]
-        hw = self.phase_halfwidth
-        boundary_idx = [i for i, ph in enumerate(phases) if (ph < hw or ph > 1.0 - hw)]
-        off_idx = [i for i, ph in enumerate(phases) if (hw <= ph <= 1.0 - hw)]
+        m_on_d, v_on_d = _mean_var(on_dob)
+        m_off_d, v_off_d = _mean_var(off_dob)
+        m_on_s, v_on_s = _mean_var(on_spr)
+        m_off_s, v_off_s = _mean_var(off_spr)
 
-        n_on = len(boundary_idx)
-        n_off = len(off_idx)
-        p_dob = None
-        p_spr = None
-        active = False
+        p_d = _welch_t_onesided(m_on_d, v_on_d, n_on, m_off_d, v_off_d, n_off, alt="a<b")
+        p_s = _welch_t_onesided(m_on_s, v_on_s, n_on, m_off_s, v_off_s, n_off, alt="a>b")
+        self._p_dob = float(p_d)
+        self._p_spr = float(p_s)
 
-        if n_on >= 200 and n_off >= 50:
-            dob_on = [xs_dob[i] for i in boundary_idx]
-            dob_off = [xs_dob[i] for i in off_idx]
-            spr_on = [xs_spr[i] for i in boundary_idx]
-            spr_off = [xs_spr[i] for i in off_idx]
+        self._active = (p_d < self.p_thresh) and (p_s < self.p_thresh)
 
-            p_dob = self._one_sided_p_less(dob_on, dob_off)    # on < off で小さければ良い
-            p_spr = self._one_sided_p_greater(spr_on, spr_off) # on > off で小さければ良い
-            active = (
-                p_dob is not None
-                and p_spr is not None
-                and p_dob <= self.p_thresh
-                and p_spr <= self.p_thresh
-            )
-
-        self._period_s = period_s
-        self._active = bool(active)
-        self._last_est = PeriodEstimation(period_s, float(score_best), p_dob, p_spr, n_on, self._active)
-
-    def _make_grid(self):
-        """〔このメソッドがすること〕
-        時刻・DoB・Spread を 100ms 間隔の等間隔グリッドに再配置し、欠損は前値保持で補完します。
-        """
-        t_end = self.ts[-1]
-        steps = int(self.window_s / self.dt)
-        t0 = t_end - steps * self.dt
-        grid = [t0 + i * self.dt for i in range(steps)]
-
-        xs_dob = [float("nan")] * steps
-        xs_spr = [float("nan")] * steps
-
-        # 直近観測を同じビンに入れる（上書き）
-        for ti, di, si in zip(self.ts, self.dob, self.spr):
-            idx = int(round((ti - t0) / self.dt))
-            if 0 <= idx < steps:
-                xs_dob[idx] = di
-                xs_spr[idx] = si
-
-        # 前値保持で NaN を埋める（先頭は最初の有限値で埋め）
-        def ffill(arr: list[float]) -> None:
-            last = None
-            # 先頭探し
-            for v in arr:
-                if not math.isnan(v):
-                    last = v
-                    break
-            if last is None:
-                # 全部空なら 0 扱い
-                for i in range(len(arr)):
-                    arr[i] = 0.0
-                return
-            # 前値保持
-            for i in range(len(arr)):
-                if math.isnan(arr[i]):
-                    arr[i] = last
-                else:
-                    last = arr[i]
-
-        ffill(xs_dob)
-        ffill(xs_spr)
-        return grid, xs_dob, xs_spr
-
-    def _acf(self, x: list[float], lag: int) -> float:
-        """〔このメソッドがすること〕 ラグ lag の自己相関係数（ピアソン）を近似計算します。"""
-        n = len(x)
-        if lag <= 0 or lag >= n:
-            return 0.0
-        # 中心化
-        mu = sum(x) / n
-        xv = [xi - mu for xi in x]
-        num = 0.0
-        den1 = 0.0
-        den2 = 0.0
-        for i in range(lag, n):
-            a = xv[i]
-            b = xv[i - lag]
-            num += a * b
-            den1 += a * a
-            den2 += b * b
-        den = math.sqrt(den1 * den2) if den1 > 0 and den2 > 0 else 0.0
-        return (num / den) if den > 0 else 0.0
-
-    def _one_sided_p_less(self, a_on: list[float], a_off: list[float]) -> Optional[float]:
-        """〔このメソッドがすること〕
-        片側検定（on < off）を正規近似で行い、p 値を返します（失敗時 None）。
-        """
-        return self._ztest_one_sided(
-            mean_a=sum(a_on) / len(a_on),
-            var_a=self._variance(a_on),
-            n_a=len(a_on),
-            mean_b=sum(a_off) / len(a_off),
-            var_b=self._variance(a_off),
-            n_b=len(a_off),
-            direction="less",
+        self._last_est = RotationEstimation(
+            period_s=self._period_s,
+            score=self._score,
+            n_boundary=n_on,
+            n_off=n_off,
+            p_dob=self._p_dob,
+            p_spread=self._p_spr,
+            ts=time.time(),
         )
 
-    def _one_sided_p_greater(self, a_on: list[float], a_off: list[float]) -> Optional[float]:
-        """〔このメソッドがすること〕
-        片側検定（on > off）を正規近似で行い、p 値を返します（失敗時 None）。
-        """
-        return self._ztest_one_sided(
-            mean_a=sum(a_on) / len(a_on),
-            var_a=self._variance(a_on),
-            n_a=len(a_on),
-            mean_b=sum(a_off) / len(a_off),
-            var_b=self._variance(a_off),
-            n_b=len(a_off),
-            direction="greater",
+    def _set_inactive(self, reason: str) -> None:
+        """〔このメソッドがすること〕 active を False にし、推定結果を更新します（内部用）。"""
+
+        self._active = False
+        self._last_est = RotationEstimation(
+            period_s=self._period_s,
+            score=self._score,
+            n_boundary=self._n_on,
+            n_off=self._n_off,
+            p_dob=self._p_dob,
+            p_spread=self._p_spr,
+            ts=time.time(),
         )
-
-    @staticmethod
-    def _variance(arr: list[float]) -> float:
-        """〔この関数がすること〕 不偏分散を計算します（要素数<2なら小さな値を返す）。"""
-        n = len(arr)
-        if n < 2:
-            return 1e-12
-        mu = sum(arr) / n
-        s2 = sum((x - mu) ** 2 for x in arr) / (n - 1)
-        return max(s2, 1e-12)
-
-    @staticmethod
-    def _z_to_p_one_sided(z: float) -> float:
-        """〔この関数がすること〕 片側 p 値を正規分布の尾確率から計算します。"""
-        # 片側: p = 1 - Phi(z) = 0.5 * erfc(z / sqrt(2))
-        return 0.5 * math.erfc(z / math.sqrt(2.0))
-
-    def _ztest_one_sided(
-        self,
-        mean_a: float,
-        var_a: float,
-        n_a: int,
-        mean_b: float,
-        var_b: float,
-        n_b: int,
-        direction: str,
-    ) -> Optional[float]:
-        """〔この関数がすること〕
-        2標本の片側 z 検定（正規近似; Welch）を行い、p 値を返します。
-        direction: "less"（a<b を検出） or "greater"（a>b を検出）
-        """
-        if n_a < 2 or n_b < 2:
-            return None
-        se = math.sqrt(var_a / n_a + var_b / n_b)
-        if se <= 0:
-            return None
-        if direction == "less":
-            z = (mean_b - mean_a) / se
-        else:
-            z = (mean_a - mean_b) / se
-        return self._z_to_p_one_sided(z)
+        logger.debug("rotation inactive: %s", reason)
