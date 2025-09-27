@@ -64,6 +64,10 @@ class Metrics:
         # ── Gauges（現在値）
         self.current_period_s = Gauge("vrlg_current_period_s", "Estimated rotation period R* (s).")
         self.active_flag = Gauge("vrlg_is_active", "Rotation gate active (1) or paused (0).")
+        self.rotation_score = Gauge("vrlg_rotation_score", "Autocorrelation score used for R* selection.")      # 〔この行がすること〕 自己相関の強さを可視化
+        self.rotation_boundary_samples = Gauge("vrlg_rotation_boundary_samples", "Boundary sample count.")       # 〔この行がすること〕 境界サンプル数を可視化
+        self.rotation_p_dob = Gauge("vrlg_rotation_p_dob", "p-value for DoB thinness at boundary (one-sided).") # 〔この行がすること〕 DoB の p値を可視化
+        self.rotation_p_spr = Gauge("vrlg_rotation_p_spr", "p-value for spread wideness at boundary (one-sided).") # 〔この行がすること〕 Spread の p値を可視化
         self.book_impact_5s = Gauge("vrlg_book_impact_5s", "Sum of display/TopDepth over 5s.")
         self.cooldown_s = Gauge("vrlg_cooldown_s", "Current cooldown window (s).")
         self.data_staleness_ms = Gauge("vrlg_data_staleness_ms", "Age of the latest feature snapshot (ms).")  # 〔この行がすること〕 特徴量の鮮度（ms）を可視化
@@ -110,6 +114,18 @@ class Metrics:
         """〔この関数がすること〕 戦略が稼働可能(1)か観察モード(0)かを設定します。"""
         try:
             self.active_flag.set(1.0 if is_active else 0.0)
+        except Exception:
+            pass
+
+    def set_rotation_quality(self, score: float, n_boundary: int, p_dob: Optional[float], p_spr: Optional[float]) -> None:
+        """〔この関数がすること〕 RotationDetector の品質（score/p値/サンプル数）を Gauge に反映します。"""
+        try:
+            self.rotation_score.set(float(score))
+            self.rotation_boundary_samples.set(max(0.0, float(n_boundary)))
+            if p_dob is not None:
+                self.rotation_p_dob.set(float(p_dob))
+            if p_spr is not None:
+                self.rotation_p_spr.set(float(p_spr))
         except Exception:
             pass
 
@@ -208,7 +224,6 @@ class Metrics:
         except Exception:
             pass
 
-
     def set_data_staleness_ms(self, value_ms: float) -> None:
         """〔この関数がすること〕 最新特徴量の鮮度（ms）を Gauge に設定します。"""
         try:
@@ -222,7 +237,6 @@ class Metrics:
             self.staleness_skips.inc()
         except Exception:
             pass
-
 
     def inc_gate_phase_miss(self) -> None:
         """〔この関数がすること〕 位相ゲート不成立を +1 カウントする。"""

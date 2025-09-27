@@ -106,6 +106,12 @@ class SignalCfg(_BaseConfig):
     z: float = 0.6
     obi_limit: float = 0.6
     T_roll: float = 30.0
+    # 〔このフィールド群がすること〕 RotationDetector の挙動を調整します
+    p_thresh: float = 0.01            # p値の閾値（片側）: これ以下で有意
+    period_min_s: float = 0.8         # 周期探索の下限（秒）
+    period_max_s: float = 5.0         # 周期探索の上限（秒）
+    min_boundary_samples: int = 200   # 位相境界で必要な最小サンプル数
+    min_off_samples: int = 50         # 非境界で必要な最小サンプル数
 
 
 @_decorate
@@ -188,6 +194,11 @@ def coerce_vrlg_config(raw: Any) -> VRLGConfig:
         "z": float(sec_signal.get("z", 0.6)),
         "obi_limit": float(sec_signal.get("obi_limit", 0.6)),
         "T_roll": float(sec_signal.get("T_roll", 30.0)),
+        "p_thresh": float(sec_signal.get("p_thresh", 0.01)),
+        "period_min_s": float(sec_signal.get("period_min_s", 0.8)),
+        "period_max_s": float(sec_signal.get("period_max_s", 5.0)),
+        "min_boundary_samples": int(sec_signal.get("min_boundary_samples", 200)),
+        "min_off_samples": int(sec_signal.get("min_off_samples", 50)),
     })
     exec_ = ExecCfg(**{
         "order_ttl_ms": int(sec_exec.get("order_ttl_ms", 1000)),

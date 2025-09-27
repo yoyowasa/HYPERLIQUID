@@ -127,6 +127,20 @@ class VRLGStrategy:
                 self.metrics.observe_spread(float(feat.spread_ticks))  # 〔この行がすること〕 観測スプレッド（ticks）をヒストグラムへ
                 self.rot.update(feat.t, feat.dob, feat.spread_ticks)
                 self.metrics.set_period(self.rot.current_period() or 0.0)   # 〔この行がすること〕 推定された周期R*をGaugeへ
+                # 〔このブロックがすること〕 周期検出の品質（score / p値 / サンプル数）をメトリクスに反映します
+                try:
+                    est = self.rot.last_estimation()
+                except Exception:
+                    est = None
+                try:
+                    self.metrics.set_rotation_quality(
+                        score=float(getattr(est, "score", 0.0) if est is not None else 0.0),
+                        n_boundary=int(getattr(est, "n_boundary", 0) if est is not None else 0),
+                        p_dob=getattr(est, "p_dob", None) if est is not None else None,
+                        p_spr=getattr(est, "p_spread", None) if est is not None else None,
+                    )
+                except Exception:
+                    logger.debug("metrics.set_rotation_quality failed (ignored)")
                 self.metrics.set_active(self.rot.is_active())               # 〔この行がすること〕 稼働可能=1/観察モード=0 をGaugeへ
                 self._last_features = feat
                 if not self.rot.is_active():

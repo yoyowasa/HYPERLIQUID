@@ -15,6 +15,12 @@ y = 2                  # スプレッド閾（ティック）
 z = 0.6                # 位相ゲートの半幅（比率, 0<z<0.5に自動クリップ）
 obi_limit = 0.6        # 板不均衡 |OBI| の上限
 T_roll = 30.0          # 周期推定のロール窓（秒, RotationDetector 用）
+# RotationDetector 調整用（必要なときだけ変更）
+p_thresh = 0.01              # 〔この設定がすること〕 p値の閾値（片側）
+period_min_s = 0.8           # 〔この設定がすること〕 周期探索の下限（秒）
+period_max_s = 5.0           # 〔この設定がすること〕 周期探索の上限（秒）
+min_boundary_samples = 200   # 〔この設定がすること〕 境界で必要な最小サンプル数
+min_off_samples = 50         # 〔この設定がすること〕 非境界で必要な最小サンプル数
 
 [exec]
 # 〔このセクションがすること〕 発注ロジック（post-only Iceberg/TTL/クールダウン）の設定
