@@ -42,7 +42,7 @@ class ExecutionEngine:
 
     on_order_event: Optional[Callable[[str, Dict[str, Any]], None]]
     _open_maker_btc: float
-    _order_size: dict[str, float]
+    _order_size: Dict[str, float]
 
     def __init__(self, cfg, paper: bool) -> None:
         """〔このメソッドがすること〕 コンフィグを読み込み、発注パラメータと内部状態を初期化します。"""
