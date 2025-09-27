@@ -40,6 +40,10 @@ class ExecutionEngine:
     - フィル後の同方向クールダウン（2×R* 秒）を管理
     """
 
+    on_order_event: Optional[Callable[[str, Dict[str, Any]], None]]
+    _open_maker_btc: float
+    _order_size: dict[str, float]
+
     def __init__(self, cfg, paper: bool) -> None:
         """〔このメソッドがすること〕 コンフィグを読み込み、発注パラメータと内部状態を初期化します。"""
         self.paper = paper
