@@ -66,6 +66,13 @@ class Metrics:
         self.active_flag = Gauge("vrlg_is_active", "Rotation gate active (1) or paused (0).")
         self.book_impact_5s = Gauge("vrlg_book_impact_5s", "Sum of display/TopDepth over 5s.")
         self.cooldown_s = Gauge("vrlg_cooldown_s", "Current cooldown window (s).")
+        self.data_staleness_ms = Gauge("vrlg_data_staleness_ms", "Age of the latest feature snapshot (ms).")  # 〔この行がすること〕 特徴量の鮮度（ms）を可視化
+        self.staleness_skips = Counter("vrlg_staleness_skips", "Skips due to stale features.")  # 〔この行がすること〕 鮮度不足でのスキップ回数をカウント
+        self.gate_phase_miss = Counter("vrlg_gate_phase_miss", "Gate miss count: phase window not satisfied.")  # 〔この行がすること〕 位相ゲート不成立の回数を数える
+        self.gate_dob_miss = Counter("vrlg_gate_dob_miss", "Gate miss count: DoB not thin enough.")  # 〔この行がすること〕 DoB 薄さ不成立の回数を数える
+        self.gate_spread_miss = Counter("vrlg_gate_spread_miss", "Gate miss count: spread below threshold.")  # 〔この行がすること〕 スプレッド閾未満の回数を数える
+        self.gate_obi_miss = Counter("vrlg_gate_obi_miss", "Gate miss count: |OBI| above limit.")  # 〔この行がすること〕 OBI 上限超過の回数を数える
+        self.gate_all_pass = Counter("vrlg_gate_all_pass", "All gates passed (pre-signal).")  # 〔この行がすること〕 4 条件すべて通過した回数を数える
         self.open_maker_btc = Gauge("vrlg_open_maker_btc", "Open maker exposure (BTC).")  # 〔この行がすること〕 未約定メーカー合計BTCを可視化
 
         # ── Histograms（分布）
@@ -198,5 +205,54 @@ class Metrics:
         """〔この関数がすること〕 未約定メーカー合計BTCを Gauge に設定します。"""
         try:
             self.open_maker_btc.set(max(0.0, float(value)))
+        except Exception:
+            pass
+
+    def set_data_staleness_ms(self, value_ms: float) -> None:
+        """〔この関数がすること〕 最新特徴量の鮮度（ms）を Gauge に設定します。"""
+        try:
+            self.data_staleness_ms.set(max(0.0, float(value_ms)))
+        except Exception:
+            pass
+
+    def inc_staleness_skips(self) -> None:
+        """〔この関数がすること〕 鮮度不足のスキップを +1 カウントします。"""
+        try:
+            self.staleness_skips.inc()
+        except Exception:
+            pass
+
+    def inc_gate_phase_miss(self) -> None:
+        """〔この関数がすること〕 位相ゲート不成立を +1 カウントする。"""
+        try:
+            self.gate_phase_miss.inc()
+        except Exception:
+            pass
+
+    def inc_gate_dob_miss(self) -> None:
+        """〔この関数がすること〕 DoB 薄さ不成立を +1 カウントする。"""
+        try:
+            self.gate_dob_miss.inc()
+        except Exception:
+            pass
+
+    def inc_gate_spread_miss(self) -> None:
+        """〔この関数がすること〕 スプレッド閾未満を +1 カウントする。"""
+        try:
+            self.gate_spread_miss.inc()
+        except Exception:
+            pass
+
+    def inc_gate_obi_miss(self) -> None:
+        """〔この関数がすること〕 OBI 上限超過を +1 カウントする。"""
+        try:
+            self.gate_obi_miss.inc()
+        except Exception:
+            pass
+
+    def inc_gate_all_pass(self) -> None:
+        """〔この関数がすること〕 4 条件すべて通過を +1 カウントする。"""
+        try:
+            self.gate_all_pass.inc()
         except Exception:
             pass
