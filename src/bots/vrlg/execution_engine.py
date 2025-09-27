@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+
 from typing import Optional, Callable, Dict, Any  # 〔この行がすること〕 オーダーイベント用のコールバック型を使えるようにする
+
 
 from hl_core.utils.logger import get_logger
 
@@ -40,7 +42,9 @@ class ExecutionEngine:
     - フィル後の同方向クールダウン（2×R* 秒）を管理
     """
 
+
     on_order_event: Optional[Callable[[str, Dict[str, Any]], None]]
+
     _open_maker_btc: float
     _order_size: dict[str, float]
 
@@ -63,11 +67,11 @@ class ExecutionEngine:
         self._last_fill_side: Optional[str] = None  # "BUY" or "SELL"
         self._last_fill_time: float = 0.0
         self._period_s: float = 1.0  # RotationDetector から更新注入予定
+
         self.on_order_event: Optional[Callable[[str, Dict[str, Any]], None]] = None  # 〔この行がすること〕 'skip'/'submitted'/'reject'/'cancel' を Strategy 側へ通知するコールバック
 
         self._open_maker_btc: float = 0.0  # 〔この属性がすること〕 未キャンセルの maker 注文サイズ合計（BTC）を管理
         self._order_size: Dict[str, float] = {}  # 〔この属性がすること〕 order_id → 発注 total サイズの対応
-
 
     def set_period_hint(self, period_s: float) -> None:
         """〔このメソッドがすること〕 R*（推定周期）ヒントを注入し、クールダウン計算に使います。"""
@@ -191,15 +195,6 @@ class ExecutionEngine:
             except Exception:
                 pass
 
-            # 〔このブロックがすること〕 TTL/解消でキャンセルした事実を片側ごとに通知
-            try:
-                if self.on_order_event:
-                    for _oid in order_ids:
-                        self.on_order_event("cancel", {"order_id": str(_oid)})
-
-            except Exception:
-                pass
-
 
     async def flatten_ioc(self) -> None:
         """〔このメソッドがすること〕 市場成行（IOC）で素早くフラット化します（スケルトン）。"""
@@ -263,7 +258,6 @@ class ExecutionEngine:
             await cancel_order(self.symbol, order_id)  # type: ignore[misc]
             # 〔この行がすること〕 手動キャンセルでも露出を減算
             self._reduce_open_maker(order_id)
-
             # 〔このブロックがすること〕 手動キャンセルの通知（露出も併記）
             try:
                 if self.on_order_event:
