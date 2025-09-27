@@ -106,6 +106,12 @@ class SignalCfg(_BaseConfig):
     z: float = 0.6
     obi_limit: float = 0.6
     T_roll: float = 30.0
+    # 〔このフィールド群がすること〕 RotationDetector の挙動を調整します
+    p_thresh: float = 0.01            # p値の閾値（片側）: これ以下で有意
+    period_min_s: float = 0.8         # 周期探索の下限（秒）
+    period_max_s: float = 5.0         # 周期探索の上限（秒）
+    min_boundary_samples: int = 200   # 位相境界で必要な最小サンプル数
+    min_off_samples: int = 50         # 非境界で必要な最小サンプル数
 
 
 @_decorate
@@ -117,6 +123,7 @@ class ExecCfg(_BaseConfig):
     min_display_btc: float = 0.01
     max_exposure_btc: float = 0.8
     cooldown_factor: float = 2.0
+    side_mode: str = "both"        # 〔このフィールドがすること〕 発注の向き: "both" | "buy" | "sell"
     offset_ticks_normal: float = 0.5   # 〔このフィールドがすること〕 通常置きの価格オフセット（±tick）
     offset_ticks_deep: float = 1.5     # 〔このフィールドがすること〕 深置きの価格オフセット（±tick）
     spread_collapse_ticks: float = 1.0 # 〔このフィールドがすること〕 早期IOCの縮小判定のしきい値（tick）
@@ -143,6 +150,7 @@ class LatencyCfg(_BaseConfig):
 
     ingest_ms: int = 10
     order_rt_ms: int = 60
+    max_staleness_ms: int = 300  # 〔このフィールドがすること〕 この ms を超えて古い特徴量は発注ロジックから除外
 
 
 @_decorate
@@ -186,6 +194,11 @@ def coerce_vrlg_config(raw: Any) -> VRLGConfig:
         "z": float(sec_signal.get("z", 0.6)),
         "obi_limit": float(sec_signal.get("obi_limit", 0.6)),
         "T_roll": float(sec_signal.get("T_roll", 30.0)),
+        "p_thresh": float(sec_signal.get("p_thresh", 0.01)),
+        "period_min_s": float(sec_signal.get("period_min_s", 0.8)),
+        "period_max_s": float(sec_signal.get("period_max_s", 5.0)),
+        "min_boundary_samples": int(sec_signal.get("min_boundary_samples", 200)),
+        "min_off_samples": int(sec_signal.get("min_off_samples", 50)),
     })
     exec_ = ExecCfg(**{
         "order_ttl_ms": int(sec_exec.get("order_ttl_ms", 1000)),
@@ -193,6 +206,7 @@ def coerce_vrlg_config(raw: Any) -> VRLGConfig:
         "min_display_btc": float(sec_exec.get("min_display_btc", 0.01)),
         "max_exposure_btc": float(sec_exec.get("max_exposure_btc", 0.8)),
         "cooldown_factor": float(sec_exec.get("cooldown_factor", 2.0)),
+        "side_mode": str(sec_exec.get("side_mode", "both")),
         "offset_ticks_normal": float(sec_exec.get("offset_ticks_normal", 0.5)),
         "offset_ticks_deep": float(sec_exec.get("offset_ticks_deep", 1.5)),
         "spread_collapse_ticks": float(sec_exec.get("spread_collapse_ticks", 1.0)),
@@ -211,6 +225,7 @@ def coerce_vrlg_config(raw: Any) -> VRLGConfig:
     latency = LatencyCfg(**{
         "ingest_ms": int(sec_latency.get("ingest_ms", 10)),
         "order_rt_ms": int(sec_latency.get("order_rt_ms", 60)),
+        "max_staleness_ms": int(sec_latency.get("max_staleness_ms", 300)),
     })
 
     return VRLGConfig(symbol=symbol, signal=signal, exec=exec_, risk=risk, latency=latency)
