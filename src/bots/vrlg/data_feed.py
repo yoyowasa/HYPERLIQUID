@@ -201,6 +201,7 @@ async def run_feeds(cfg, out_queue: "asyncio.Queue[FeatureSnapshot]") -> None:
 
         # Allow immediate import/connection failures to surface so we can fall back.
         await asyncio.sleep(0)
+
         if producer_task.done() and producer_task.exception():
             logger.warning(
                 "level2 subscription failed instantly (%s); switching to synthetic feed",
@@ -210,6 +211,7 @@ async def run_feeds(cfg, out_queue: "asyncio.Queue[FeatureSnapshot]") -> None:
                 _synthetic_level1(lv1_queue, tick),
                 name="l1_synth",
             )
+
             using_synthetic = True
 
     pump_task = asyncio.create_task(
@@ -227,6 +229,7 @@ async def run_feeds(cfg, out_queue: "asyncio.Queue[FeatureSnapshot]") -> None:
             )
 
             # If the producer failed and we were using WS, fall back to synthetic once.
+
             if producer_task in done and producer_task and producer_task.exception():
                 if not using_synthetic:
                     logger.warning(
@@ -241,6 +244,7 @@ async def run_feeds(cfg, out_queue: "asyncio.Queue[FeatureSnapshot]") -> None:
                     tasks = [pump_task, producer_task]
                     continue
                 raise producer_task.exception()
+
 
             # If any task completed without exception we simply exit (likely cancellation).
             if any(t.exception() for t in done if t is not producer_task):
