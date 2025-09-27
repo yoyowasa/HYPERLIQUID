@@ -157,6 +157,7 @@ class ExecutionEngine:
                 if oid:
                     self._open_maker_btc += float(child_total)
                     self._order_size[str(oid)] = float(child_total)
+                    # 〔このブロックがすること〕 発注が通った事実を通知（露出も併記し、Risk 用に display/total を渡す）
                     try:
                         if self.on_order_event:
                             self.on_order_event(
@@ -167,6 +168,8 @@ class ExecutionEngine:
                                     "order_id": str(oid),
                                     "open_maker_btc": float(self._open_maker_btc),
                                     "trace_id": self.trace_id,
+                                    "display": float(child_display),   # RiskManager の板消費率集計に使う表示量
+                                    "total": float(child_total),       # 参考：この子注文の総量
                                 },
                             )
                     except Exception:
