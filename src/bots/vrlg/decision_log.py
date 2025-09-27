@@ -1,5 +1,4 @@
 
-
 # 〔このモジュールがすること〕
 # VRLG の意思決定イベントを「1行JSON」で記録します（リングバッファ + 任意でファイル書き出し）。
 # ログ項目例: signal/order_intent/order_submitted/exit/risk_pause/fill/block_interval など。

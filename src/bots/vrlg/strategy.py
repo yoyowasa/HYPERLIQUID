@@ -49,9 +49,7 @@ class VRLGStrategy:
     """
 
 
-
     def __init__(self, config_path: str, paper: bool, prom_port: Optional[int] = None, decisions_file: Optional[str] = None) -> None:  # 〔この行がすること〕 意思決定ログの出力先を受け取れるようにする
-
 
         """〔このメソッドがすること〕
         TOML/YAML 設定を読み込み、実行モード（paper/live）を保持します。
@@ -185,6 +183,14 @@ class VRLGStrategy:
                 self.metrics.inc_orders_rejected(1)
             elif kind == "cancel":
                 self.metrics.inc_orders_canceled(1)
+        except Exception:
+            pass
+
+
+        # 〔このブロックがすること〕 open_maker_btc が含まれていれば Gauge を更新
+        try:
+            if "open_maker_btc" in fields:
+                self.metrics.set_open_maker_btc(float(fields["open_maker_btc"]))
         except Exception:
             pass
 
@@ -339,9 +345,7 @@ class VRLGStrategy:
 
                     await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
 
-
                     self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
-
 
                 else:
                     # 早期エグジット候補：スプレッドが 1 tick に縮小したら即クローズ
@@ -363,7 +367,7 @@ class VRLGStrategy:
                         self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
                         # 縮小しなかった → TTL まで待って通常解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
-<
+
                         await self.exe.flatten_ioc()
                         await _cancel_stops_and_timers()
 
@@ -418,9 +422,7 @@ async def _run(argv: list[str]) -> int:
     if uvloop is not None:
         uvloop.install()
 
-
     strategy = VRLGStrategy(config_path=args.config, paper=not args.live, prom_port=args.prom_port, decisions_file=args.decisions_file)  # 〔この行がすること〕 CLI からロガーへ出力先を渡す
-
 
     await strategy.start()
 
