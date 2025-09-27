@@ -58,6 +58,8 @@ class ExecutionEngine:
         self.min_display: float = float(_safe(cfg, "exec", "min_display_btc", 0.01))
         self.max_exposure: float = float(_safe(cfg, "exec", "max_exposure_btc", 0.8))
         self.cooldown_factor: float = float(_safe(cfg, "exec", "cooldown_factor", 2.0))
+        self.side_mode: str = str(_safe(cfg, "exec", "side_mode", "both")).lower()  # 〔この行がすること〕 片面/両面モード設定を保持
+        self.splits: int = int(_safe(cfg, "exec", "splits", 1))  # 〔この行がすること〕 1クリップを何分割で出すか（片面あたりの子注文本数）
         # 〔この行がすること〕 通常置きのオフセットを保持
         self.offset_ticks_normal: float = float(_safe(cfg, "exec", "offset_ticks_normal", 0.5))
         # 〔この行がすること〕 深置きのオフセットを保持
@@ -69,6 +71,7 @@ class ExecutionEngine:
         self._period_s: float = 1.0  # RotationDetector から更新注入予定
 
         self.on_order_event: Optional[Callable[[str, Dict[str, Any]], None]] = None  # 〔この行がすること〕 'skip'/'submitted'/'reject'/'cancel' を Strategy 側へ通知するコールバック
+        self.trace_id: Optional[str] = None  # 〔この行がすること〕 Strategy から注入される相関IDを保持します
 
         self._open_maker_btc: float = 0.0  # 〔この属性がすること〕 未キャンセルの maker 注文サイズ合計（BTC）を管理
         self._order_size: Dict[str, float] = {}  # 〔この属性がすること〕 order_id → 発注 total サイズの対応
@@ -80,91 +83,102 @@ class ExecutionEngine:
 
     async def place_two_sided(self, mid: float, total: float, deepen: bool = False) -> list[str]:
         """〔このメソッドがすること〕
-        ミッド±offset_ticks×tick に post-only Iceberg を両面で出し、order_id を返します。
-        deepen=True のときは offset_ticks=1.5（深置き）、通常は 0.5 を使います。
-        display サイズは total×display_ratio を min/max で挟みます。
+        ミッド±offset_ticks×tick に post-only のアイスバーグ指値を出します。
+        - side_mode に応じて BUY / SELL / 両面 を選択
+        - splits>1 のとき、片面あたり splits 本の「子注文」を出します
+          child_total = total / splits
+          child_display = min(max(child_total*display_ratio, min_display), child_total)
+        - クールダウンや露出上限で片側や子注文をスキップします
         """
-        # 〔この行がすること〕 設定のオフセット値を採用
         offset_ticks = self.offset_ticks_deep if deepen else self.offset_ticks_normal
         px_bid = _round_to_tick(mid - offset_ticks * self.tick, self.tick)
         px_ask = _round_to_tick(mid + offset_ticks * self.tick, self.tick)
-        display = max(self.min_display, min(total, total * self.display_ratio))
+
+        if total <= 0.0:
+            return []
+
+        sides = [("BUY", px_bid), ("SELL", px_ask)]
+        if getattr(self, "side_mode", "both") == "buy":
+            sides = [("BUY", px_bid)]
+        elif getattr(self, "side_mode", "both") == "sell":
+            sides = [("SELL", px_ask)]
+
+        splits = max(1, int(self.splits))
+        child_total = float(total) / float(splits)
 
         ids: list[str] = []
-        for side, price in (("BUY", px_bid), ("SELL", px_ask)):
-            # 〔このブロックがすること〕 上限を超えるならその片側はスキップ（意思決定ログへ通知）
-            if (self._open_maker_btc + total) > self.max_exposure:
-                try:
-                    if self.on_order_event:
-
-                        self.on_order_event(
-                            "skip",
-                            {
-                                "side": side,
-                                "reason": "exposure",
-                                "open_maker_btc": float(self._open_maker_btc),
-                            },
-                        )
-
-                except Exception:
-                    pass
-                continue
+        for side, price in sides:
             if self._in_cooldown(side):
-                logger.debug("cooldown active: skip %s", side)
-                # 〔このブロックがすること〕 クールダウンによるスキップを上位へ通知（意思決定ログ用）
                 try:
                     if self.on_order_event:
-
                         self.on_order_event(
                             "skip",
                             {
                                 "side": side,
                                 "reason": "cooldown",
                                 "open_maker_btc": float(self._open_maker_btc),
+                                "trace_id": self.trace_id,
                             },
                         )
-
                 except Exception:
                     pass
                 continue
-            oid = await self._post_only_iceberg(side, price, total, display, self.ttl_ms / 1000.0)
-            if oid:
 
-                # 〔この行がすること〕 受理された maker 注文の露出を加算し、order_id を記録
-                self._open_maker_btc += float(total)
-                self._order_size[str(oid)] = float(total)
-                # 〔このブロックがすること〕 発注が通った事実を通知（片側ごと）
-                try:
-                    if self.on_order_event:
-                        self.on_order_event(
-                            "submitted",
-                            {
-                                "side": side,
-                                "price": float(price),
-                                "order_id": str(oid),
-                                "open_maker_btc": float(self._open_maker_btc),
-                            },
-                        )
+            for _ in range(splits):
+                if (self._open_maker_btc + child_total) > self.max_exposure:
+                    try:
+                        if self.on_order_event:
+                            self.on_order_event(
+                                "skip",
+                                {
+                                    "side": side,
+                                    "reason": "exposure",
+                                    "open_maker_btc": float(self._open_maker_btc),
+                                    "trace_id": self.trace_id,
+                                },
+                            )
+                    except Exception:
+                        pass
+                    break
 
-                except Exception:
-                    pass
-                ids.append(oid)
-            else:
-                # 〔このブロックがすること〕 取引所から拒否/未受理（None）を通知
-                try:
-                    if self.on_order_event:
+                child_display = min(
+                    max(child_total * self.display_ratio, self.min_display),
+                    child_total,
+                )
 
-                        self.on_order_event(
-                            "reject",
-                            {
-                                "side": side,
-                                "price": float(price),
-                                "open_maker_btc": float(self._open_maker_btc),
-                            },
-                        )
-
-                except Exception:
-                    pass
+                oid = await self._post_only_iceberg(side, price, child_total, child_display, self.ttl_ms / 1000.0)
+                if oid:
+                    self._open_maker_btc += float(child_total)
+                    self._order_size[str(oid)] = float(child_total)
+                    try:
+                        if self.on_order_event:
+                            self.on_order_event(
+                                "submitted",
+                                {
+                                    "side": side,
+                                    "price": float(price),
+                                    "order_id": str(oid),
+                                    "open_maker_btc": float(self._open_maker_btc),
+                                    "trace_id": self.trace_id,
+                                },
+                            )
+                    except Exception:
+                        pass
+                    ids.append(oid)
+                else:
+                    try:
+                        if self.on_order_event:
+                            self.on_order_event(
+                                "reject",
+                                {
+                                    "side": side,
+                                    "price": float(price),
+                                    "open_maker_btc": float(self._open_maker_btc),
+                                    "trace_id": self.trace_id,
+                                },
+                            )
+                    except Exception:
+                        pass
         return ids
 
     async def wait_fill_or_ttl(self, order_ids: list[str], timeout_s: float) -> None:
@@ -190,6 +204,7 @@ class ExecutionEngine:
                             {
                                 "order_id": str(_oid),
                                 "open_maker_btc": float(self._open_maker_btc),
+                                "trace_id": self.trace_id,
                             },
                         )
             except Exception:
@@ -263,7 +278,11 @@ class ExecutionEngine:
                 if self.on_order_event:
                     self.on_order_event(
                         "cancel",
-                        {"order_id": str(order_id), "open_maker_btc": float(self._open_maker_btc)},
+                        {
+                            "order_id": str(order_id),
+                            "open_maker_btc": float(self._open_maker_btc),
+                            "trace_id": self.trace_id,
+                        },
                     )
             except Exception:
                 pass

@@ -76,6 +76,8 @@ class VRLGStrategy:
         # 〔この属性がすること〕: 各コンポーネントの実体を生成し司令塔に保持します。
         self.rot = RotationDetector(self.cfg)
         self.sigdet = SignalDetector(self.cfg)
+        # 〔この行がすること〕 シグナル判定のゲート評価を受け取り、メトリクス/意思決定ログへ反映できるようにする
+        self.sigdet.on_gate_eval = self._on_gate_eval
         self.exe = ExecutionEngine(self.cfg, paper=self.paper)
         # 〔この行がすること〕 発注イベント（skip/submitted/reject/cancel）を Strategy で受け取れるよう接続
         self.exe.on_order_event = self._on_order_event
@@ -109,9 +111,36 @@ class VRLGStrategy:
         while not self._stopping.is_set():
             try:
                 feat = await self.q_features.get()
+                # 〔このブロックがすること〕 特徴量の「鮮度」を計算し、メトリクス更新＆しきい値超過なら処理をスキップします
+                now_ts = time.time()
+                feat_ts = float(feat.t)
+                enforce_guard = feat_ts > 1e6  # 〔この条件がすること〕 epoch 秒である場合のみ鮮度ガードを有効化します
+                staleness_ms = 0.0
+                if enforce_guard:
+                    staleness_ms = max(0.0, (now_ts - feat_ts) * 1000.0)
+                self.metrics.set_data_staleness_ms(staleness_ms)
+                max_stale = float(getattr(self.cfg.latency, "max_staleness_ms", 300))
+                if enforce_guard and staleness_ms > max_stale:
+                    self.metrics.inc_staleness_skips()
+                    self.decisions.log("stale_feature", staleness_ms=float(staleness_ms), max_allowed_ms=float(max_stale))
+                    continue
                 self.metrics.observe_spread(float(feat.spread_ticks))  # 〔この行がすること〕 観測スプレッド（ticks）をヒストグラムへ
                 self.rot.update(feat.t, feat.dob, feat.spread_ticks)
                 self.metrics.set_period(self.rot.current_period() or 0.0)   # 〔この行がすること〕 推定された周期R*をGaugeへ
+                # 〔このブロックがすること〕 周期検出の品質（score / p値 / サンプル数）をメトリクスに反映します
+                try:
+                    est = self.rot.last_estimation()
+                except Exception:
+                    est = None
+                try:
+                    self.metrics.set_rotation_quality(
+                        score=float(getattr(est, "score", 0.0) if est is not None else 0.0),
+                        n_boundary=int(getattr(est, "n_boundary", 0) if est is not None else 0),
+                        p_dob=getattr(est, "p_dob", None) if est is not None else None,
+                        p_spr=getattr(est, "p_spread", None) if est is not None else None,
+                    )
+                except Exception:
+                    logger.debug("metrics.set_rotation_quality failed (ignored)")
                 self.metrics.set_active(self.rot.is_active())               # 〔この行がすること〕 稼働可能=1/観察モード=0 をGaugeへ
                 self._last_features = feat
                 if not self.rot.is_active():
@@ -120,7 +149,14 @@ class VRLGStrategy:
                 self.exe.set_period_hint(self.rot.current_period() or 1.0)
                 sig = self.sigdet.update_and_maybe_signal(feat.t, feat.with_phase(phase))
                 if sig:
-                    self.decisions.log("signal", phase=phase, spread_ticks=float(feat.spread_ticks), dob=float(feat.dob), obi=float(feat.obi))  # 〔この行がすること〕 シグナルの根拠となる特徴量を記録
+                    self.decisions.log(
+                        "signal",
+                        phase=phase,
+                        spread_ticks=float(feat.spread_ticks),
+                        dob=float(feat.dob),
+                        obi=float(feat.obi),
+                        trace_id=sig.trace_id,
+                    )  # 〔この行がすること〕 シグナルの根拠となる特徴量を記録
                     self.metrics.inc_signal()  # 〔この行がすること〕 シグナル発火回数をカウントアップ
                     await self.q_signals.put(sig)
             except asyncio.CancelledError:
@@ -196,6 +232,52 @@ class VRLGStrategy:
         try:
             if "open_maker_btc" in fields:
                 self.metrics.set_open_maker_btc(float(fields["open_maker_btc"]))
+        except Exception:
+            pass
+
+    def _on_gate_eval(self, g: dict) -> None:
+        """〔この関数がすること〕
+        SignalDetector から受け取ったゲート評価をメトリクスに反映し、
+        位相ゲートは通過しているのに他ゲートで不成立のときだけ decision log に記録します。
+        """
+        try:
+            phase_gate = bool(g.get("phase_gate", False))
+            dob_thin = bool(g.get("dob_thin", False))
+            spread_ok = bool(g.get("spread_ok", False))
+            obi_ok = bool(g.get("obi_ok", False))
+            all_pass = phase_gate and dob_thin and spread_ok and obi_ok
+
+            if all_pass:
+                self.metrics.inc_gate_all_pass()
+                return
+
+            # 個別ミスをカウント
+            if not phase_gate:
+                self.metrics.inc_gate_phase_miss()
+            if not dob_thin:
+                self.metrics.inc_gate_dob_miss()
+            if not spread_ok:
+                self.metrics.inc_gate_spread_miss()
+            if not obi_ok:
+                self.metrics.inc_gate_obi_miss()
+
+            # 位相ゲートは通っていて他で落ちたときだけ、軽量にログへ（スパム防止）
+            if phase_gate and not all_pass:
+                missing = []
+                if not dob_thin:
+                    missing.append("dob")
+                if not spread_ok:
+                    missing.append("spread")
+                if not obi_ok:
+                    missing.append("obi")
+                self.decisions.log(
+                    "gate_fail",
+                    missing=missing,
+                    phase=float(g.get("phase", 0.0)),
+                    spread_ticks=float(g.get("spread_ticks", 0.0)),
+                    dob=float(g.get("dob", 0.0)),
+                    obi=float(g.get("obi", 0.0)),
+                )
         except Exception:
             pass
 
@@ -285,8 +367,15 @@ class VRLGStrategy:
                     continue
 
                 # 〔この行がすること〕 口座残高の0.2–0.5%を基準に、リスク倍率を反映して1クリップのBTCサイズを決める
+                self.exe.trace_id = getattr(sig, "trace_id", None)  # 〔この行がすること〕 発注エンジンへ相関IDを注入し、以降のイベントに載せる
                 clip = self.sizer.next_size(mid=sig.mid, risk_mult=adv.size_multiplier)
-                self.decisions.log("order_intent", mid=float(sig.mid), clip=float(clip), deepen=bool(adv.deepen_post_only))  # 〔この行がすること〕 置くサイズと深さの意図を記録
+                self.decisions.log(
+                    "order_intent",
+                    mid=float(sig.mid),
+                    clip=float(clip),
+                    deepen=bool(adv.deepen_post_only),
+                    trace_id=getattr(sig, "trace_id", None),
+                )  # 〔この行がすること〕 置くサイズと深さの意図を記録
 
                 # 板消費率トラッキングのため display を事前計算（Feature の DoB 使用）
                 if self._last_features is not None:
@@ -324,6 +413,24 @@ class VRLGStrategy:
 
                 stops_cleanup_task = asyncio.create_task(_cleanup_stops_after_ts(), name="stops_cleanup")
 
+                # 〔このブロックがすること〕 発注直前の最終鮮度チェック（安全弁）
+                snap = self._last_features
+                if snap is None:
+                    self.metrics.inc_staleness_skips()
+                    self.decisions.log("stale_exec_skip", reason="no_feature")
+                    continue
+                snap_ts = float(snap.t)
+                enforce_guard = snap_ts > 1e6  # 〔この条件がすること〕 epoch 秒である場合のみ鮮度ガードを有効化します
+                staleness_ms = 0.0
+                if enforce_guard:
+                    staleness_ms = max(0.0, (time.time() - snap_ts) * 1000.0)
+                self.metrics.set_data_staleness_ms(staleness_ms)
+                max_stale = float(getattr(self.cfg.latency, "max_staleness_ms", 300))
+                if enforce_guard and staleness_ms > max_stale:
+                    self.metrics.inc_staleness_skips()
+                    self.decisions.log("stale_exec_skip", staleness_ms=float(staleness_ms), max_allowed_ms=float(max_stale))
+                    continue
+
                 order_ids = await self.exe.place_two_sided(sig.mid, clip, deepen=adv.deepen_post_only)  # 〔この行がすること〕 リスク助言に応じて「深置き」を切り替える
                 self.decisions.log("order_submitted", count=int(len(order_ids)))  # 〔この行がすること〕 実際に何件出したかを記録
                 self.metrics.inc_orders_submitted(len(order_ids))  # 〔この行がすること〕 提示した注文（maker）の件数を加算
@@ -350,7 +457,7 @@ class VRLGStrategy:
 
                     await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
 
-                    self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
+                    self.decisions.log("exit", reason="ttl", trace_id=getattr(sig, "trace_id", None))  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
 
                 else:
                     # 早期エグジット候補：スプレッドが 1 tick に縮小したら即クローズ
@@ -362,14 +469,14 @@ class VRLGStrategy:
                     )
 
                     if collapsed:
-                        self.decisions.log("exit", reason="spread_collapse")  # 〔この行がすること〕 スプレッド縮小で早期IOCしたことを記録
+                        self.decisions.log("exit", reason="spread_collapse", trace_id=getattr(sig, "trace_id", None))  # 〔この行がすること〕 スプレッド縮小で早期IOCしたことを記録
                         # 先に maker を素早くキャンセルしてから IOC で解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=0.0)
 
                         await self.exe.flatten_ioc()
                         await _cancel_stops_and_timers()
                     else:
-                        self.decisions.log("exit", reason="ttl")  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
+                        self.decisions.log("exit", reason="ttl", trace_id=getattr(sig, "trace_id", None))  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
                         # 縮小しなかった → TTL まで待って通常解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
 
