@@ -121,6 +121,7 @@ async def _feature_pump(
 ) -> None:
     """Sample the latest level-1 data every 100ms and emit features."""
 
+
     tick = float(getattr(getattr(cfg, "symbol", {}), "tick_size", 0.5))
     dt = 0.1  # 100ms cadence
     last = (0.0, 0.0, 0.0, 0.0)
@@ -166,6 +167,7 @@ async def _feature_pump(
                 except Exception:
                     pass
                 try:
+
                     out_queue.put_nowait(snap)
                 except Exception:
                     pass
@@ -201,6 +203,7 @@ async def run_feeds(cfg, out_queue: "asyncio.Queue[FeatureSnapshot]") -> None:
 
         # Allow immediate import/connection failures to surface so we can fall back.
         await asyncio.sleep(0)
+
         if producer_task.done():
             exc = producer_task.exception()
             if exc:
@@ -212,6 +215,7 @@ async def run_feeds(cfg, out_queue: "asyncio.Queue[FeatureSnapshot]") -> None:
                     _synthetic_level1(lv1_queue, tick),
                     name="l1_synth",
                 )
+
             using_synthetic = True
 
     pump_task = asyncio.create_task(
@@ -222,6 +226,7 @@ async def run_feeds(cfg, out_queue: "asyncio.Queue[FeatureSnapshot]") -> None:
     tasks = [pump_task, producer_task]
 
     try:
+
         while tasks:
             done, pending = await asyncio.wait(
                 [t for t in tasks if t is not None],
@@ -229,6 +234,7 @@ async def run_feeds(cfg, out_queue: "asyncio.Queue[FeatureSnapshot]") -> None:
             )
 
             # If the producer failed and we were using WS, fall back to synthetic once.
+
             if producer_task in done and producer_task:
                 exc = producer_task.exception()
                 if exc:
@@ -245,6 +251,7 @@ async def run_feeds(cfg, out_queue: "asyncio.Queue[FeatureSnapshot]") -> None:
                         tasks = [pump_task, producer_task]
                         continue
                     raise exc
+
 
             # If any task completed without exception we simply exit (likely cancellation).
             if any(t.exception() for t in done if t is not producer_task):

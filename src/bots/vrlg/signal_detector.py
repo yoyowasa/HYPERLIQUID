@@ -3,8 +3,13 @@ from __future__ import annotations
 import statistics
 import uuid
 from collections import deque
+
 from dataclasses import dataclass
-from typing import Callable, Deque, Optional
+
+from typing import Deque, Optional, Callable  # 〔この import がすること〕 ゲート評価通知のコールバック型を使う
+
+import uuid  # 〔この行がすること〕 trace_id を生成するための標準ライブラリを使います
+
 
 from hl_core.utils.logger import get_logger
 
@@ -15,11 +20,13 @@ logger = get_logger("VRLG.signal")
 
 @dataclass(frozen=True)
 class Signal:
+
     """〔このデータクラスがすること〕 シグナル発火時の最小情報（相関ID付き）を表します。"""
 
     t: float
     mid: float
     trace_id: str  # trace: シグナル→発注→解消を結ぶ相関ID（Step40で配線）
+
 
 
 def _get(section: object, key: str, default):
@@ -46,6 +53,7 @@ class SignalDetector:
     """
 
     def __init__(self, cfg) -> None:
+
         """〔このメソッドがすること〕 設定（N, x, y, z, obi_limit）を読み、内部バッファを初期化します。"""
 
         sig = getattr(cfg, "signal", None)
@@ -80,6 +88,7 @@ class SignalDetector:
             if n % 2 == 1:
                 return float(arr[k])
             return float(0.5 * (arr[k - 1] + arr[k]))
+
 
     def update_and_maybe_signal(self, t: float, features: FeatureSnapshot) -> Optional[Signal]:
         """〔このメソッドがすること〕
@@ -118,8 +127,25 @@ class SignalDetector:
         except Exception:
             pass
 
-        # 4 条件の同時成立
+        # 〔このブロックがすること〕 ゲート評価結果を必要なら上位へ通知（観測値も添える）
+        try:
+            if self.on_gate_eval:
+                self.on_gate_eval({
+                    "t": float(t),
+                    "phase": float(phase),
+                    "phase_gate": bool(phase_gate),
+                    "dob_thin": bool(dob_thin),
+                    "spread_ok": bool(spread_ok),
+                    "obi_ok": bool(obi_ok),
+                    "mid": float(features.mid),
+                    "dob": float(features.dob),
+                    "spread_ticks": float(features.spread_ticks),
+                    "obi": float(features.obi),
+                })
+        except Exception:
+            pass
+
         if phase_gate and dob_thin and spread_ok and obi_ok:
-            return Signal(t=float(t), mid=float(features.mid), trace_id=uuid.uuid4().hex[:12])
+            return Signal(t=t, mid=float(features.mid), trace_id=uuid.uuid4().hex[:12])  # 〔この行がすること〕 一意な相関IDを付けて返します
 
         return None
