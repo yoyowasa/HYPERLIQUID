@@ -1,36 +1,43 @@
+"""Data feed for the VRLG strategy.
+
+This module streams level-1 book data either from the real Hyperliquid
+WebSocket or from a synthetic generator (when the adapter is unavailable),
+and periodically converts it into ``FeatureSnapshot`` objects that feed the
+strategy pipeline.
+"""
+
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import math
 import time
 from dataclasses import dataclass, replace
-from typing import Optional, Protocol, runtime_checkable
+from typing import Any, Optional, Tuple
 
 from hl_core.utils.logger import get_logger
 
-logger = get_logger("VRLG.data_feed")
-
-
-@runtime_checkable
-class L1Like(Protocol):
-    """〔このプロトコルがすること〕 L1相当の最良気配データ型を表します。"""
-
-    best_bid: float
-    best_ask: float
-    bid_size_l1: float
-    ask_size_l1: float
+logger = get_logger("VRLG.data")
 
 
 @dataclass(frozen=True)
 class FeatureSnapshot:
-    """
-    〔このデータクラスがすること〕
-    100msごとの特徴量スナップショットを表します。
-    t: 取得時刻（秒, time.time()）
-    mid: (bestBid + bestAsk) / 2
-    spread_ticks: (bestAsk - bestBid) / tick_size
-    dob: bidSize_L1 + askSize_L1
-    obi: (bidSize_L1 - askSize_L1) / max(dob, 1e-9)
-    block_phase: RotationDetector が付与する位相（0〜1）
+    """A 100ms feature sample consumed by the strategy.
+
+    Attributes
+    ----------
+    t:
+        Generation timestamp in epoch seconds.
+    mid:
+        Mid-price derived from the best bid/ask.
+    spread_ticks:
+        Spread normalised by the configured tick size.
+    dob:
+        "Depth on book" – the sum of the best bid and ask sizes.
+    obi:
+        Order-book imbalance, normalised by ``dob``.
+    block_phase:
+        Phase hint supplied later by the rotation detector.
     """
 
     t: float
@@ -41,92 +48,212 @@ class FeatureSnapshot:
     block_phase: Optional[float] = None
 
     def with_phase(self, phase: float) -> "FeatureSnapshot":
-        """〔このメソッドがすること〕 block_phase を埋めた新インスタンスを返します。"""
+        """Return a copy of this snapshot with ``block_phase`` set."""
 
-        return replace(self, block_phase=phase)
+        return replace(self, block_phase=float(phase))
 
 
-def _tick_size_from_cfg(cfg) -> float:
-    """〔この関数がすること〕 設定オブジェクトから tick_size を安全に取り出します。"""
+def _get(obj: Any, key: str, default: Any = None) -> Any:
+    """Fetch ``key`` from either an attribute or mapping, safely."""
 
     try:
-        return float(getattr(cfg.symbol, "tick_size"))
+        return getattr(obj, key)
     except Exception:
         try:
-            return float(cfg["symbol"]["tick_size"])  # type: ignore[index]
-        except Exception as e:  # pragma: no cover
-            raise ValueError("tick_size not found in config") from e
+            return obj[key]  # type: ignore[index]
+        except Exception:
+            return default
 
 
-def compute_features(book: L1Like, tick_size: float, ts: Optional[float] = None) -> FeatureSnapshot:
-    """
-    〔この関数がすること〕
-    L1 の最良気配から mid / spread_ticks / DoB / OBI を計算し、FeatureSnapshot を返します。
-    """
-
-    t = time.time() if ts is None else ts
-    mid = (book.best_bid + book.best_ask) / 2.0
-    spread_ticks = (book.best_ask - book.best_bid) / max(tick_size, 1e-12)
-    dob = float(book.bid_size_l1) + float(book.ask_size_l1)
-    obi = 0.0
-    if dob > 0:
-        obi = (float(book.bid_size_l1) - float(book.ask_size_l1)) / dob
-    return FeatureSnapshot(t=t, mid=mid, spread_ticks=spread_ticks, dob=dob, obi=obi)
-
-
-async def run_feeds(cfg, q_features: asyncio.Queue) -> None:
-    """
-    〔この関数がすること〕
-    - （後で実装する）WS購読タスクを起動し、最新の L1 を保持する
-    - 100ms ごとに最新L1から FeatureSnapshot を作って q_features に入れる
-    - hl_core.api.ws が未実装の場合は待機（ログを出す）
-    """
-
-    tick_size = _tick_size_from_cfg(cfg)
-    last_book: Optional[L1Like] = None
-    stop = asyncio.Event()
-
-    async def _consume_level2() -> None:
-        """〔この内部関数がすること〕 level2 の WS を購読して last_book を更新します。"""
-
-        nonlocal last_book
-        try:
-            from hl_core.api.ws import subscribe_level2  # type: ignore
-        except Exception as e:
-            logger.warning("WS adapter not available yet: %s; waiting…", e)
-            await stop.wait()
-            return
-
-        symbol = getattr(cfg.symbol, "name", None) or (cfg["symbol"]["name"])  # type: ignore[index]
-        async for book in subscribe_level2(symbol):
-            last_book = book
-
-    async def _feature_clock() -> None:
-        """〔この内部関数がすること〕 100ms 間隔で FeatureSnapshot を生成しキューへ投入します。"""
-
-        interval = 0.1
-        while not stop.is_set():
-            started = time.perf_counter()
-            if last_book is not None:
-                snap = compute_features(last_book, tick_size)
-                try:
-                    q_features.put_nowait(snap)
-                except asyncio.QueueFull:
-                    _ = q_features.get_nowait()
-                    await q_features.put(snap)
-            elapsed = time.perf_counter() - started
-            await asyncio.sleep(max(0.0, interval - elapsed))
-
-    tasks = [
-        asyncio.create_task(_consume_level2(), name="vrlg.level2"),
-        asyncio.create_task(_feature_clock(), name="vrlg.feature_clock"),
-    ]
+async def _subscribe_level1(
+    symbol: str,
+    out: "asyncio.Queue[Tuple[float, float, float, float]]",
+    subscribe_level2,
+) -> None:
+    """Stream best bid/ask quotes from the exchange WebSocket."""
 
     try:
-        await asyncio.gather(*tasks)
+        async for book in subscribe_level2(symbol):
+            bb = float(_get(book, "best_bid", 0.0))
+            ba = float(_get(book, "best_ask", 0.0))
+            bs = float(_get(book, "bid_size_l1", 0.0))
+            asz = float(_get(book, "ask_size_l1", 0.0))
+            await out.put((bb, ba, bs, asz))
     except asyncio.CancelledError:
-        stop.set()
-        for t in tasks:
-            t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
         raise
+    except Exception as exc:
+        logger.warning("level2 stream failed: %s", exc)
+        raise
+
+
+async def _synthetic_level1(
+    out: "asyncio.Queue[Tuple[float, float, float, float]]",
+    tick: float,
+) -> None:
+    """Emit synthetic level-1 quotes with boundary structure for testing."""
+
+    dt = 0.05  # 50ms resolution to ensure smooth 100ms sampling.
+    base_mid = 70_000.0
+    period_s = 2.0
+    i = 0
+    try:
+        while True:
+            phase = ((i * dt) % period_s) / period_s
+            boundary = phase < 0.15 or phase > 0.85
+            spread_ticks = 3.0 if boundary else 1.0
+            spread = spread_ticks * max(tick, 1e-12)
+            mid = base_mid * (1.0 + 0.00001 * math.sin(2.0 * math.pi * i / 997.0))
+            best_bid = mid - spread / 2.0
+            best_ask = mid + spread / 2.0
+            bid_size = 600.0 if boundary else 1_200.0
+            ask_size = 600.0 if boundary else 1_200.0
+            await out.put((best_bid, best_ask, bid_size, ask_size))
+            i += 1
+            await asyncio.sleep(dt)
+    except asyncio.CancelledError:
+        raise
+
+
+async def _feature_pump(
+    cfg,
+    out_queue: "asyncio.Queue[FeatureSnapshot]",
+    lv1_queue: "asyncio.Queue[Tuple[float, float, float, float]]",
+) -> None:
+    """Sample the latest level-1 data every 100ms and emit features."""
+
+    tick = float(getattr(getattr(cfg, "symbol", {}), "tick_size", 0.5))
+    dt = 0.1  # 100ms cadence
+    last = (0.0, 0.0, 0.0, 0.0)
+    last_mid = 0.0
+    next_ts = time.time()
+
+    try:
+        while True:
+            try:
+                while True:
+                    last = lv1_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+
+            bb, ba, bs, asz = last
+            if bb > 0.0 and ba > 0.0:
+                last_mid = (bb + ba) / 2.0
+                spread_ticks = (ba - bb) / max(tick, 1e-12)
+            else:
+                spread_ticks = 0.0
+
+            if last_mid <= 0.0:
+                await asyncio.sleep(dt)
+                next_ts = time.time() + dt
+                continue
+
+            dob = bs + asz
+            obi = 0.0 if dob <= 0.0 else (bs - asz) / max(dob, 1e-9)
+
+            snap = FeatureSnapshot(
+                t=time.time(),
+                mid=last_mid,
+                spread_ticks=spread_ticks,
+                dob=dob,
+                obi=obi,
+            )
+
+            try:
+                out_queue.put_nowait(snap)
+            except asyncio.QueueFull:
+                try:
+                    _ = out_queue.get_nowait()
+                except Exception:
+                    pass
+                try:
+                    out_queue.put_nowait(snap)
+                except Exception:
+                    pass
+
+            next_ts += dt
+            await asyncio.sleep(max(0.0, next_ts - time.time()))
+    except asyncio.CancelledError:
+        raise
+
+
+async def run_feeds(cfg, out_queue: "asyncio.Queue[FeatureSnapshot]") -> None:
+    """Run the VRLG data feed with automatic synthetic fallback."""
+
+    symbol = getattr(getattr(cfg, "symbol", {}), "name", "BTCUSD-PERP")
+    tick = float(getattr(getattr(cfg, "symbol", {}), "tick_size", 0.5))
+    lv1_queue: "asyncio.Queue[Tuple[float, float, float, float]]" = asyncio.Queue(maxsize=1024)
+
+    try:
+        from hl_core.api.ws import subscribe_level2  # type: ignore
+    except Exception as exc:
+        logger.warning("level2 WS adapter unavailable: %s; using synthetic L1", exc)
+        producer_task: Optional[asyncio.Task] = asyncio.create_task(
+            _synthetic_level1(lv1_queue, tick),
+            name="l1_synth",
+        )
+        using_synthetic = True
+    else:
+        producer_task = asyncio.create_task(
+            _subscribe_level1(symbol, lv1_queue, subscribe_level2),
+            name="l2_subscriber",
+        )
+        using_synthetic = False
+
+        # Allow immediate import/connection failures to surface so we can fall back.
+        await asyncio.sleep(0)
+        if producer_task.done() and producer_task.exception():
+            logger.warning(
+                "level2 subscription failed instantly (%s); switching to synthetic feed",
+                producer_task.exception(),
+            )
+            producer_task = asyncio.create_task(
+                _synthetic_level1(lv1_queue, tick),
+                name="l1_synth",
+            )
+            using_synthetic = True
+
+    pump_task = asyncio.create_task(
+        _feature_pump(cfg, out_queue, lv1_queue),
+        name="feature_pump",
+    )
+
+    tasks = [pump_task, producer_task]
+
+    try:
+        while tasks:
+            done, pending = await asyncio.wait(
+                [t for t in tasks if t is not None],
+                return_when=asyncio.FIRST_EXCEPTION,
+            )
+
+            # If the producer failed and we were using WS, fall back to synthetic once.
+            if producer_task in done and producer_task and producer_task.exception():
+                if not using_synthetic:
+                    logger.warning(
+                        "level2 stream failed (%s); falling back to synthetic feed",
+                        producer_task.exception(),
+                    )
+                    producer_task = asyncio.create_task(
+                        _synthetic_level1(lv1_queue, tick),
+                        name="l1_synth",
+                    )
+                    using_synthetic = True
+                    tasks = [pump_task, producer_task]
+                    continue
+                raise producer_task.exception()
+
+            # If any task completed without exception we simply exit (likely cancellation).
+            if any(t.exception() for t in done if t is not producer_task):
+                for exc_task in done:
+                    exc = exc_task.exception()
+                    if exc:
+                        raise exc
+            break
+    except asyncio.CancelledError:
+        raise
+    finally:
+        for t in tasks:
+            if t:
+                t.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.gather(*[t for t in tasks if t], return_exceptions=True)
