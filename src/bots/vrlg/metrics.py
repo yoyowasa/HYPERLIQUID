@@ -66,6 +66,7 @@ class Metrics:
         self.active_flag = Gauge("vrlg_is_active", "Rotation gate active (1) or paused (0).")
         self.book_impact_5s = Gauge("vrlg_book_impact_5s", "Sum of display/TopDepth over 5s.")
         self.cooldown_s = Gauge("vrlg_cooldown_s", "Current cooldown window (s).")
+        self.open_maker_btc = Gauge("vrlg_open_maker_btc", "Open maker exposure (BTC).")  # 〔この行がすること〕 未約定メーカー合計BTCを可視化
 
         # ── Histograms（分布）
         self.spread_ticks = Histogram(
@@ -190,5 +191,12 @@ class Metrics:
         """〔この関数がすること〕 現在のクールダウン秒数を Gauge に設定します。"""
         try:
             self.cooldown_s.set(max(0.0, float(seconds)))
+        except Exception:
+            pass
+
+    def set_open_maker_btc(self, value: float) -> None:
+        """〔この関数がすること〕 未約定メーカー合計BTCを Gauge に設定します。"""
+        try:
+            self.open_maker_btc.set(max(0.0, float(value)))
         except Exception:
             pass
