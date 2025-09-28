@@ -165,9 +165,11 @@ class VRLGSimulator:
         self.side_mode = str(getattr(self.cfg.exec, "side_mode", "both")).lower()
         self.display_ratio = float(self.cfg.exec.display_ratio)
         self.min_display = float(self.cfg.exec.min_display_btc)
+
         # 〔この2行がすること〕 バックテスト用のレイテンシ注入（ms→秒）を設定から取り込みます
         self.ingest_lag_s = float(getattr(self.cfg.latency, "ingest_ms", 10)) / 1000.0
         self.order_rt_s = float(getattr(self.cfg.latency, "order_rt_ms", 60)) / 1000.0
+
 
         # 結果蓄積
         self.trades: List[Trade] = []
@@ -192,9 +194,11 @@ class VRLGSimulator:
             return
         child_total = total / self.splits
         child_display = min(max(child_total * self.display_ratio, self.min_display), child_total)
+
         # 〔この2行がすること〕 発注が板に載る実時刻 t_post（= now + RTT）を起点に TTL を計測します
         t_post = now + self.order_rt_s
         t_exp = t_post + self.ttl_s
+
 
         sides = [("BUY", px_bid), ("SELL", px_ask)]
         if self.side_mode == "buy":
@@ -208,12 +212,14 @@ class VRLGSimulator:
 
         for side, price in sides:
             for _ in range(self.splits):
-                # 〔この行がすること〕 掲示時刻を t_post に変更（RTT を考慮）
+
                 self.orders.append(
                     Order(
                         side=side,
                         price=price,
+
                         t_post=t_post,
+
                         t_expire=t_exp,
                         display=child_display,
                         total=child_total,
@@ -270,6 +276,7 @@ class VRLGSimulator:
             spread_ticks = (ba - bb) / max(self.tick, 1e-12)
             dob = bs + asz
             obi = 0.0 if dob <= 0 else (bs - asz) / max(dob, 1e-9)
+
             # 〔この2行がすること〕 取り込み遅延（ingest）を特徴量のタイムスタンプに反映します
             eff_t = t + self.ingest_lag_s
             snap = FeatureSnapshot(t=eff_t, mid=mid, spread_ticks=spread_ticks, dob=dob, obi=obi)
@@ -288,6 +295,7 @@ class VRLGSimulator:
                 adv = self.risk.advice()
                 # 〔この行がすること〕 子注文の基準時刻も ingest 後（eff_t）に合わせます（この後 RTT を加味）
                 self._place_children(mid=sig.mid, deepen=adv.deepen_post_only, now=eff_t, top_depth=dob)
+
 
             # 掲示中の注文の約定判定
             fills = self._match_orders(bb, ba, mid, now=t)
@@ -425,8 +433,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--config", required=True, help="strategy config (TOML/YAML)")
     p.add_argument("--data-dir", required=True, help="directory containing level2-*.jsonl or *.parquet")
     p.add_argument("--max-rows", type=int, default=0, help="limit number of L2 rows for a quick run (0=all)")
+
     p.add_argument("--ingest-lag-ms", type=int, default=-1, help="inject WS ingest lag in ms (override config; -1: use config)")  # 〔この行がすること〕 取り込み遅延をCLIから上書き
     p.add_argument("--order-rt-ms", type=int, default=-1, help="inject order round-trip time in ms (override config; -1: use config)")  # 〔この行がすること〕 発注RTTをCLIから上書き
+
     return p.parse_args()
 
 
@@ -436,11 +446,13 @@ def main() -> None:
     args = parse_args()
     raw_cfg = _load_config(args.config)
     sim = VRLGSimulator(raw_cfg)
+
     # 〔このブロックがすること〕 CLI 指定があれば、設定よりも優先してレイテンシを上書きします
     if args.ingest_lag_ms is not None and args.ingest_lag_ms >= 0:
         sim.ingest_lag_s = float(args.ingest_lag_ms) / 1000.0
     if args.order_rt_ms is not None and args.order_rt_ms >= 0:
         sim.order_rt_s = float(args.order_rt_ms) / 1000.0
+
     stream = load_level2_stream(Path(args.data_dir))
 
     # 行数制限（クイック試走用）
