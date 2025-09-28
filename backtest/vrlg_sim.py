@@ -88,9 +88,11 @@ def _iter_parquet(files: List[Path]) -> Iterator[Dict[str, Any]]:
     """〔この関数がすること〕 level2-*.parquet 群を時系列順にストリーム読み出しします。"""
 
     try:
+
         pq = importlib.import_module("pyarrow.parquet")
     except ModuleNotFoundError:
         return iter(())
+
     except Exception:
         return iter(())
     for fp in sorted(files):
@@ -108,6 +110,7 @@ def load_level2_stream(data_dir: Path) -> Iterator[Tuple[float, float, float, fl
     """〔この関数がすること〕
     ディレクトリ内の level2-*.{jsonl,parquet} を見つけ、(t, best_bid, best_ask, bid_size_l1, ask_size_l1) を時系列で返します。
     """
+
 
     jsonl = [Path(p) for p in glob.glob(str(data_dir / "level2-*.jsonl"))]
     pq = [Path(p) for p in glob.glob(str(data_dir / "level2-*.parquet"))]
@@ -127,9 +130,23 @@ def load_level2_stream(data_dir: Path) -> Iterator[Tuple[float, float, float, fl
         asz = float(rec.get("ask_size_l1", 0.0))
         yield (t, bb, ba, bs, asz)
 
+    jsonl = [Path(p) for p in glob.glob(str(data_dir / "level2-*.jsonl"))]
+    pq = [Path(p) for p in glob.glob(str(data_dir / "level2-*.parquet"))]
+    it: Iterable[Dict[str, Any]]
+    if pq:
+        it = _iter_parquet(pq)
+    elif jsonl:
+        it = _iter_jsonl(jsonl)
+    else:
+        raise FileNotFoundError(f"No level2-*.jsonl/.parquet under {data_dir}")
 
-# ─────────────────────────────── 簡易 Fill モデルとシミュレータ ───────────────────────────────
-
+    for rec in it:
+        t = float(rec.get("t", time.time()))
+        bb = float(rec.get("best_bid", 0.0))
+        ba = float(rec.get("best_ask", 0.0))
+        bs = float(rec.get("bid_size_l1", 0.0))
+        asz = float(rec.get("ask_size_l1", 0.0))
+        yield (t, bb, ba, bs, asz)
 
 @dataclass
 class Order:
@@ -211,7 +228,6 @@ class VRLGSimulator:
 
         for side, price in sides:
             for _ in range(self.splits):
-                # 〔この行がすること〕 掲示時刻を t_post に変更（RTT を考慮）
                 self.orders.append(
                     Order(
                         side=side,
@@ -291,7 +307,6 @@ class VRLGSimulator:
                 adv = self.risk.advice()
                 # 〔この行がすること〕 子注文の基準時刻も ingest 後（eff_t）に合わせます（この後 RTT を加味）
                 self._place_children(mid=sig.mid, deepen=adv.deepen_post_only, now=eff_t, top_depth=dob)
-
             # 掲示中の注文の約定判定
             fills = self._match_orders(bb, ba, mid, now=t)
             for od, ref_mid in fills:
@@ -430,6 +445,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-rows", type=int, default=0, help="limit number of L2 rows for a quick run (0=all)")
     p.add_argument("--ingest-lag-ms", type=int, default=-1, help="inject WS ingest lag in ms (override config; -1: use config)")  # 〔この行がすること〕 取り込み遅延をCLIから上書き
     p.add_argument("--order-rt-ms", type=int, default=-1, help="inject order round-trip time in ms (override config; -1: use config)")  # 〔この行がすること〕 発注RTTをCLIから上書き
+
     return p.parse_args()
 
 
@@ -444,6 +460,7 @@ def main() -> None:
         sim.ingest_lag_s = float(args.ingest_lag_ms) / 1000.0
     if args.order_rt_ms is not None and args.order_rt_ms >= 0:
         sim.order_rt_s = float(args.order_rt_ms) / 1000.0
+
     stream = load_level2_stream(Path(args.data_dir))
 
     # 行数制限（クイック試走用）
