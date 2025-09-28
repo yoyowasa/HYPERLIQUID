@@ -7,7 +7,7 @@ from importlib import import_module
 from os import getenv
 from pathlib import Path
 
-from dotenv import load_dotenv
+from hl_core.utils.dotenv_compat import load_dotenv
 
 from hl_core.config import (
     load_settings,

@@ -27,12 +27,12 @@ if TYPE_CHECKING:
 
 # 〔この import 群がすること〕
 # データ購読・位相検出・シグナル判定・発注・リスク管理の各コンポーネントを司令塔に読ませます。
-from .data_feed import run_feeds, FeatureSnapshot
 from .rotation_detector import RotationDetector
 from .signal_detector import SignalDetector
 from .execution_engine import ExecutionEngine
 from .risk_management import RiskManager
 from .metrics import Metrics  # 〔この import がすること〕 Prometheus 送信ラッパを使えるようにする
+from .data_feed import run_feeds, FeatureSnapshot  # 〔この import がすること〕 L2購読→100ms特徴量生成（run_feeds）と特徴量型を使えるようにする
 from .decision_log import DecisionLogger  # 〔この import がすること〕 意思決定のJSONログを使えるようにする
 from .size_allocator import SizeAllocator  # 〔この import がすること〕 口座割合ベースのサイズ決定を使えるようにする
 
@@ -68,7 +68,6 @@ class VRLGStrategy:
         self.q_signals: asyncio.Queue = asyncio.Queue(maxsize=1024)
         self.decisions = DecisionLogger(filepath=decisions_file)  # 〔この行がすること〕 意思決定ログの出力を初期化
         self.metrics = Metrics(port=prom_port)  # 〔この行がすること〕 /metrics を起動し、以降の観測値を送れるようにする
-        self.decisions = DecisionLogger(filepath=decisions_file)  # 〔この行がすること〕 意思決定ログの出力を初期化
 
         # 〔この属性がすること〕直近の特徴量を保持し、発注時に板消費率などの参照に使います。
         self._last_features: Optional[FeatureSnapshot] = None
@@ -94,7 +93,7 @@ class VRLGStrategy:
         logger.info("VRLG starting (paper=%s, cfg=%s)", self.paper, self.config_path)
 
         # 〔この行がすること〕WebSocket購読→100ms特徴量生成タスクを起動します。
-        self._tasks.append(asyncio.create_task(run_feeds(self.cfg, self.q_features), name="data_feed"))
+        self._tasks.append(asyncio.create_task(run_feeds(self.cfg, self.q_features), name="feed_loop"))
 
         self._tasks.append(asyncio.create_task(self._signal_loop(), name="signal_loop"))
         self._tasks.append(asyncio.create_task(self._exec_loop(), name="exec_loop"))
@@ -111,6 +110,7 @@ class VRLGStrategy:
         while not self._stopping.is_set():
             try:
                 feat = await self.q_features.get()
+                self._last_features = feat  # 〔この行がすること〕 スプレッド監視や滑り計算で使うため最新スナップショットを保存
                 # 〔このブロックがすること〕 特徴量の「鮮度」を計算し、メトリクス更新＆しきい値超過なら処理をスキップします
                 now_ts = time.time()
                 feat_ts = float(feat.t)
@@ -142,7 +142,6 @@ class VRLGStrategy:
                 except Exception:
                     logger.debug("metrics.set_rotation_quality failed (ignored)")
                 self.metrics.set_active(self.rot.is_active())               # 〔この行がすること〕 稼働可能=1/観察モード=0 をGaugeへ
-                self._last_features = feat
                 if not self.rot.is_active():
                     continue
                 phase = self.rot.current_phase(feat.t)
@@ -163,49 +162,6 @@ class VRLGStrategy:
                 break
             except Exception as e:  # pragma: no cover
                 logger.exception("signal_loop error: %s", e)
-
-    async def _blocks_loop(self) -> None:
-        """〔このメソッドがすること〕
-        ブロックWSを購読し、前回ブロックとの「間隔(秒)」を測ります。
-        - RiskManager.update_block_interval() に渡してキルスイッチ判定に利用
-        - Metrics.observe_block_interval_ms() に渡して Prometheus に記録
-        """
-        try:
-            from hl_core.api.ws import subscribe_blocks  # type: ignore
-        except Exception as e:
-            logger.warning("blocks WS adapter not available: %s; blocks_loop idle.", e)
-            # アダプタ未導入環境では停止指示が来るまで待機
-            await self._stopping.wait()
-            return
-
-        last_ts = None
-        async for msg in subscribe_blocks():
-            if self._stopping.is_set():
-                break
-            # WSメッセージからブロック時刻を安全に取り出す（無ければ現在時刻）
-            try:
-                blk_ts = float(getattr(msg, "timestamp", None) or msg.get("timestamp"))  # type: ignore[attr-defined]
-            except Exception:
-                blk_ts = time.time()
-            # 前回ブロックがあれば間隔を計算して Risk/Metrics へ反映
-            if last_ts is not None:
-                interval = max(0.0, blk_ts - last_ts)
-                try:
-                    self.risk.update_block_interval(interval)          # キルスイッチ判定に寄与
-                except Exception:
-                    logger.debug("risk.update_block_interval failed (ignored)")
-                try:
-                    self.metrics.observe_block_interval_ms(interval)   # Prometheus へ記録
-                    self.decisions.log("block_interval", interval_s=float(interval))  # 〔この行がすること〕 観測したブロック間隔を記録
-                except Exception:
-                    logger.debug("metrics.observe_block_interval_ms failed (ignored)")
-
-                try:
-                    self.decisions.log("block_interval", interval_s=float(interval))  # 〔この行がすること〕 観測したブロック間隔を記録
-                except Exception:
-                    logger.debug("decision log (block_interval) failed (ignored)")
-
-            last_ts = blk_ts
 
     def _on_order_event(self, kind: str, fields: dict) -> None:
         """〔この関数がすること〕
@@ -234,6 +190,17 @@ class VRLGStrategy:
                 self.metrics.set_open_maker_btc(float(fields["open_maker_btc"]))
         except Exception:
             pass
+
+        # 〔このブロックがすること〕 "submitted" 受信時に板消費率（display/TopDepth）を登録し、Gauge を更新します
+        if kind == "submitted":
+            try:
+                disp = float(fields.get("display", 0.0))
+                topd = float(getattr(self._last_features, "dob", 0.0)) if self._last_features else 0.0
+                if disp > 0.0 and topd > 0.0:
+                    self.risk.register_order_post(display_size=disp, top_depth=topd)  # 5秒合計へ加算
+                    self.metrics.set_book_impact_5s(self.risk.book_impact_sum_5s())   # Gauge を最新化
+            except Exception:
+                pass
 
     def _on_gate_eval(self, g: dict) -> None:
         """〔この関数がすること〕
@@ -334,6 +301,48 @@ class VRLGStrategy:
                 self.exe.register_fill(side)
             except Exception:
                 logger.debug("exe.register_fill failed (ignored)")
+
+    async def _blocks_loop(self) -> None:
+        """〔このメソッドがすること〕
+        ブロックWSを購読し、隣接ブロックの間隔（秒）を計算して
+        - RiskManager.update_block_interval(interval_s) に渡す（kill‑switch 判定用）
+        - Metrics.observe_block_interval_ms(interval_ms) に送る（監視用）
+        - Decision Log にも 1 行 JSON を記録する
+        WS アダプタが無い環境では停止イベントまで安全に待機します。
+        """
+        try:
+            from hl_core.api.ws import subscribe_blocks  # type: ignore
+        except Exception as e:
+            logger.warning("blocks WS adapter not available: %s; blocks_loop idle.", e)
+            await self._stopping.wait()
+            return
+
+        prev_ts: float | None = None
+
+        async for blk in subscribe_blocks():
+            if self._stopping.is_set():
+                break
+
+            # ブロック時刻（秒）を安全に取得
+            ts = float(getattr(blk, "timestamp", None) or getattr(blk, "t", None) or time.time())
+
+            # 直前ブロックがあれば間隔を計算
+            if prev_ts is not None:
+                interval = ts - prev_ts
+                try:
+                    self.risk.update_block_interval(interval)
+                except Exception:
+                    logger.debug("risk.update_block_interval failed (ignored)")
+                try:
+                    self.metrics.observe_block_interval_ms(interval * 1000.0)
+                except Exception:
+                    logger.debug("metrics.observe_block_interval_ms failed (ignored)")
+                try:
+                    self.decisions.log("block_interval", interval_s=float(interval))
+                except Exception:
+                    logger.debug("decision log (block_interval) failed (ignored)")
+
+            prev_ts = ts
 
     async def _wait_spread_collapse(self, threshold_ticks: float = 1.0, timeout_s: float = 1.0, poll_s: float = 0.02) -> bool:
         """〔このメソッドがすること〕

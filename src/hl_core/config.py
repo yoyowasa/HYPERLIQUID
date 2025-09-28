@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any, Literal, Optional
 
-from dotenv import load_dotenv
+from hl_core.utils.dotenv_compat import load_dotenv
 from pydantic import BaseModel, field_validator
 
 
