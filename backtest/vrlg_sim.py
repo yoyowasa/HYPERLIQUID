@@ -1,230 +1,463 @@
-# 〔このモジュールがすること〕
-# 100ms ステップの簡易シミュレータです。VRLG の「周期検出→シグナル→擬似約定→指標集計」を行います。
-# 録画データ（parquet）が無い場合は合成データを生成して流します。
-# 将来は hl_core.utils.backtest の実データイテレータに差し替えるだけで動く構成です。
+# 〔このスクリプトがすること〕
+# 録画した L2（level2-*.jsonl/parquet）から 100ms 足で特徴量を生成し、
+# RotationDetector と SignalDetector を通して「post-only 指値→TTL or スプレッド縮小で解消」
+# の最小モデルでバックテストします。I/Oはローカルファイルのみで完結します。
 
 from __future__ import annotations
 
 import argparse
+import glob
 import json
-import math
+import statistics
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Generator, Iterable, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
-from hl_core.utils.logger import get_logger
-from hl_core.utils.config import load_config
-
-# 既存の VRLG コンポーネント（位相・シグナル・特徴量）を再利用します
+# 〔この import がすること〕 共通構成/部品を VRLG から再利用します
 try:
-    from bots.vrlg.rotation_detector import RotationDetector
-    from bots.vrlg.signal_detector import SignalDetector
-    from bots.vrlg.data_feed import FeatureSnapshot
-except Exception:  # 実行環境によって import パスが異なる場合のフォールバック
+    from bots.vrlg.config import coerce_vrlg_config  # type: ignore
+    from bots.vrlg.rotation_detector import RotationDetector  # type: ignore
+    from bots.vrlg.signal_detector import SignalDetector  # type: ignore
+    from bots.vrlg.data_feed import FeatureSnapshot  # type: ignore
+    from bots.vrlg.size_allocator import SizeAllocator  # type: ignore
+    from bots.vrlg.risk_management import RiskManager  # type: ignore
+except Exception:
+    from src.bots.vrlg.config import coerce_vrlg_config  # type: ignore
     from src.bots.vrlg.rotation_detector import RotationDetector  # type: ignore
     from src.bots.vrlg.signal_detector import SignalDetector  # type: ignore
     from src.bots.vrlg.data_feed import FeatureSnapshot  # type: ignore
+    from src.bots.vrlg.size_allocator import SizeAllocator  # type: ignore
+    from src.bots.vrlg.risk_management import RiskManager  # type: ignore
 
-logger = get_logger("VRLG.backtest")
+
+# ─────────────────────────────── データ構造（テスト結果など） ───────────────────────────────
 
 
 @dataclass
-class SimResult:
-    """〔このデータクラスがすること〕
-    バックテストの主要指標をまとめて保持します。
-    """
-    trades: int
-    fills: int
-    win_rate: float
-    avg_pnl_bps: float
-    avg_slip_ticks: float
-    trades_per_min: float
-    holding_ms_avg: float
-    max_dd_ticks: float
+class Trade:
+    """〔このデータクラスがすること〕 1 トレード（片側）を記録します。"""
+
+    side: str
+    t_entry: float
+    px_entry: float
+    ref_mid_at_fill: float
+    t_exit: float
+    px_exit: float
+
+    def holding_ms(self) -> float:
+        """〔このメソッドがすること〕 保有時間（ms）を返します。"""
+
+        return max(0.0, (self.t_exit - self.t_entry) * 1000.0)
+
+    def pnl_bps(self) -> float:
+        """〔このメソッドがすること〕 損益（bps, 手数料考慮なしの単純差）を返します。"""
+
+        # bps = (exit/entry - 1) * 1e4 （BUY） / 逆符号（SELL）
+        if self.px_entry <= 0:
+            return 0.0
+        ret = (self.px_exit / self.px_entry - 1.0) * 1e4
+        return ret if self.side == "BUY" else -ret
+
+    def slip_ticks(self, tick: float) -> float:
+        """〔このメソッドがすること〕 充足滑り（ticks）を返します。"""
+
+        if tick <= 0:
+            return 0.0
+        return abs(self.px_entry - self.ref_mid_at_fill) / tick
 
 
-class VRLGBacktester:
-    """〔このクラスがすること〕
-    VRLG のバックテスト実行器。合成/録画データから 100ms 特徴量を受け取り、
-    RotationDetector→SignalDetector を通してシグナルを評価し、簡易ルールで擬似約定します。
-    """
+# ─────────────────────────────── 入力（録画ファイルの読取） ───────────────────────────────
 
-    def __init__(self, cfg) -> None:
-        """〔このメソッドがすること〕
-        コンフィグから必要なパラメータを読み込み、検出器を初期化します。
-        """
-        self.cfg = cfg
-        self.tick = float(getattr(getattr(cfg, "symbol", {}), "tick_size", 0.5))
-        self.y = float(getattr(getattr(cfg, "signal", {}), "y", 2.0))
-        self.holding_target_ms = 500.0  # 目標ホールド（設計と整合）
-        self.rot = RotationDetector(cfg)
-        self.sigdet = SignalDetector(cfg)
 
-        # 集計用
-        self._pnl_ticks_sum = 0.0
-        self._slip_ticks_sum = 0.0
-        self._wins = 0
-        self._fills = 0
-        self._trades = 0
-        self._dd_min = 0.0
-        self._cum_pnl_ticks = 0.0
-        self._t0 = None
-        self._t1 = None
+def _iter_jsonl(files: List[Path]) -> Iterator[Dict[str, Any]]:
+    """〔この関数がすること〕 level2-*.jsonl 群を時系列順にストリーム読み出しします。"""
 
-    def run(self, source: Optional[Path] = None, duration_s: float = 120.0) -> SimResult:
-        """〔このメソッドがすること〕
-        バックテストを実行し、SimResult を返します。
-        - source が parquet ディレクトリなら録画データを使い、
-          そうでなければ duration_s 秒の合成データで走らせます。
-        """
-        feats: Iterable[FeatureSnapshot]
-        if source and source.exists():
-            feats = self._iter_recorded_features(source)
-        else:
-            feats = self._iter_synthetic_features(duration_s)
+    for fp in sorted(files):
+        with fp.open("r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                    yield rec
+                except Exception:
+                    continue
 
-        for f in feats:
-            # 周期更新→位相算出→位相を埋めた特徴量へ
-            self.rot.update(f.t, f.dob, f.spread_ticks)
-            if not self.rot.is_active():
-                continue
-            phase = self.rot.current_phase(f.t)
-            f = f.with_phase(phase)
 
-            # 4条件ゲート
-            sig = self.sigdet.update_and_maybe_signal(f.t, f)
-            if not sig:
-                continue
-            self._trades += 1
+def _iter_parquet(files: List[Path]) -> Iterator[Dict[str, Any]]:
+    """〔この関数がすること〕 level2-*.parquet 群を時系列順にストリーム読み出しします。"""
 
-            # ――― 簡易フィル判定（骨組み）
-            # spreadが閾値より十分に大きいときは高確率でフィルした前提とし、
-            # PnL を「0.5tick/トレード」、滑りは 0tick として集計（後で置換）
-            filled = (f.spread_ticks >= (self.y + 0.0))
-            if filled:
-                self._fills += 1
-                pnl_ticks = 0.5  # mid±0.5tick→midでIOC解消の想定
-                slip_ticks = 0.0
-                self._cum_pnl_ticks += pnl_ticks
-                self._pnl_ticks_sum += pnl_ticks
-                self._slip_ticks_sum += slip_ticks
-                self._wins += 1 if pnl_ticks > 0 else 0
-                # ドローダウン更新
-                self._dd_min = min(self._dd_min, self._cum_pnl_ticks)
-
-            # 時間範囲
-            if self._t0 is None:
-                self._t0 = f.t
-            self._t1 = f.t
-
-        # 指標まとめ
-        minutes = max(1e-9, ((self._t1 or 0) - (self._t0 or 0)) / 60.0)
-        trades_per_min = self._fills / minutes if minutes > 0 else 0.0
-        win_rate = (self._wins / self._fills) if self._fills > 0 else 0.0
-        avg_slip = (self._slip_ticks_sum / self._fills) if self._fills > 0 else 0.0
-
-        # bps換算（平均 mid がないので近似: 1 tick / 価格の 1e4 * mid）
-        # 骨組み段階では保守的に 0.5tick を mid=100 で換算（= 5 bps 相当）
-        avg_pnl_bps = 5.0 if self._fills > 0 else 0.0
-        holding_ms_avg = self.holding_target_ms if self._fills > 0 else 0.0
-        max_dd_ticks = -self._dd_min
-
-        return SimResult(
-            trades=self._trades,
-            fills=self._fills,
-            win_rate=win_rate,
-            avg_pnl_bps=avg_pnl_bps,
-            avg_slip_ticks=avg_slip,
-            trades_per_min=trades_per_min,
-            holding_ms_avg=holding_ms_avg,
-            max_dd_ticks=max_dd_ticks,
-        )
-
-    def _iter_recorded_features(self, parquet_dir: Path) -> Iterable[FeatureSnapshot]:
-        """〔このメソッドがすること〕
-        録画済みの parquet データから 100ms 特徴量列を生成します。
-        ここではプレースホルダです。hl_core.utils.backtest 側の実装が揃い次第、差し替えてください。
-        """
+    try:
+        import pyarrow.parquet as pq  # type: ignore
+    except Exception:
+        return iter(())
+    for fp in sorted(files):
         try:
-            # 期待する形（例）：iter_l2_snapshots(parquet_dir, dt=0.1) -> yields dict-like
-            from hl_core.utils.backtest import iter_l2_snapshots  # type: ignore
-            tick = self.tick
-            for s in iter_l2_snapshots(parquet_dir, dt=0.1):  # type: ignore[misc]
-                # s: {"t": float, "best_bid": float, "best_ask": float, "bid_size_l1": float, "ask_size_l1": float}
-                mid = (s["best_bid"] + s["best_ask"]) / 2.0
-                spread_ticks = (s["best_ask"] - s["best_bid"]) / max(tick, 1e-12)
-                dob = float(s["bid_size_l1"]) + float(s["ask_size_l1"])
-                obi = 0.0 if dob <= 0 else (float(s["bid_size_l1"]) - float(s["ask_size_l1"])) / dob
-                yield FeatureSnapshot(t=float(s["t"]), mid=mid, spread_ticks=spread_ticks, dob=dob, obi=obi)
-        except Exception as e:
-            logger.warning("recorded iterator unavailable (%s). fallback to synthetic.", e)
-            yield from self._iter_synthetic_features(120.0)
+            table = pq.read_table(fp)  # type: ignore
+        except Exception:
+            continue
+        cols = {name: table.column(name).to_pylist() for name in table.column_names}
+        n = len(next(iter(cols.values()))) if cols else 0
+        for i in range(n):
+            yield {k: cols[k][i] for k in cols}
 
-    def _iter_synthetic_features(self, duration_s: float = 120.0) -> Generator[FeatureSnapshot, None, None]:
+
+def load_level2_stream(data_dir: Path) -> Iterator[Tuple[float, float, float, float, float]]:
+    """〔この関数がすること〕
+    ディレクトリ内の level2-*.{jsonl,parquet} を見つけ、(t, best_bid, best_ask, bid_size_l1, ask_size_l1) を時系列で返します。
+    """
+
+    jsonl = [Path(p) for p in glob.glob(str(data_dir / "level2-*.jsonl"))]
+    pq = [Path(p) for p in glob.glob(str(data_dir / "level2-*.parquet"))]
+    it: Iterable[Dict[str, Any]]
+    if pq:
+        it = _iter_parquet(pq)
+    elif jsonl:
+        it = _iter_jsonl(jsonl)
+    else:
+        raise FileNotFoundError(f"No level2-*.jsonl/.parquet under {data_dir}")
+
+    for rec in it:
+        t = float(rec.get("t", time.time()))
+        bb = float(rec.get("best_bid", 0.0))
+        ba = float(rec.get("best_ask", 0.0))
+        bs = float(rec.get("bid_size_l1", 0.0))
+        asz = float(rec.get("ask_size_l1", 0.0))
+        yield (t, bb, ba, bs, asz)
+
+
+# ─────────────────────────────── 簡易 Fill モデルとシミュレータ ───────────────────────────────
+
+
+@dataclass
+class Order:
+    """〔このデータクラスがすること〕 シミュレータ内の“掲示中の子注文”を表します。"""
+
+    side: str
+    price: float
+    t_post: float
+    t_expire: float
+    display: float
+    total: float
+    filled: bool = False
+
+
+class VRLGSimulator:
+    """〔このクラスがすること〕
+    録画 L2 を使って VRLG の約定/解消を最小モデルで再現し、指標を出力します。
+    """
+
+    def __init__(self, cfg: Any) -> None:
+        """〔このメソッドがすること〕 設定を取り込み、主要コンポーネント（検出器/サイズ/Risk）を初期化します。"""
+
+        self.cfg = coerce_vrlg_config(cfg)
+        self.tick = float(self.cfg.symbol.tick_size)
+        self.rot = RotationDetector(self.cfg)
+        self.sig = SignalDetector(self.cfg)
+        self.sizer = SizeAllocator(self.cfg)
+        self.risk = RiskManager(self.cfg)
+
+        # 実行パラメータ
+        self.ttl_s = float(self.cfg.exec.order_ttl_ms) / 1000.0
+        self.off_norm = float(self.cfg.exec.offset_ticks_normal)
+        self.off_deep = float(self.cfg.exec.offset_ticks_deep)
+        self.collapse_ticks = float(self.cfg.exec.spread_collapse_ticks)
+        self.splits = max(1, int(self.cfg.exec.splits))
+        self.side_mode = str(getattr(self.cfg.exec, "side_mode", "both")).lower()
+        self.display_ratio = float(self.cfg.exec.display_ratio)
+        self.min_display = float(self.cfg.exec.min_display_btc)
+        # 〔この2行がすること〕 バックテスト用のレイテンシ注入（ms→秒）を設定から取り込みます
+        self.ingest_lag_s = float(getattr(self.cfg.latency, "ingest_ms", 10)) / 1000.0
+        self.order_rt_s = float(getattr(self.cfg.latency, "order_rt_ms", 60)) / 1000.0
+
+        # 結果蓄積
+        self.trades: List[Trade] = []
+        self.orders: List[Order] = []
+
+        # 進行状況
+        self._last_mid = None  # type: Optional[float]
+        self._last_dob = 0.0
+        self._last_spread = 0.0
+
+    def _place_children(self, mid: float, deepen: bool, now: float, top_depth: float) -> None:
         """〔このメソッドがすること〕
-        周期 R*=2.0s 付近で「境界が薄い・スプレッドが広い」特徴を持つ合成データを 100ms 間隔で生成します。
-        RotationDetector が自力で R* を推定できるよう、DoB/Spread に周期構造を埋め込んでいます。
+        mid と deepen 指示から両面（あるいは片面）の子注文を作成し、掲示リストに追加します。
         """
+
+        offset = self.off_deep if deepen else self.off_norm
+        px_bid = round((mid - offset * self.tick) / self.tick) * self.tick
+        px_ask = round((mid + offset * self.tick) / self.tick) * self.tick
+
+        total = self.sizer.next_size(mid=mid, risk_mult=1.0)
+        if total <= 0:
+            return
+        child_total = total / self.splits
+        child_display = min(max(child_total * self.display_ratio, self.min_display), child_total)
+        # 〔この2行がすること〕 発注が板に載る実時刻 t_post（= now + RTT）を起点に TTL を計測します
+        t_post = now + self.order_rt_s
+        t_exp = t_post + self.ttl_s
+
+        sides = [("BUY", px_bid), ("SELL", px_ask)]
+        if self.side_mode == "buy":
+            sides = [("BUY", px_bid)]
+        elif self.side_mode == "sell":
+            sides = [("SELL", px_ask)]
+
+        # Risk: 板消費率に加算（display/TopDepth）
+        if top_depth > 0:
+            self.risk.register_order_post(display_size=child_display, top_depth=top_depth)
+
+        for side, price in sides:
+            for _ in range(self.splits):
+                # 〔この行がすること〕 掲示時刻を t_post に変更（RTT を考慮）
+                self.orders.append(
+                    Order(
+                        side=side,
+                        price=price,
+                        t_post=t_post,
+                        t_expire=t_exp,
+                        display=child_display,
+                        total=child_total,
+                    )
+                )
+
+    def _match_orders(self, bb: float, ba: float, mid: float, now: float) -> List[Tuple[Order, float]]:
+        """〔このメソッドがすること〕
+        掲示中の子注文を L1 に照らして“充足したもの”を抽出し、(order, ref_mid) を返します。
+        簡易ルール: BUY は best_bid >= price、SELL は best_ask <= price の瞬間に約定。
+        """
+
+        filled: List[Tuple[Order, float]] = []
+        for od in self.orders:
+            if od.filled or now < od.t_post or now > od.t_expire:
+                continue
+            if od.side == "BUY" and bb >= od.price:
+                od.filled = True
+                filled.append((od, mid))
+            elif od.side == "SELL" and ba <= od.price:
+                od.filled = True
+                filled.append((od, mid))
+        return filled
+
+    def _exit_price(self, bb: float, ba: float, mid: float) -> float:
+        """〔このメソッドがすること〕 IOC 解消の約定価格を近似（mid 使用）で返します。"""
+
+        return float(mid)
+
+    def run(self, l2_stream: Iterator[Tuple[float, float, float, float, float]]) -> None:
+        """〔このメソッドがすること〕
+        L2 ストリームを 100ms 足相当で処理し、Signal→発注→約定→解消 の一連を再現します。
+        """
+
+        # ステップ状の 100ms サンプリングを作る
         dt = 0.1
-        t0 = time.time()
-        steps = int(duration_s / dt)
-        mid0 = 70000.0
-        for i in range(steps):
-            t = t0 + i * dt
-            # 合成の真の周期（RotationDetector が当てる対象）
-            R_true = 2.0
-            ph = (t % R_true) / R_true  # 0..1
-            # 位相境界 15% 付近を「薄い/広い」に
-            boundary = (ph < 0.15) or (ph > 0.85)
-            spr_ticks = 3.0 if boundary else 1.0
-            dob = 600.0 if boundary else 1200.0
-            # 中央価格は微小にふらす（正弦波）
-            mid = mid0 * (1.0 + 0.00001 * math.sin(2 * math.pi * i / 997))
-            # OBI は軽い揺れ（|OBI|<=0.6 内）
-            obi = 0.3 * math.sin(2 * math.pi * i / 137)
-            yield FeatureSnapshot(t=t, mid=mid, spread_ticks=spr_ticks, dob=dob, obi=obi)
+        next_emit: Optional[float] = None
 
-    def to_json(self, res: SimResult) -> str:
-        """〔このメソッドがすること〕
-        SimResult を人/機械どちらでも読みやすい JSON 文字列にします。
-        """
-        return json.dumps(
-            {
-                "trades": res.trades,
-                "fills": res.fills,
-                "win_rate": round(res.win_rate, 4),
-                "avg_pnl_bps": round(res.avg_pnl_bps, 3),
-                "avg_slip_ticks": round(res.avg_slip_ticks, 4),
-                "trades_per_min": round(res.trades_per_min, 3),
-                "holding_ms_avg": round(res.holding_ms_avg, 1),
-                "max_dd_ticks": round(res.max_dd_ticks, 3),
-            },
-            ensure_ascii=False,
+        # Exit 待ちの“ポジション”（充足済み子注文）
+        open_fills: List[Tuple[str, float, float, float]] = []  # (side, t_fill, px_fill, ref_mid)
+
+        for t, bb, ba, bs, asz in l2_stream:
+            if next_emit is None:
+                next_emit = t
+            # 100ms ごとに 1 回だけ特徴量を出す（間の L1 は最新で上書き）
+            if t < next_emit:
+                self._last_mid = (bb + ba) / 2.0
+                self._last_dob = bs + asz
+                self._last_spread = (ba - bb) / max(self.tick, 1e-12)
+                continue
+
+            # 特徴量生成
+            mid = (bb + ba) / 2.0
+            spread_ticks = (ba - bb) / max(self.tick, 1e-12)
+            dob = bs + asz
+            obi = 0.0 if dob <= 0 else (bs - asz) / max(dob, 1e-9)
+            # 〔この2行がすること〕 取り込み遅延（ingest）を特徴量のタイムスタンプに反映します
+            eff_t = t + self.ingest_lag_s
+            snap = FeatureSnapshot(t=eff_t, mid=mid, spread_ticks=spread_ticks, dob=dob, obi=obi)
+
+            # 周期更新→位相付与
+            # 〔この行がすること〕 周期検出の入力時刻も「遅延後」にそろえます
+            self.rot.update(eff_t, dob, spread_ticks)
+            # 〔この行がすること〕 位相は eff_t 基準で評価します
+            phase = self.rot.current_phase(eff_t)
+            snap = snap.with_phase(phase)
+
+            # シグナル評価
+            # 〔この行がすること〕 シグナル評価の基準時刻も ingest 後の eff_t にそろえます
+            sig = self.sig.update_and_maybe_signal(eff_t, snap)
+            if sig and self.rot.is_active():
+                adv = self.risk.advice()
+                # 〔この行がすること〕 子注文の基準時刻も ingest 後（eff_t）に合わせます（この後 RTT を加味）
+                self._place_children(mid=sig.mid, deepen=adv.deepen_post_only, now=eff_t, top_depth=dob)
+
+            # 掲示中の注文の約定判定
+            fills = self._match_orders(bb, ba, mid, now=t)
+            for od, ref_mid in fills:
+                # 滑りを記録（Risk 用）
+                self.risk.register_fill(fill_price=od.price, ref_mid=ref_mid, tick_size=self.tick)
+                # Exit 条件: スプレッドが collapse_ticks 以下 もしくは TTL 到達
+                open_fills.append((od.side, t, od.price, ref_mid))
+
+            # Exit 実行（spread 縮小 or TTL超過）
+            still_open: List[Tuple[str, float, float, float]] = []
+            for side, t_fill, px_fill, ref_mid in open_fills:
+                elapsed = t - t_fill
+                collapse = spread_ticks <= self.collapse_ticks
+                timeout = elapsed >= self.ttl_s
+                if collapse or timeout:
+                    # IOC で解消
+                    px_exit = self._exit_price(bb, ba, mid)
+                    self.trades.append(
+                        Trade(
+                            side=side,
+                            t_entry=t_fill,
+                            px_entry=px_fill,
+                            ref_mid_at_fill=ref_mid,
+                            t_exit=t,
+                            px_exit=px_exit,
+                        )
+                    )
+                else:
+                    still_open.append((side, t_fill, px_fill, ref_mid))
+            open_fills = still_open
+
+            # 100ms の刻みを進める
+            next_emit += dt
+
+        # ストリーム終端：開いているものは TTL 扱いでクローズ
+        if open_fills:
+            last_t = open_fills[-1][1]
+            for side, t_fill, px_fill, ref_mid in open_fills:
+                self.trades.append(
+                    Trade(
+                        side=side,
+                        t_entry=t_fill,
+                        px_entry=px_fill,
+                        ref_mid_at_fill=ref_mid,
+                        t_exit=last_t + self.ttl_s,
+                        px_exit=px_fill,
+                    )
+                )
+
+    # ───────────────── 結果の集計と表示 ─────────────────
+
+    def summary(self) -> Dict[str, Any]:
+        """〔このメソッドがすること〕 バックテスト指標を集計して辞書で返します。"""
+
+        n = len(self.trades)
+        if n == 0:
+            return {"trades": 0}
+        hit = sum(1 for tr in self.trades if tr.pnl_bps() > 0)
+        pnl = [tr.pnl_bps() for tr in self.trades]
+        hold = [tr.holding_ms() for tr in self.trades]
+        slip = [tr.slip_ticks(self.tick) for tr in self.trades]
+        pnl_cum = 0.0
+        max_dd = 0.0
+        peak = 0.0
+        for x in pnl:
+            pnl_cum += x
+            peak = max(peak, pnl_cum)
+            max_dd = max(max_dd, peak - pnl_cum)
+
+        dur_s = max(1.0, (self.trades[-1].t_exit - self.trades[0].t_entry))
+        trades_per_min = 60.0 * n / dur_s
+
+        return {
+            "trades": n,
+            "hit_rate": hit / n,
+            "avg_pnl_bps": statistics.mean(pnl),
+            "median_pnl_bps": statistics.median(pnl),
+            "avg_holding_ms": statistics.mean(hold),
+            "avg_slip_ticks": statistics.mean(slip),
+            "trades_per_min": trades_per_min,
+            "max_drawdown_bps": max_dd,
+        }
+
+    def print_summary(self) -> None:
+        """〔このメソッドがすること〕 集計結果を整形して標準出力へ表示します。"""
+
+        s = self.summary()
+        if s.get("trades", 0) == 0:
+            print("No trades.")
+            return
+        print(
+            "Trades={trades} | HitRate={hit:.1%} | AvgPnL={pnl:.2f}bps | Slip={slip:.2f}ticks | Hold={hold:.0f}ms | TPM={tpm:.2f} | MaxDD={dd:.1f}bps".format(
+                trades=s["trades"],
+                hit=s["hit_rate"],
+                pnl=s["avg_pnl_bps"],
+                slip=s["avg_slip_ticks"],
+                hold=s["avg_holding_ms"],
+                tpm=s["trades_per_min"],
+                dd=s["max_drawdown_bps"],
+            )
         )
+
+
+# ─────────────────────────────── CLI エントリポイント ───────────────────────────────
+
+
+def _load_config(path: str) -> Any:
+    """〔この関数がすること〕 設定ファイル（TOML/YAML）を読み込み、dict を返します。"""
+
+    # 可能なら共通ローダを使う
+    try:
+        from hl_core.utils.config import load_config  # type: ignore
+
+        return load_config(path)
+    except Exception:
+        pass
+    # TOML の軽量フォールバック
+    try:
+        import tomllib  # py3.11+
+
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except Exception:
+        import tomli  # type: ignore
+
+        with open(path, "rb") as f:
+            return tomli.load(f)
 
 
 def parse_args() -> argparse.Namespace:
-    """〔この関数がすること〕
-    CLI 引数を解釈します。--config で TOML/YAML、--data に parquet ディレクトリを指定できます。
-    """
-    p = argparse.ArgumentParser(description="VRLG Backtest (100ms simulator)")
-    p.add_argument("--config", required=True, help="path to VRLG config (TOML/YAML)")
-    p.add_argument("--data", type=Path, default=None, help="parquet recordings directory (optional)")
-    p.add_argument("--duration", type=float, default=120.0, help="synthetic duration seconds when no data")
+    """〔この関数がすること〕 CLI 引数を解釈します。"""
+
+    p = argparse.ArgumentParser(description="VRLG backtest simulator (L2 replay, 100ms)")
+    p.add_argument("--config", required=True, help="strategy config (TOML/YAML)")
+    p.add_argument("--data-dir", required=True, help="directory containing level2-*.jsonl or *.parquet")
+    p.add_argument("--max-rows", type=int, default=0, help="limit number of L2 rows for a quick run (0=all)")
+    p.add_argument("--ingest-lag-ms", type=int, default=-1, help="inject WS ingest lag in ms (override config; -1: use config)")  # 〔この行がすること〕 取り込み遅延をCLIから上書き
+    p.add_argument("--order-rt-ms", type=int, default=-1, help="inject order round-trip time in ms (override config; -1: use config)")  # 〔この行がすること〕 発注RTTをCLIから上書き
     return p.parse_args()
 
 
 def main() -> None:
-    """〔この関数がすること〕
-    バックテストを実行し、指標を JSON で標準出力へ表示します。
-    """
+    """〔この関数がすること〕 バックテストを実行し、主要指標を表示します。"""
+
     args = parse_args()
-    cfg = load_config(args.config)
-    bt = VRLGBacktester(cfg)
-    res = bt.run(args.data, duration_s=args.duration)
-    print(bt.to_json(res))
+    raw_cfg = _load_config(args.config)
+    sim = VRLGSimulator(raw_cfg)
+    # 〔このブロックがすること〕 CLI 指定があれば、設定よりも優先してレイテンシを上書きします
+    if args.ingest_lag_ms is not None and args.ingest_lag_ms >= 0:
+        sim.ingest_lag_s = float(args.ingest_lag_ms) / 1000.0
+    if args.order_rt_ms is not None and args.order_rt_ms >= 0:
+        sim.order_rt_s = float(args.order_rt_ms) / 1000.0
+    stream = load_level2_stream(Path(args.data_dir))
+
+    # 行数制限（クイック試走用）
+    if args.max_rows and args.max_rows > 0:
+
+        def _limited(it, k):
+            for i, rec in enumerate(it):
+                if i >= k:
+                    break
+                yield rec
+
+        stream = _limited(stream, args.max_rows)
+
+    sim.run(stream)
+    sim.print_summary()
 
 
 if __name__ == "__main__":
     main()
+
