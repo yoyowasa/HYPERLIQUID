@@ -127,42 +127,6 @@ def load_level2_stream(data_dir: Path) -> Iterator[Tuple[float, float, float, fl
         asz = float(rec.get("ask_size_l1", 0.0))
         yield (t, bb, ba, bs, asz)
 
-    jsonl = [Path(p) for p in glob.glob(str(data_dir / "level2-*.jsonl"))]
-    pq = [Path(p) for p in glob.glob(str(data_dir / "level2-*.parquet"))]
-    it: Iterable[Dict[str, Any]]
-    if pq:
-        it = _iter_parquet(pq)
-    elif jsonl:
-        it = _iter_jsonl(jsonl)
-    else:
-        raise FileNotFoundError(f"No level2-*.jsonl/.parquet under {data_dir}")
-
-    for rec in it:
-        t = float(rec.get("t", time.time()))
-        bb = float(rec.get("best_bid", 0.0))
-        ba = float(rec.get("best_ask", 0.0))
-        bs = float(rec.get("bid_size_l1", 0.0))
-        asz = float(rec.get("ask_size_l1", 0.0))
-        yield (t, bb, ba, bs, asz)
-
-    jsonl = [Path(p) for p in glob.glob(str(data_dir / "level2-*.jsonl"))]
-    pq = [Path(p) for p in glob.glob(str(data_dir / "level2-*.parquet"))]
-    it: Iterable[Dict[str, Any]]
-    if pq:
-        it = _iter_parquet(pq)
-    elif jsonl:
-        it = _iter_jsonl(jsonl)
-    else:
-        raise FileNotFoundError(f"No level2-*.jsonl/.parquet under {data_dir}")
-
-    for rec in it:
-        t = float(rec.get("t", time.time()))
-        bb = float(rec.get("best_bid", 0.0))
-        ba = float(rec.get("best_ask", 0.0))
-        bs = float(rec.get("bid_size_l1", 0.0))
-        asz = float(rec.get("ask_size_l1", 0.0))
-        yield (t, bb, ba, bs, asz)
-
 @dataclass
 class Order:
     """〔このデータクラスがすること〕 シミュレータ内の“掲示中の子注文”を表します。"""
