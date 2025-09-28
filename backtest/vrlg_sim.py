@@ -128,7 +128,6 @@ def load_level2_stream(data_dir: Path) -> Iterator[Tuple[float, float, float, fl
         yield (t, bb, ba, bs, asz)
 
 
-# ─────────────────────────────── 簡易 Fill モデルとシミュレータ ───────────────────────────────
 
 
 @dataclass
@@ -211,7 +210,6 @@ class VRLGSimulator:
 
         for side, price in sides:
             for _ in range(self.splits):
-                # 〔この行がすること〕 掲示時刻を t_post に変更（RTT を考慮）
                 self.orders.append(
                     Order(
                         side=side,
@@ -291,7 +289,6 @@ class VRLGSimulator:
                 adv = self.risk.advice()
                 # 〔この行がすること〕 子注文の基準時刻も ingest 後（eff_t）に合わせます（この後 RTT を加味）
                 self._place_children(mid=sig.mid, deepen=adv.deepen_post_only, now=eff_t, top_depth=dob)
-
             # 掲示中の注文の約定判定
             fills = self._match_orders(bb, ba, mid, now=t)
             for od, ref_mid in fills:
