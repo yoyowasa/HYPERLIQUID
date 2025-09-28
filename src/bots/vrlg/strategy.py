@@ -322,7 +322,6 @@ class VRLGStrategy:
         async for blk in subscribe_blocks():
             if self._stopping.is_set():
                 break
-
             # ブロック時刻（秒）を安全に取得
             ts = float(getattr(blk, "timestamp", None) or getattr(blk, "t", None) or time.time())
 

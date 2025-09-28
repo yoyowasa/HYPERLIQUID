@@ -228,14 +228,25 @@ class PFPLStrategy:
         self.last_side: str | None = None
         self.last_ts: float = 0.0
         self.pos_usd = Decimal("0")
+        self.position_refresh_interval = float(
+            self.config.get("position_refresh_interval_sec", 5.0)
+        )
+        self._position_refresh_task: asyncio.Task | None = None
         # ★ Funding Guard 用
         self.next_funding_ts: float | None = None  # 直近 funding 予定の UNIX 秒
         self._funding_pause: bool = False  # True なら売買停止中
         # 非同期でポジション初期化
         try:
-            asyncio.get_running_loop().create_task(self._refresh_position())
+            loop = asyncio.get_running_loop()
         except RuntimeError:
-            pass  # pytest 収集時など、イベントループが無い場合
+            loop = None  # pytest 収集時など、イベントループが無い場合
+
+        if loop is not None:
+            loop.create_task(self._refresh_position())
+            if self.position_refresh_interval > 0:
+                self._position_refresh_task = loop.create_task(
+                    self._position_refresh_loop()
+                )
 
         # ─── ここから追加（ロガーをペアごとのファイルへも出力）────
         if self.symbol not in PFPLStrategy._FILE_HANDLERS:
@@ -275,6 +286,20 @@ class PFPLStrategy:
             logger.debug("pos_usd refreshed: %.2f", usd)
         except Exception as exc:  # ← ここで握りつぶす
             logger.warning("refresh_position failed: %s", exc)
+
+    async def _position_refresh_loop(self) -> None:
+        """Periodically refresh position to capture passive fills."""
+        interval = self.position_refresh_interval
+        if interval <= 0:
+            return
+
+        while True:
+            await self._refresh_position()
+            try:
+                await anyio.sleep(interval)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("position refresh sleep failed: %s", exc)
+                await asyncio.sleep(max(interval, 1))
 
     # ② ────────────────────────────────────────────────────────────
     # ------------------------------------------------------------------ WS hook
@@ -530,8 +555,21 @@ class PFPLStrategy:
 
             order_type_payload = {"limit": limit_body}
         elif order_type == "market":
+            fallback_px = limit_px
+            if fallback_px is None:
+                if mid_value is not None:
+                    try:
+                        fallback_px = self._price_with_offset(float(mid_value), side)
+                    except (TypeError, ValueError):  # pragma: no cover - defensive
+                        fallback_px = None
+                if fallback_px is None:
+                    logger.warning(
+                        "market order requested but no price reference available; skip"
+                    )
+                    return
+                logger.debug("market order fallback limit_px=%s", fallback_px)
             order_type_payload = {"market": {}}
-            limit_px = None
+            limit_px = fallback_px
         else:
             logger.error("unsupported order_type=%s", order_type)
             return
@@ -594,6 +632,7 @@ class PFPLStrategy:
                     self._order_count += 1
                     self.last_ts = time.time()
                     self.last_side = side
+                    asyncio.create_task(self._refresh_position())
                     break
                 except Exception as exc:
                     logger.error(
@@ -685,10 +724,28 @@ class PFPLStrategy:
             if sz == 0:
                 return  # 持ち高なし
             close_side = "SELL" if sz > 0 else "BUY"
+            fallback_px: float | None = None
+            mid_snapshot = self.mid
+            if mid_snapshot is not None:
+                try:
+                    fallback_px = self._price_with_offset(float(mid_snapshot), close_side)
+                except (TypeError, ValueError):  # pragma: no cover - defensive
+                    fallback_px = None
+            if fallback_px is None:
+                try:
+                    entry_px = perp_pos["position"].get("entryPx")
+                except Exception:  # pragma: no cover - defensive
+                    entry_px = None
+                if entry_px is not None:
+                    try:
+                        fallback_px = self._price_with_offset(float(entry_px), close_side)
+                    except (TypeError, ValueError):  # pragma: no cover - defensive
+                        fallback_px = None
             await self.place_order(
                 side=close_side,
                 size=float(abs(sz)),
                 order_type="market",
+                limit_px=fallback_px,
                 reduce_only=True,
                 comment="auto‑close‑before‑funding",
             )
