@@ -268,7 +268,6 @@ class VRLGSimulator:
 
             # 周期更新→位相付与
             self.rot.update(t, dob, spread_ticks)
-            R = self.rot.current_period() or 1.0
             phase = self.rot.current_phase(t)
             snap = snap.with_phase(phase)
 
