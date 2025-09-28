@@ -328,13 +328,16 @@ class ExecutionEngine:
             "side": side,
             "price": float(price),
             "size": float(total),
-            "display": float(display),
+            "display_size": float(display),
             "post_only": True,
             "time_in_force": "GTT",
-            "ttl_ms": int(max(1.0, ttl_s) * 1000.0),
+            "ttl_s": float(max(1.0, ttl_s)),
             "reduce_only": False,
             "paper": self.paper,
         }
+        # Hyperliquid の HTTP アダプタでは明示的に iceberg フラグを受け付けるため、
+        # display_size を指定する場合は True を渡して互換性を保つ。
+        payload["iceberg"] = True
         try:
             from hl_core.api.http import place_order  # type: ignore
         except Exception:
