@@ -326,7 +326,6 @@ class VRLGStrategy:
             ts = float(getattr(blk, "timestamp", None) or getattr(blk, "t", None) or time.time())
 
             # 直前ブロックがあれば間隔を計算
-
             if prev_ts is not None:
                 interval = ts - prev_ts
                 try:
