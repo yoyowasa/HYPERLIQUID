@@ -4,6 +4,11 @@ cd C:\HYPERLIQUID
 git@github.com:yoyowasa/HYPERLIQUID.git
 https://github.com/yoyowasa/HYPERLIQUID.git
 
+python -m dotenv run -- python run_bot.py pfpl --symbols ETH-PERP --order_usd 15 --testnet --dry-run
+
+GO=live python -m dotenv run -- python run_bot.py pfpl --symbols ETH-PERP --order_usd 15
+
+
 echo "# HYPERLIQUID" >> README.md
 git init
 git add README.md
