@@ -228,14 +228,25 @@ class PFPLStrategy:
         self.last_side: str | None = None
         self.last_ts: float = 0.0
         self.pos_usd = Decimal("0")
+        self.position_refresh_interval = float(
+            self.config.get("position_refresh_interval_sec", 5.0)
+        )
+        self._position_refresh_task: asyncio.Task | None = None
         # ★ Funding Guard 用
         self.next_funding_ts: float | None = None  # 直近 funding 予定の UNIX 秒
         self._funding_pause: bool = False  # True なら売買停止中
         # 非同期でポジション初期化
         try:
-            asyncio.get_running_loop().create_task(self._refresh_position())
+            loop = asyncio.get_running_loop()
         except RuntimeError:
-            pass  # pytest 収集時など、イベントループが無い場合
+            loop = None  # pytest 収集時など、イベントループが無い場合
+
+        if loop is not None:
+            loop.create_task(self._refresh_position())
+            if self.position_refresh_interval > 0:
+                self._position_refresh_task = loop.create_task(
+                    self._position_refresh_loop()
+                )
 
         # ─── ここから追加（ロガーをペアごとのファイルへも出力）────
         if self.symbol not in PFPLStrategy._FILE_HANDLERS:
@@ -275,6 +286,20 @@ class PFPLStrategy:
             logger.debug("pos_usd refreshed: %.2f", usd)
         except Exception as exc:  # ← ここで握りつぶす
             logger.warning("refresh_position failed: %s", exc)
+
+    async def _position_refresh_loop(self) -> None:
+        """Periodically refresh position to capture passive fills."""
+        interval = self.position_refresh_interval
+        if interval <= 0:
+            return
+
+        while True:
+            await self._refresh_position()
+            try:
+                await anyio.sleep(interval)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("position refresh sleep failed: %s", exc)
+                await asyncio.sleep(max(interval, 1))
 
     # ② ────────────────────────────────────────────────────────────
     # ------------------------------------------------------------------ WS hook
@@ -607,6 +632,7 @@ class PFPLStrategy:
                     self._order_count += 1
                     self.last_ts = time.time()
                     self.last_side = side
+                    asyncio.create_task(self._refresh_position())
                     break
                 except Exception as exc:
                     logger.error(
