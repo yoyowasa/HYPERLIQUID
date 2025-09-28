@@ -163,49 +163,6 @@ class VRLGStrategy:
             except Exception as e:  # pragma: no cover
                 logger.exception("signal_loop error: %s", e)
 
-    async def _blocks_loop(self) -> None:
-        """〔このメソッドがすること〕
-        ブロックWSを購読し、前回ブロックとの「間隔(秒)」を測ります。
-        - RiskManager.update_block_interval() に渡してキルスイッチ判定に利用
-        - Metrics.observe_block_interval_ms() に渡して Prometheus に記録
-        """
-        try:
-            from hl_core.api.ws import subscribe_blocks  # type: ignore
-        except Exception as e:
-            logger.warning("blocks WS adapter not available: %s; blocks_loop idle.", e)
-            # アダプタ未導入環境では停止指示が来るまで待機
-            await self._stopping.wait()
-            return
-
-        last_ts = None
-        async for msg in subscribe_blocks():
-            if self._stopping.is_set():
-                break
-            # WSメッセージからブロック時刻を安全に取り出す（無ければ現在時刻）
-            try:
-                blk_ts = float(getattr(msg, "timestamp", None) or msg.get("timestamp"))  # type: ignore[attr-defined]
-            except Exception:
-                blk_ts = time.time()
-            # 前回ブロックがあれば間隔を計算して Risk/Metrics へ反映
-            if last_ts is not None:
-                interval = max(0.0, blk_ts - last_ts)
-                try:
-                    self.risk.update_block_interval(interval)          # キルスイッチ判定に寄与
-                except Exception:
-                    logger.debug("risk.update_block_interval failed (ignored)")
-                try:
-                    self.metrics.observe_block_interval_ms(interval)   # Prometheus へ記録
-                    self.decisions.log("block_interval", interval_s=float(interval))  # 〔この行がすること〕 観測したブロック間隔を記録
-                except Exception:
-                    logger.debug("metrics.observe_block_interval_ms failed (ignored)")
-
-                try:
-                    self.decisions.log("block_interval", interval_s=float(interval))  # 〔この行がすること〕 観測したブロック間隔を記録
-                except Exception:
-                    logger.debug("decision log (block_interval) failed (ignored)")
-
-            last_ts = blk_ts
-
     def _on_order_event(self, kind: str, fields: dict) -> None:
         """〔この関数がすること〕
         ExecutionEngine からのオーダーイベントを受け取り、意思決定ログとメトリクスへ反映します。
@@ -344,6 +301,46 @@ class VRLGStrategy:
                 self.exe.register_fill(side)
             except Exception:
                 logger.debug("exe.register_fill failed (ignored)")
+
+    async def _blocks_loop(self) -> None:
+        """〔このメソッドがすること〕
+        ブロックWSを購読し、隣接ブロックの間隔（秒）を計算して
+        - RiskManager.update_block_interval(interval_s) に渡す（kill‑switch 判定用）
+        - Metrics.observe_block_interval_ms(interval_ms) に送る（監視用）
+        - Decision Log にも 1 行 JSON を記録する
+        WS アダプタが無い環境では停止イベントまで安全に待機します。
+        """
+        try:
+            from hl_core.api.ws import subscribe_blocks  # type: ignore
+        except Exception as e:
+            logger.warning("blocks WS adapter not available: %s; blocks_loop idle.", e)
+            await self._stopping.wait()
+            return
+
+        prev_ts: float | None = None
+
+        async for blk in subscribe_blocks():
+            if self._stopping.is_set():
+                break
+
+            ts = float(getattr(blk, "timestamp", None) or getattr(blk, "t", None) or time.time())
+
+            if prev_ts is not None:
+                interval = ts - prev_ts
+                try:
+                    self.risk.update_block_interval(interval)
+                except Exception:
+                    logger.debug("risk.update_block_interval failed (ignored)")
+                try:
+                    self.metrics.observe_block_interval_ms(interval * 1000.0)
+                except Exception:
+                    logger.debug("metrics.observe_block_interval_ms failed (ignored)")
+                try:
+                    self.decisions.log("block_interval", interval_s=float(interval))
+                except Exception:
+                    logger.debug("decision log (block_interval) failed (ignored)")
+
+            prev_ts = ts
 
     async def _wait_spread_collapse(self, threshold_ticks: float = 1.0, timeout_s: float = 1.0, poll_s: float = 0.02) -> bool:
         """〔このメソッドがすること〕
