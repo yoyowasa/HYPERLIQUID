@@ -127,6 +127,9 @@ def load_level2_stream(data_dir: Path) -> Iterator[Tuple[float, float, float, fl
         asz = float(rec.get("ask_size_l1", 0.0))
         yield (t, bb, ba, bs, asz)
 
+
+
+
 @dataclass
 class Order:
     """〔このデータクラスがすること〕 シミュレータ内の“掲示中の子注文”を表します。"""
