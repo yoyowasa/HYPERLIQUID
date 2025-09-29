@@ -97,10 +97,10 @@ class VRLGStrategy:
 
         self._tasks.append(asyncio.create_task(self._signal_loop(), name="signal_loop"))
         self._tasks.append(asyncio.create_task(self._exec_loop(), name="exec_loop"))
-        # 〔この行がすること〕 ブロックWSを購読し、ブロック間隔を Risk/Metrics に渡すループを起動します
-        self._tasks.append(asyncio.create_task(self._blocks_loop(), name="blocks_loop"))
         # 〔この行がすること〕 約定WSを購読し、滑り・クールダウン・メトリクスを更新するループを起動します
         self._tasks.append(asyncio.create_task(self._fills_loop(), name="fills_loop"))
+        # 〔この行がすること〕 ブロックWS監視ループを起動して、ブロック間隔→Risk/Metrics/DecisionLogへ反映する
+        self._tasks.append(asyncio.create_task(self._blocks_loop(), name="blocks_loop"))
 
     async def _signal_loop(self) -> None:
         """〔このメソッドがすること〕
@@ -141,7 +141,10 @@ class VRLGStrategy:
                     )
                 except Exception:
                     logger.debug("metrics.set_rotation_quality failed (ignored)")
-                self.metrics.set_active(self.rot.is_active())               # 〔この行がすること〕 稼働可能=1/観察モード=0 をGaugeへ
+                try:
+                    self.metrics.set_active(bool(self.rot.is_active()))
+                except Exception:
+                    logger.debug("metrics.set_active failed (ignored)")
                 if not self.rot.is_active():
                     continue
                 phase = self.rot.current_phase(feat.t)
