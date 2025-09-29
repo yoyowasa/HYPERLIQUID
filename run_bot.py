@@ -1,11 +1,36 @@
 #!/usr/bin/env python
+# function: プロジェクト直下の .venv の Python で必ず実行されるように再起動する（Windows/macOS/Linux 対応）
+import os
+from pathlib import Path
+import sys
+
+
+def ensure_project_venv():
+    """プロジェクト直下の .venv を優先して使う。
+    - いまの Python が .venv でなければ、.venv の python でこのスクリプトを再実行する。
+    - .venv が見つからなければ何もしない（CI 等の外部環境を許容）。
+    """
+
+    project_root = Path(__file__).resolve().parent
+    venv_dir = project_root / ".venv"
+    python_name = "python.exe" if os.name == "nt" else "python"
+    candidate = venv_dir / ("Scripts" if os.name == "nt" else "bin") / python_name
+    try:
+        if candidate.exists() and candidate.resolve() != Path(sys.executable).resolve():
+            os.execv(str(candidate), [str(candidate), *sys.argv])
+    except Exception:
+        # 失敗しても続行（安全側のフォールバック）
+        pass
+
+
+ensure_project_venv()
+
 import argparse
 import asyncio
 import logging
 from decimal import Decimal, ROUND_DOWN
 from importlib import import_module
 from os import getenv
-from pathlib import Path
 
 from hl_core.utils.dotenv_compat import load_dotenv
 
