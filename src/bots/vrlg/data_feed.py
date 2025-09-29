@@ -13,7 +13,8 @@ import contextlib  # 〔この import がすること〕 タスクキャンセ�
 import math
 import time
 from dataclasses import dataclass, replace
-from typing import Any, Optional, Tuple
+from collections.abc import AsyncIterator, Callable
+from typing import Any, Optional, Tuple, cast
 
 from hl_core.utils.logger import get_logger
 
@@ -65,14 +66,17 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
             return default
 
 
+SubscribeLevel2 = Callable[[str], AsyncIterator[Any]]
+
+
 async def _subscribe_level1(
     symbol: str,
     out: "asyncio.Queue[Tuple[float, float, float, float]]",
-    subscribe_level2: Any | None = None,
+    subscribe_level2: SubscribeLevel2 | None = None,
 ) -> None:
     """Stream best bid/ask quotes from the exchange WebSocket."""
 
-    if not callable(subscribe_level2):
+    if subscribe_level2 is None:
         try:
             from hl_core.api.ws import subscribe_level2 as subscribe_level2_fn  # type: ignore
         except Exception as exc:
@@ -80,6 +84,8 @@ async def _subscribe_level1(
             raise
     else:
         subscribe_level2_fn = subscribe_level2
+
+    subscribe_level2_fn = cast(SubscribeLevel2, subscribe_level2_fn)
 
     try:
         async for book in subscribe_level2_fn(symbol):
@@ -201,7 +207,7 @@ async def run_feeds(cfg, out_queue: "asyncio.Queue[FeatureSnapshot]") -> None:
     pump_task = asyncio.create_task(_feature_pump(cfg, out_queue, lv1_queue), name="feature_pump")
 
     # まずは WS を試みる
-    producer_task = asyncio.create_task(_subscribe_level1(symbol, lv1_queue, tick), name="l2_subscriber")
+    producer_task = asyncio.create_task(_subscribe_level1(symbol, lv1_queue), name="l2_subscriber")
     producer_label = "ws"
 
     try:
