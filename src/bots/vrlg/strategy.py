@@ -205,6 +205,30 @@ class VRLGStrategy:
             except Exception:
                 pass
 
+    async def _trigger_killswitch(self, reason: str) -> None:
+        """〔このメソッドがすること〕
+        Kill‑switch 発火時に「即フラット → メトリクス落とす → 戦略停止」を安全に行います。
+        """
+        if self._stopping.is_set():
+            return
+        # 意思決定ログ
+        try:
+            self.decisions.log("killswitch", reason=str(reason))
+        except Exception:
+            pass
+        # 即フラット（IOC）
+        try:
+            await self.exe.flatten_ioc()
+        except Exception:
+            pass
+        # Active を 0 に（監視用）
+        try:
+            self.metrics.set_active(False)
+        except Exception:
+            pass
+        # 戦略停止フラグ
+        self._stopping.set()
+
     def _on_gate_eval(self, g: dict) -> None:
         """〔この関数がすること〕
         SignalDetector から受け取ったゲート評価をメトリクスに反映し、
@@ -336,13 +360,21 @@ class VRLGStrategy:
                 except Exception:
                     logger.debug("risk.update_block_interval failed (ignored)")
                 try:
-                    self.metrics.observe_block_interval_ms(interval * 1000.0)
+                    self.metrics.observe_block_interval_ms(interval)
                 except Exception:
                     logger.debug("metrics.observe_block_interval_ms failed (ignored)")
                 try:
                     self.decisions.log("block_interval", interval_s=float(interval))
                 except Exception:
                     logger.debug("decision log (block_interval) failed (ignored)")
+                # 〔このブロックがすること〕 ブロック間隔由来の kill‑switch が立ったら即フラット＆停止
+                try:
+                    adv_now = self.risk.advice()
+                    if adv_now.killswitch and not self._stopping.is_set():
+                        await self._trigger_killswitch(adv_now.reason)
+                        break
+                except Exception:
+                    logger.debug("killswitch trigger from blocks_loop failed (ignored)")
 
             prev_ts = ts
 
@@ -371,10 +403,13 @@ class VRLGStrategy:
 
                 # リスク助言（キル/一時停止/サイズ倍率/成行禁止など）
                 adv = self.risk.advice()
-                if self.risk.should_pause() or adv.killswitch:
-                    self.decisions.log("risk_pause", killswitch=bool(adv.killswitch), paused_until=adv.paused_until, reason=str(adv.reason))  # 〔この行がすること〕 リスク由来の停止理由を記録
-                    if adv.killswitch:
-                        await self.exe.flatten_ioc()  # 念のため即フラット
+                # 〔このブロックがすること〕 kill‑switch なら即停止、そうでなければ一時停止を尊重
+                if adv.killswitch:
+                    await self._trigger_killswitch(adv.reason)
+                    return
+                if self.risk.should_pause():
+                    self.decisions.log("risk_pause", killswitch=False, paused_until=adv.paused_until, reason=str(adv.reason))
+                    await asyncio.sleep(0.1)
                     continue
 
                 # 〔この行がすること〕 口座残高の0.2–0.5%を基準に、リスク倍率を反映して1クリップのBTCサイズを決める
