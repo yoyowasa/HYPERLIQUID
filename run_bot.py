@@ -25,6 +25,7 @@ def ensure_project_venv():
 
 ensure_project_venv()
 
+# ruff: noqa: E402  # runtime venv enforcement requires imports below
 import argparse
 import asyncio
 import logging
