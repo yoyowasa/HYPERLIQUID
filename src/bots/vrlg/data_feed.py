@@ -9,11 +9,12 @@ strategy pipeline.
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import contextlib  # 〔この import がすること〕 タスクキャンセル時の例外抑止に使います
 import math
 import time
 from dataclasses import dataclass, replace
-from typing import Any, Optional, Tuple
+from collections.abc import AsyncIterator, Callable
+from typing import Any, Optional, Tuple, cast
 
 from hl_core.utils.logger import get_logger
 
@@ -65,15 +66,29 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
             return default
 
 
+SubscribeLevel2 = Callable[[str], AsyncIterator[Any]]
+
+
 async def _subscribe_level1(
     symbol: str,
     out: "asyncio.Queue[Tuple[float, float, float, float]]",
-    subscribe_level2,
+    subscribe_level2: SubscribeLevel2 | None = None,
 ) -> None:
     """Stream best bid/ask quotes from the exchange WebSocket."""
 
+    if subscribe_level2 is None:
+        try:
+            from hl_core.api.ws import subscribe_level2 as subscribe_level2_fn  # type: ignore
+        except Exception as exc:
+            logger.warning("level2 WS adapter unavailable: %s", exc)
+            raise
+    else:
+        subscribe_level2_fn = subscribe_level2
+
+    subscribe_level2_fn = cast(SubscribeLevel2, subscribe_level2_fn)
+
     try:
-        async for book in subscribe_level2(symbol):
+        async for book in subscribe_level2_fn(symbol):
             bb = float(_get(book, "best_bid", 0.0))
             ba = float(_get(book, "best_ask", 0.0))
             bs = float(_get(book, "bid_size_l1", 0.0))
@@ -178,87 +193,58 @@ async def _feature_pump(
 
 
 async def run_feeds(cfg, out_queue: "asyncio.Queue[FeatureSnapshot]") -> None:
-    """Run the VRLG data feed with automatic synthetic fallback."""
-
+    """〔この関数がすること〕
+    - L2（最良気配）を購読して内部キューへ格納
+    - 100ms ごとに特徴量を生成して out_queue へ流す
+    - **WS が途中で落ちても** 合成フィードへ自動フォールバック
+    - タスクはキャンセルで安全に停止します
+    """
     symbol = getattr(getattr(cfg, "symbol", {}), "name", "BTCUSD-PERP")
     tick = float(getattr(getattr(cfg, "symbol", {}), "tick_size", 0.5))
-    lv1_queue: "asyncio.Queue[Tuple[float, float, float, float]]" = asyncio.Queue(maxsize=1024)
+    lv1_queue: "asyncio.Queue[tuple[float,float,float,float]]" = asyncio.Queue(maxsize=1024)
+
+    # 100ms 特徴生成は固定で起動
+    pump_task = asyncio.create_task(_feature_pump(cfg, out_queue, lv1_queue), name="feature_pump")
+
+    # まずは WS を試みる
+    producer_task = asyncio.create_task(_subscribe_level1(symbol, lv1_queue), name="l2_subscriber")
+    producer_label = "ws"
 
     try:
-        from hl_core.api.ws import subscribe_level2  # type: ignore
-    except Exception as exc:
-        logger.warning("level2 WS adapter unavailable: %s; using synthetic L1", exc)
-        producer_task: Optional[asyncio.Task] = asyncio.create_task(
-            _synthetic_level1(lv1_queue, tick),
-            name="l1_synth",
-        )
-        using_synthetic = True
-    else:
-        producer_task = asyncio.create_task(
-            _subscribe_level1(symbol, lv1_queue, subscribe_level2),
-            name="l2_subscriber",
-        )
-        using_synthetic = False
+        while True:
+            # いずれかのタスクが例外で落ちたら処理
+            done, _ = await asyncio.wait({pump_task, producer_task}, return_when=asyncio.FIRST_EXCEPTION)
 
-        # Allow immediate import/connection failures to surface so we can fall back.
-        await asyncio.sleep(0)
-
-        if producer_task.done() and producer_task.exception():
-            logger.warning(
-                "level2 subscription failed instantly (%s); switching to synthetic feed",
-                producer_task.exception(),
-            )
-            producer_task = asyncio.create_task(
-                _synthetic_level1(lv1_queue, tick),
-                name="l1_synth",
-            )
-
-            using_synthetic = True
-
-    pump_task = asyncio.create_task(
-        _feature_pump(cfg, out_queue, lv1_queue),
-        name="feature_pump",
-    )
-
-    tasks = [pump_task, producer_task]
-
-    try:
-        while tasks:
-            done, pending = await asyncio.wait(
-                [t for t in tasks if t is not None],
-                return_when=asyncio.FIRST_EXCEPTION,
-            )
-
-            # If the producer failed and we were using WS, fall back to synthetic once.
-            if producer_task in done and producer_task:
-                exc = producer_task.exception()
+            # 生成側（pump）が落ちた → すべて終了
+            if pump_task in done:
+                exc = pump_task.exception()
+                if producer_task and not producer_task.done():
+                    producer_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await producer_task
                 if exc:
-                    if not using_synthetic:
-                        logger.warning(
-                            "level2 stream failed (%s); falling back to synthetic feed",
-                            exc,
-                        )
-                        producer_task = asyncio.create_task(
-                            _synthetic_level1(lv1_queue, tick),
-                            name="l1_synth",
-                        )
-                        using_synthetic = True
-                        tasks = [pump_task, producer_task]
-                        continue
                     raise exc
+                break
 
-            # If any task completed without exception we simply exit (likely cancellation).
-            if any(t.exception() for t in done if t is not producer_task):
-                for exc_task in done:
-                    exc = exc_task.exception()
-                    if exc:
-                        raise exc
-            break
+            # ここまで来たら producer 側が終了（例外含む）
+            exc = producer_task.exception()
+            if producer_label == "ws":
+                # WS が死んだ → 合成フィードへ切り替え
+                logger.warning("level2 WS failed (%s); switching to synthetic L1.", exc)
+            else:
+                logger.warning("synthetic L1 stopped unexpectedly (%s); restarting.", exc)
+
+            # 合成フィードを起動し直してループ継続
+            producer_task = asyncio.create_task(_synthetic_level1(lv1_queue, tick), name="l1_synth")
+            producer_label = "synthetic"
+
     except asyncio.CancelledError:
-        raise
+        # 正常停止（外部キャンセル）
+        pass
     finally:
-        for t in tasks:
-            if t:
+        # タスク後片付け
+        for t in (producer_task, pump_task):
+            if t and not t.done():
                 t.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.gather(*[t for t in tasks if t], return_exceptions=True)
+                with contextlib.suppress(asyncio.CancelledError):
+                    await t
