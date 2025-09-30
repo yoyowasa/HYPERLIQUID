@@ -207,7 +207,7 @@ async def run_feeds(cfg, out_queue: "asyncio.Queue[FeatureSnapshot]") -> None:
     pump_task = asyncio.create_task(_feature_pump(cfg, out_queue, lv1_queue), name="feature_pump")
 
     # まずは WS を試みる
-    producer_task = asyncio.create_task(_subscribe_level1(symbol, lv1_queue, tick), name="l2_subscriber")
+    producer_task = asyncio.create_task(_subscribe_level1(symbol, lv1_queue), name="l2_subscriber")
     producer_label = "ws"
 
     try:
