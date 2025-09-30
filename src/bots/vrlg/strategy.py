@@ -153,6 +153,13 @@ class VRLGStrategy:
                 phase = float(self.rot.current_phase(float(feat.t)))
                 feat = feat.with_phase(phase)
                 self.exe.set_period_hint(self.rot.current_period() or 1.0)
+                # 〔この行がすること〕 推定R*に基づくクールダウン窓（秒）を Gauge に反映します
+                try:
+                    period = float(self.rot.current_period() or 1.0)
+                    self.metrics.set_cooldown(self.exe.cooldown_factor * period)
+                except Exception:
+                    logger.debug("metrics.set_cooldown failed (ignored)")
+
                 sig = self.sigdet.update_and_maybe_signal(float(feat.t), feat)
                 if sig:
                     self.decisions.log(
@@ -332,6 +339,12 @@ class VRLGStrategy:
                 self.exe.register_fill(side)
             except Exception:
                 logger.debug("exe.register_fill failed (ignored)")
+            # 〔このブロックがすること〕 約定でクールダウンを設定した直後に、現在の窓（秒）を Gauge に反映します
+            try:
+                period = float(self.rot.current_period() or 1.0)
+                self.metrics.set_cooldown(self.exe.cooldown_factor * period)
+            except Exception:
+                logger.debug("metrics.set_cooldown (after fill) failed (ignored)")
 
     async def _blocks_loop(self) -> None:
         """〔このメソッドがすること〕
