@@ -159,6 +159,7 @@ class VRLGStrategy:
                     self.metrics.set_cooldown(self.exe.cooldown_factor * period)
                 except Exception:
                     logger.debug("metrics.set_cooldown failed (ignored)")
+
                 sig = self.sigdet.update_and_maybe_signal(float(feat.t), feat)
                 if sig:
                     self.decisions.log(
