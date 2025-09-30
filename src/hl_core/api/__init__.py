@@ -98,6 +98,8 @@ class WSClient:
                         )
 
                     await self._listen()  # 切断までブロック
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 logger.warning("WS disconnected: %s", exc)
             finally:
