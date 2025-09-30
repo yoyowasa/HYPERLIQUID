@@ -110,6 +110,9 @@ class VRLGStrategy:
         while not self._stopping.is_set():
             try:
                 feat = await self.q_features.get()
+                # 〔このブロックがすること〕 RotationDetector から位相を計算し、特徴量に block_phase を埋め込みます
+                phase = float(self.rot.current_phase(float(feat.t)))
+                feat = feat.with_phase(phase)
                 self._last_features = feat  # 〔この行がすること〕 スプレッド監視や滑り計算で使うため最新スナップショットを保存
                 # 〔このブロックがすること〕 特徴量の「鮮度」を計算し、メトリクス更新＆しきい値超過なら処理をスキップします
                 now_ts = time.time()
@@ -147,9 +150,10 @@ class VRLGStrategy:
                     logger.debug("metrics.set_active failed (ignored)")
                 if not self.rot.is_active():
                     continue
-                phase = self.rot.current_phase(feat.t)
+                phase = float(self.rot.current_phase(float(feat.t)))
+                feat = feat.with_phase(phase)
                 self.exe.set_period_hint(self.rot.current_period() or 1.0)
-                sig = self.sigdet.update_and_maybe_signal(feat.t, feat.with_phase(phase))
+                sig = self.sigdet.update_and_maybe_signal(float(feat.t), feat)
                 if sig:
                     self.decisions.log(
                         "signal",
