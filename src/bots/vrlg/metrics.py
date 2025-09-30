@@ -1,8 +1,7 @@
 # 〔このモジュールがすること〕
-# VRLG 戦略の実行状況を Prometheus 形式で公開（または未導入環境では安全に無視）します。
-# - Counter/Gauge/Histogram の定義
-# - start_http_server による /metrics 公開（port 指定時）
-# - Strategy/Execution/Risk から呼びやすい薄いラッパ（inc/set/observe）
+# VRLG のメトリクス（Prometheus）を一元管理します。
+# - prometheus_client が無い環境では No-op で安全に動作します。
+# - HTTP エクスポータ（/metrics）は __init__(prom_port) で指定があれば起動します。
 
 from __future__ import annotations
 
@@ -12,112 +11,246 @@ from hl_core.utils.logger import get_logger
 
 logger = get_logger("VRLG.metrics")
 
-# ─────────────── Prometheus クライアントの安全な読み込み（No-op フォールバック） ───────────────
+# ───────────────── No-op フォールバック ─────────────────
 try:
-    from prometheus_client import Counter, Gauge, Histogram, start_http_server  # type: ignore
-except Exception:  # pragma: no cover
-
+    from prometheus_client import Gauge, Counter, Histogram, start_http_server  # type: ignore
+except Exception:  # ランタイムに prometheus_client が無ければ安全に No-op
     class _Noop:
-        """〔このクラスがすること〕 prometheus_client が無いときのダミー実装です。"""
-        def inc(self, *_args, **_kwargs) -> None: ...
-        def set(self, *_args, **_kwargs) -> None: ...
-        def observe(self, *_args, **_kwargs) -> None: ...
+        def labels(self, *_, **__):
+            return self
 
-    def Counter(*_args, **_kwargs):  # type: ignore
-        return _Noop()
+        def set(self, *_, **__):
+            return None
 
-    def Gauge(*_args, **_kwargs):  # type: ignore
-        return _Noop()
+        def inc(self, *_, **__):
+            return None
 
-    def Histogram(*_args, **_kwargs):  # type: ignore
-        return _Noop()
+        def observe(self, *_, **__):
+            return None
 
-    def start_http_server(*_args, **_kwargs):  # type: ignore
-        logger.info("prometheus_client not installed; metrics are no-op.")
-        return None
+    Gauge = Counter = Histogram = lambda *_, **__: _Noop()  # type: ignore
+
+    def start_http_server(*_, **__):  # type: ignore
+        logger.warning("prometheus_client not found; metrics exporter disabled")
+
+
+# ───────────────── Metrics 実装 ─────────────────
 
 
 class Metrics:
     """〔このクラスがすること〕
-    VRLG で使うメトリクス群の生成と、簡単な操作メソッド（inc/set/observe）を提供します。
-    port を与えると start_http_server を起動し /metrics を公開します。
+    VRLG が使用するメトリクス（Gauge/Counter/Histogram）を提供し、
+    必要に応じて Prometheus HTTP エクスポータを起動します。
     """
 
-    def __init__(self, port: Optional[int] = None) -> None:
+    def __init__(self, prom_port: Optional[int] = None, *, port: Optional[int] = None) -> None:
         """〔このメソッドがすること〕
-        メトリクスを定義し、port が与えられたら HTTP Exporter を起動します。
+        各メトリクスの器を作成し、prom_port が指定されたときだけエクスポータを起動します。
         """
-        if port is not None:
-            try:
-                start_http_server(int(port))
-                logger.info("Prometheus exporter started on :%s", port)
-            except Exception as e:  # pragma: no cover
-                logger.warning("failed to start metrics server: %s", e)
-
-        # ── Counters（累積カウント）
-        self.signal_count = Counter("vrlg_signal_count", "Number of signals emitted.")
-        self.orders_submitted = Counter("vrlg_orders_submitted", "Orders submitted (maker).")
-        self.orders_canceled = Counter("vrlg_orders_canceled", "Orders canceled (TTL/flat).")
-        self.orders_rejected = Counter("vrlg_orders_rejected", "Order rejections.")
-        self.fills = Counter("vrlg_fills", "Number of fills (clips).")
-
-        # ── Gauges（現在値）
-        self.current_period_s = Gauge("vrlg_current_period_s", "Estimated rotation period R* (s).")
+        if prom_port is None and port is not None:
+            prom_port = port
+        # 基本ステータス
+        self.period_s = Gauge("vrlg_period_s", "Estimated rotation period R* (seconds).")
         self.active_flag = Gauge("vrlg_is_active", "Rotation gate active (1) or paused (0).")
-        self.rotation_score = Gauge("vrlg_rotation_score", "Autocorrelation score used for R* selection.")      # 〔この行がすること〕 自己相関の強さを可視化
-        self.rotation_boundary_samples = Gauge("vrlg_rotation_boundary_samples", "Boundary sample count.")       # 〔この行がすること〕 境界サンプル数を可視化
-        self.rotation_p_dob = Gauge("vrlg_rotation_p_dob", "p-value for DoB thinness at boundary (one-sided).") # 〔この行がすること〕 DoB の p値を可視化
-        self.rotation_p_spr = Gauge("vrlg_rotation_p_spr", "p-value for spread wideness at boundary (one-sided).") # 〔この行がすること〕 Spread の p値を可視化
-        self.book_impact_5s = Gauge("vrlg_book_impact_5s", "Sum of display/TopDepth over 5s.")
         self.cooldown_s = Gauge("vrlg_cooldown_s", "Current cooldown window (s).")
-        self.data_staleness_ms = Gauge("vrlg_data_staleness_ms", "Age of the latest feature snapshot (ms).")  # 〔この行がすること〕 特徴量の鮮度（ms）を可視化
-        self.staleness_skips = Counter("vrlg_staleness_skips", "Skips due to stale features.")  # 〔この行がすること〕 鮮度不足でのスキップ回数をカウント
-        self.gate_phase_miss = Counter("vrlg_gate_phase_miss", "Gate miss count: phase window not satisfied.")  # 〔この行がすること〕 位相ゲート不成立の回数を数える
-        self.gate_dob_miss = Counter("vrlg_gate_dob_miss", "Gate miss count: DoB not thin enough.")  # 〔この行がすること〕 DoB 薄さ不成立の回数を数える
-        self.gate_spread_miss = Counter("vrlg_gate_spread_miss", "Gate miss count: spread below threshold.")  # 〔この行がすること〕 スプレッド閾未満の回数を数える
-        self.gate_obi_miss = Counter("vrlg_gate_obi_miss", "Gate miss count: |OBI| above limit.")  # 〔この行がすること〕 OBI 上限超過の回数を数える
-        self.gate_all_pass = Counter("vrlg_gate_all_pass", "All gates passed (pre-signal).")  # 〔この行がすること〕 4 条件すべて通過した回数を数える
-        self.open_maker_btc = Gauge("vrlg_open_maker_btc", "Open maker exposure (BTC).")  # 〔この行がすること〕 未約定メーカー合計BTCを可視化
+        self.signal_count = Counter("vrlg_signals", "Number of signals emitted.")
 
-        # ── Histograms（分布）
-        self.spread_ticks = Histogram(
-            "vrlg_spread_ticks", "Top-of-book spread in ticks.",
-            buckets=(0.5, 1, 2, 3, 4, 6, 8, 12)
+        # 実行系
+        self.slippage_ticks = Histogram("vrlg_slippage_ticks", "Per-fill slippage (ticks).")
+        self.fills = Counter("vrlg_fills", "Number of fills observed.")
+        self.orders_rejected = Counter("vrlg_orders_rejected", "Number of orders rejected by venue.")
+        self.orders_canceled = Counter(
+            "vrlg_orders_canceled", "Number of orders canceled (TTL/explicit)."
         )
-        self.block_interval_ms = Histogram(
-            "vrlg_block_interval_ms", "Observed block interval (ms).",
-            buckets=(250, 500, 1000, 1500, 2000, 3000, 4000, 6000)
+        self.orders_submitted = Counter("vrlg_orders_submitted", "Number of maker orders submitted.")
+
+        # 市場構造/鮮度
+        self.block_interval_ms_hist = Histogram("vrlg_block_interval_ms", "Block interval (ms).")
+        self.block_interval_last_ms = Gauge(
+            "vrlg_block_interval_last_ms", "Last observed block interval (ms)."
         )
-        self.slippage_ticks = Histogram(
-            "vrlg_slippage_ticks", "Per-fill slippage (ticks).",
-            buckets=(0.0, 0.25, 0.5, 0.75, 1, 1.5, 2, 3)
+        self.data_staleness_ms = Gauge("vrlg_data_staleness_ms", "Age of the latest feature snapshot (ms).")
+        self.staleness_skips = Counter("vrlg_staleness_skips", "Skips due to stale features.")
+        self.spread_ticks_hist = Histogram("vrlg_spread_ticks", "Observed spread in ticks (feature snapshots).")
+
+        # リスク・露出
+        self.book_impact_5s = Gauge("vrlg_book_impact_5s", "5s sum of book impact (display/TopDepth).")
+        self.open_maker_btc = Gauge("vrlg_open_maker_btc", "Open maker exposure (BTC).")
+
+        # ゲート内訳
+        self.gate_phase_miss = Counter(
+            "vrlg_gate_phase_miss", "Gate miss count: phase window not satisfied."
         )
-        self.holding_ms = Histogram(
-            "vrlg_holding_ms", "Holding time per trade (ms).",
-            buckets=(50, 100, 250, 500, 800, 1200, 2000, 3000)
+        self.gate_dob_miss = Counter("vrlg_gate_dob_miss", "Gate miss count: DoB not thin enough.")
+        self.gate_spread_miss = Counter(
+            "vrlg_gate_spread_miss", "Gate miss count: spread below threshold."
         )
-        self.pnl_bps = Histogram(
-            "vrlg_pnl_per_trade_bps", "PnL per trade (bps, net).",
-            buckets=(-10, -5, -2, 0, 2, 4, 6, 10, 15, 20)
+        self.gate_obi_miss = Counter("vrlg_gate_obi_miss", "Gate miss count: |OBI| above limit.")
+        self.gate_all_pass = Counter("vrlg_gate_all_pass", "All gates passed (pre-signal).")
+
+        # Rotation 検出の品質
+        self.rotation_score = Gauge("vrlg_rotation_score", "Autocorrelation score used for R* selection.")
+        self.rotation_boundary_samples = Gauge(
+            "vrlg_rotation_boundary_samples", "Boundary sample count."
+        )
+        self.rotation_p_dob = Gauge(
+            "vrlg_rotation_p_dob", "p-value for DoB thinness at boundary (one-sided)."
+        )
+        self.rotation_p_spr = Gauge(
+            "vrlg_rotation_p_spr", "p-value for spread wideness at boundary (one-sided)."
         )
 
-    # ─────────────── ここから薄いラッパ（関数ごとの役割をコメントで明記） ───────────────
+        # エクスポータ起動（任意）
+        if prom_port is not None:
+            try:
+                start_http_server(int(prom_port))
+                logger.info("Prometheus exporter started on :%s", prom_port)
+            except Exception as e:
+                logger.warning("failed to start Prometheus exporter: %s", e)
 
-    def set_period(self, period_s: float) -> None:
-        """〔この関数がすること〕 推定された R*（秒）を Gauge に設定します。"""
+    # ─────────── Setter / Observer 群（ここから下は呼び先から使用） ───────────
+
+    def set_period(self, seconds: float) -> None:
+        """〔この関数がすること〕 推定周期 R*（秒）を Gauge に反映します。"""
         try:
-            self.current_period_s.set(max(0.0, float(period_s)))
+            self.period_s.set(max(0.0, float(seconds)))
         except Exception:
             pass
 
     def set_active(self, is_active: bool) -> None:
-        """〔この関数がすること〕 戦略が稼働可能(1)か観察モード(0)かを設定します。"""
+        """〔この関数がすること〕 Rotation ゲートの有効/無効を 1/0 で設定します。"""
         try:
-            self.active_flag.set(1.0 if is_active else 0.0)
+            self.active_flag.set(1.0 if bool(is_active) else 0.0)
         except Exception:
             pass
 
-    def set_rotation_quality(self, score: float, n_boundary: int, p_dob: Optional[float], p_spr: Optional[float]) -> None:
+    def set_cooldown(self, seconds: float) -> None:
+        """〔この関数がすること〕 現在のクールダウン窓（秒）を Gauge に設定します。"""
+        try:
+            self.cooldown_s.set(max(0.0, float(seconds)))
+        except Exception:
+            pass
+
+    def observe_slippage(self, slip_ticks: float) -> None:
+        """〔この関数がすること〕 充足スリッページ（ticks）を Histogram に観測します。"""
+        try:
+            self.slippage_ticks.observe(max(0.0, float(slip_ticks)))
+        except Exception:
+            pass
+
+    def inc_fills(self, n: int = 1) -> None:
+        """〔この関数がすること〕 約定件数カウンタを +n します。"""
+        try:
+            self.fills.inc(int(n))
+        except Exception:
+            pass
+
+    def observe_block_interval_ms(self, ms: float) -> None:
+        """〔この関数がすること〕 ブロック間隔（ms）を Histogram と Gauge に反映します。"""
+        try:
+            v = max(0.0, float(ms))
+            self.block_interval_ms_hist.observe(v)
+            self.block_interval_last_ms.set(v)
+        except Exception:
+            pass
+
+    def set_book_impact_5s(self, value: float) -> None:
+        """〔この関数がすること〕 直近5秒の板消費率合計を Gauge に設定します。"""
+        try:
+            self.book_impact_5s.set(max(0.0, float(value)))
+        except Exception:
+            pass
+
+    def set_open_maker_btc(self, value: float) -> None:
+        """〔この関数がすること〕 未約定メーカー露出（BTC）を Gauge に設定します。"""
+        try:
+            self.open_maker_btc.set(max(0.0, float(value)))
+        except Exception:
+            pass
+
+    def inc_orders_rejected(self, n: int = 1) -> None:
+        """〔この関数がすること〕 拒否件数を +n します。"""
+        try:
+            self.orders_rejected.inc(int(n))
+        except Exception:
+            pass
+
+    def inc_orders_canceled(self, n: int = 1) -> None:
+        """〔この関数がすること〕 キャンセル件数を +n します。"""
+        try:
+            self.orders_canceled.inc(int(n))
+        except Exception:
+            pass
+
+    def inc_orders_submitted(self, n: int = 1) -> None:
+        """〔この関数がすること〕 提示した注文件数を +n します。"""
+        try:
+            self.orders_submitted.inc(int(n))
+        except Exception:
+            pass
+
+    # －－－ ゲート内訳 －－－
+    def inc_gate_phase_miss(self) -> None:
+        """〔この関数がすること〕 位相ゲート不成立を +1 カウントします。"""
+        try:
+            self.gate_phase_miss.inc()
+        except Exception:
+            pass
+
+    def inc_gate_dob_miss(self) -> None:
+        """〔この関数がすること〕 DoB 薄さ不成立を +1 カウントします。"""
+        try:
+            self.gate_dob_miss.inc()
+        except Exception:
+            pass
+
+    def inc_gate_spread_miss(self) -> None:
+        """〔この関数がすること〕 スプレッド閾未満を +1 カウントします。"""
+        try:
+            self.gate_spread_miss.inc()
+        except Exception:
+            pass
+
+    def inc_gate_obi_miss(self) -> None:
+        """〔この関数がすること〕 OBI 上限超過を +1 カウントします。"""
+        try:
+            self.gate_obi_miss.inc()
+        except Exception:
+            pass
+
+    def inc_gate_all_pass(self) -> None:
+        """〔この関数がすること〕 4 条件すべて通過を +1 カウントします。"""
+        try:
+            self.gate_all_pass.inc()
+        except Exception:
+            pass
+
+    # －－－ 鮮度 －－－
+    def set_data_staleness_ms(self, value_ms: float) -> None:
+        """〔この関数がすること〕 特徴量の鮮度（ms）を Gauge に設定します。"""
+        try:
+            self.data_staleness_ms.set(max(0.0, float(value_ms)))
+        except Exception:
+            pass
+
+    def inc_staleness_skips(self) -> None:
+        """〔この関数がすること〕 鮮度不足スキップを +1 します。"""
+        try:
+            self.staleness_skips.inc()
+        except Exception:
+            pass
+
+    def observe_spread(self, spread_ticks: float) -> None:
+        """〔この関数がすること〕 観測スプレッド（ticks）を Histogram に登録します。"""
+        try:
+            self.spread_ticks_hist.observe(max(0.0, float(spread_ticks)))
+        except Exception:
+            pass
+
+    # －－－ Rotation 品質 －－－
+    def set_rotation_quality(
+        self, score: float, n_boundary: int, p_dob: Optional[float], p_spr: Optional[float]
+    ) -> None:
         """〔この関数がすること〕 RotationDetector の品質（score/p値/サンプル数）を Gauge に反映します。"""
         try:
             self.rotation_score.set(float(score))
@@ -129,146 +262,9 @@ class Metrics:
         except Exception:
             pass
 
-    def observe_spread(self, spread_ticks: float) -> None:
-        """〔この関数がすること〕 観測したスプレッド（ticks）をヒストグラムに記録します。"""
-        try:
-            self.spread_ticks.observe(float(spread_ticks))
-        except Exception:
-            pass
-
-    def observe_block_interval_ms(self, interval_s: float) -> None:
-        """〔この関数がすること〕 ブロック間隔（秒）をミリ秒に換算して記録します。"""
-        try:
-            self.block_interval_ms.observe(max(0.0, float(interval_s) * 1000.0))
-        except Exception:
-            pass
-
     def inc_signal(self) -> None:
-        """〔この関数がすること〕 シグナル発火カウンタを +1 します。"""
+        """〔この関数がすること〕 シグナル発火回数を +1 します。"""
         try:
             self.signal_count.inc()
-        except Exception:
-            pass
-
-    def inc_orders_submitted(self, n: int = 1) -> None:
-        """〔この関数がすること〕 発注件数（maker）をカウントアップします。"""
-        try:
-            for _ in range(max(0, int(n))):
-                self.orders_submitted.inc()
-        except Exception:
-            pass
-
-    def inc_orders_canceled(self, n: int = 1) -> None:
-        """〔この関数がすること〕 キャンセル件数（TTL/手動）をカウントアップします。"""
-        try:
-            for _ in range(max(0, int(n))):
-                self.orders_canceled.inc()
-        except Exception:
-            pass
-
-    def inc_orders_rejected(self, n: int = 1) -> None:
-        """〔この関数がすること〕 取引所からの拒否件数をカウントアップします。"""
-        try:
-            for _ in range(max(0, int(n))):
-                self.orders_rejected.inc()
-        except Exception:
-            pass
-
-    def inc_fills(self, n: int = 1) -> None:
-        """〔この関数がすること〕 約定回数（クリップ）をカウントアップします。"""
-        try:
-            for _ in range(max(0, int(n))):
-                self.fills.inc()
-        except Exception:
-            pass
-
-    def observe_slippage(self, slip_ticks: float) -> None:
-        """〔この関数がすること〕 約定ごとの滑り（ticks）を記録します。"""
-        try:
-            self.slippage_ticks.observe(float(slip_ticks))
-        except Exception:
-            pass
-
-    def observe_holding_ms(self, holding_ms: float) -> None:
-        """〔この関数がすること〕 約定からクローズまでの保有時間（ms）を記録します。"""
-        try:
-            self.holding_ms.observe(max(0.0, float(holding_ms)))
-        except Exception:
-            pass
-
-    def observe_pnl_bps(self, pnl_bps: float) -> None:
-        """〔この関数がすること〕 取引ごとの損益（bps, 手数料込み）を記録します。"""
-        try:
-            self.pnl_bps.observe(float(pnl_bps))
-        except Exception:
-            pass
-
-    def set_book_impact_5s(self, impact_fraction: float) -> None:
-        """〔この関数がすること〕 直近5秒の板消費率合計（TopDepth比）を Gauge に設定します。"""
-        try:
-            self.book_impact_5s.set(max(0.0, float(impact_fraction)))
-        except Exception:
-            pass
-
-    def set_cooldown(self, seconds: float) -> None:
-        """〔この関数がすること〕 現在のクールダウン秒数を Gauge に設定します。"""
-        try:
-            self.cooldown_s.set(max(0.0, float(seconds)))
-        except Exception:
-            pass
-
-    def set_open_maker_btc(self, value: float) -> None:
-        """〔この関数がすること〕 未約定メーカー合計BTCを Gauge に設定します。"""
-        try:
-            self.open_maker_btc.set(max(0.0, float(value)))
-        except Exception:
-            pass
-
-    def set_data_staleness_ms(self, value_ms: float) -> None:
-        """〔この関数がすること〕 最新特徴量の鮮度（ms）を Gauge に設定します。"""
-        try:
-            self.data_staleness_ms.set(max(0.0, float(value_ms)))
-        except Exception:
-            pass
-
-    def inc_staleness_skips(self) -> None:
-        """〔この関数がすること〕 鮮度不足のスキップを +1 カウントします。"""
-        try:
-            self.staleness_skips.inc()
-        except Exception:
-            pass
-
-    def inc_gate_phase_miss(self) -> None:
-        """〔この関数がすること〕 位相ゲート不成立を +1 カウントする。"""
-        try:
-            self.gate_phase_miss.inc()
-        except Exception:
-            pass
-
-    def inc_gate_dob_miss(self) -> None:
-        """〔この関数がすること〕 DoB 薄さ不成立を +1 カウントする。"""
-        try:
-            self.gate_dob_miss.inc()
-        except Exception:
-            pass
-
-    def inc_gate_spread_miss(self) -> None:
-        """〔この関数がすること〕 スプレッド閾未満を +1 カウントする。"""
-        try:
-            self.gate_spread_miss.inc()
-        except Exception:
-            pass
-
-    def inc_gate_obi_miss(self) -> None:
-        """〔この関数がすること〕 OBI 上限超過を +1 カウントする。"""
-        try:
-            self.gate_obi_miss.inc()
-        except Exception:
-            pass
-
-    def inc_gate_all_pass(self) -> None:
-        """〔この関数がすること〕 4 条件すべて通過を +1 カウントする。"""
-        try:
-            self.gate_all_pass.inc()
         except Exception:
             pass

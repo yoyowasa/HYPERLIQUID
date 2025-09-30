@@ -76,7 +76,7 @@ async def _subscribe_level1(
 ) -> None:
     """Stream best bid/ask quotes from the exchange WebSocket."""
 
-    if subscribe_level2 is None:
+    if subscribe_level2 is None or not callable(subscribe_level2):
         try:
             from hl_core.api.ws import subscribe_level2 as subscribe_level2_fn  # type: ignore
         except Exception as exc:
