@@ -76,7 +76,7 @@ async def _subscribe_level1(
 ) -> None:
     """Stream best bid/ask quotes from the exchange WebSocket."""
 
-    if subscribe_level2 is None:
+    if subscribe_level2 is None or not callable(subscribe_level2):
         try:
             from hl_core.api.ws import subscribe_level2 as subscribe_level2_fn  # type: ignore
         except Exception as exc:
@@ -207,7 +207,7 @@ async def run_feeds(cfg, out_queue: "asyncio.Queue[FeatureSnapshot]") -> None:
     pump_task = asyncio.create_task(_feature_pump(cfg, out_queue, lv1_queue), name="feature_pump")
 
     # まずは WS を試みる
-    producer_task = asyncio.create_task(_subscribe_level1(symbol, lv1_queue), name="l2_subscriber")
+    producer_task = asyncio.create_task(_subscribe_level1(symbol, lv1_queue, tick), name="l2_subscriber")
     producer_label = "ws"
 
     try:
