@@ -297,6 +297,8 @@ class PFPLStrategy:
             await self._refresh_position()
             try:
                 await anyio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("position refresh sleep failed: %s", exc)
                 await asyncio.sleep(max(interval, 1))
