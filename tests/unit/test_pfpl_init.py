@@ -4,6 +4,7 @@ from decimal import Decimal
 import logging
 import pytest
 from bots.pfpl import PFPLStrategy
+import bots.pfpl.strategy as strategy_module
 
 TEST_ACCOUNT = "0xTEST"
 TEST_KEY = "0x" + "11" * 32
@@ -54,6 +55,37 @@ def test_init_adds_file_handler_once(monkeypatch):
         PFPLStrategy._FILE_HANDLERS.clear()
 
     assert after_first == after_second > before
+
+
+def test_yaml_config_overrides_cli_args(monkeypatch):
+    _set_credentials(monkeypatch, "HL_ACCOUNT_ADDRESS", "HL_PRIVATE_KEY")
+
+    yaml_override = {"target_symbol": "ETH-PERP", "dry_run": False}
+    monkeypatch.setattr(
+        strategy_module.yaml,
+        "safe_load",
+        lambda raw_conf: yaml_override.copy(),
+    )
+
+    cli_symbol = "BTC-PERP"
+    cli_dry_run = True
+
+    strategy: PFPLStrategy | None = None
+    try:
+        strategy = PFPLStrategy(
+            config={"target_symbol": cli_symbol, "dry_run": cli_dry_run},
+            semaphore=Semaphore(1),
+        )
+
+        assert strategy.config.get("target_symbol") == yaml_override["target_symbol"]
+        assert strategy.symbol == yaml_override["target_symbol"]
+        assert strategy.config.get("dry_run") == yaml_override["dry_run"]
+        assert strategy.config.get("target_symbol") != cli_symbol
+        assert strategy.config.get("dry_run") != cli_dry_run
+    finally:
+        if strategy is not None:
+            _remove_strategy_handler(strategy.symbol)
+        PFPLStrategy._FILE_HANDLERS.clear()
 
 
 @pytest.mark.parametrize(
