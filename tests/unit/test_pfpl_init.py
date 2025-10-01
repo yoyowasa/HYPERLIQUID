@@ -1,7 +1,10 @@
 # tests/unit/test_pfpl_init.py
+import importlib
 from asyncio import Semaphore
 from decimal import Decimal
 import logging
+import sys
+
 import pytest
 from bots.pfpl import PFPLStrategy
 import bots.pfpl.strategy as strategy_module
@@ -42,7 +45,7 @@ def test_init_adds_file_handler_once(monkeypatch):
 
     sem = Semaphore(1)
 
-    first_strategy: PFPLStrategy | None = None
+    first_strategy = None
     try:
         before = len(logging.getLogger().handlers)
         first_strategy = PFPLStrategy(config={}, semaphore=sem)
@@ -70,12 +73,14 @@ def test_yaml_config_overrides_cli_args(monkeypatch):
     cli_symbol = "BTC-PERP"
     cli_dry_run = True
 
-    strategy: PFPLStrategy | None = None
+    strategy = None
     try:
         strategy = PFPLStrategy(
             config={"target_symbol": cli_symbol, "dry_run": cli_dry_run},
             semaphore=Semaphore(1),
         )
+
+        assert strategy is not None
 
         assert strategy.config.get("target_symbol") == yaml_override["target_symbol"]
         assert strategy.symbol == yaml_override["target_symbol"]
@@ -88,6 +93,65 @@ def test_yaml_config_overrides_cli_args(monkeypatch):
         PFPLStrategy._FILE_HANDLERS.clear()
 
 
+def test_init_loads_yaml_config(monkeypatch):
+    _set_credentials(monkeypatch, "HL_ACCOUNT_ADDRESS", "HL_PRIVATE_KEY")
+
+    strategy = None
+    try:
+        PFPLStrategy._FILE_HANDLERS.clear()
+        _remove_strategy_handler()
+
+        strategy = PFPLStrategy(config={}, semaphore=Semaphore(1))
+
+        assert strategy is not None
+
+        assert strategy.config.get("order_usd") == 10
+    finally:
+        if strategy is not None:
+            _remove_strategy_handler(strategy.symbol)
+        PFPLStrategy._FILE_HANDLERS.clear()
+
+
+def test_strategy_import_requires_pyyaml(monkeypatch):
+    module_name = "bots.pfpl.strategy"
+    package_name = "bots.pfpl"
+
+    try:
+        original_yaml_module = importlib.import_module("yaml")
+    except ModuleNotFoundError:
+        original_yaml_module = None
+
+    sys.modules.pop(module_name, None)
+    sys.modules.pop(package_name, None)
+    if original_yaml_module is not None:
+        sys.modules["yaml"] = original_yaml_module
+    else:
+        sys.modules.pop("yaml", None)
+    monkeypatch.setitem(sys.modules, "yaml", None)
+
+    restored_strategy_module = None
+    restored_package_module = None
+    try:
+        with pytest.raises(RuntimeError) as excinfo:
+            importlib.import_module(module_name)
+
+        assert "PyYAML" in str(excinfo.value)
+    finally:
+        sys.modules.pop(module_name, None)
+        sys.modules.pop(package_name, None)
+        if original_yaml_module is not None:
+            sys.modules["yaml"] = original_yaml_module
+        else:
+            sys.modules.pop("yaml", None)
+
+        restored_package_module = importlib.import_module(package_name)
+        restored_strategy_module = importlib.import_module(module_name)
+
+        global strategy_module, PFPLStrategy
+        strategy_module = restored_strategy_module
+        PFPLStrategy = restored_package_module.PFPLStrategy
+
+
 @pytest.mark.parametrize(
     ("account_env", "secret_env"),
     [
@@ -98,9 +162,10 @@ def test_yaml_config_overrides_cli_args(monkeypatch):
 def test_init_accepts_new_and_legacy_env(monkeypatch, account_env, secret_env):
     _set_credentials(monkeypatch, account_env, secret_env)
 
-    strategy: PFPLStrategy | None = None
+    strategy = None
     try:
         strategy = PFPLStrategy(config={}, semaphore=Semaphore(1))
+        assert strategy is not None
         assert strategy.account == TEST_ACCOUNT
         assert strategy.secret == TEST_KEY
     finally:
