@@ -24,18 +24,11 @@ logging.getLogger("hl_core.api").setLevel(logging.DEBUG)
 
 try:  # pragma: no cover - PyYAML may be absent in the test environment
     import yaml  # type: ignore
-except Exception:  # noqa: F401 - fallback when PyYAML isn't installed
-    import json as _json
-
-    class _YAMLModule:  # minimal shim with safe_load
-        @staticmethod
-        def safe_load(stream: str):  # type: ignore[override]
-            try:
-                return _json.loads(stream)
-            except Exception:
-                return {}
-
-    yaml = _YAMLModule()  # type: ignore
+except ImportError as exc:  # noqa: F401 - surface missing PyYAML explicitly
+    raise RuntimeError(
+        "PyYAML が見つかりません。pfpl ボットの設定ファイルを読み込むには "
+        "`pip install pyyaml` などで PyYAML をインストールしてください。"
+    ) from exc
 
 try:  # pragma: no cover - eth_account is optional for tests
     from eth_account.account import Account  # type: ignore
