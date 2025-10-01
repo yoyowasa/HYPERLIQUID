@@ -12,7 +12,7 @@ from typing import Any, Deque, Dict, List, Optional
 
 from hl_core.utils.logger import get_logger
 
-logger = get_logger("VRLG.decisions")
+logger = get_logger("DecisionLog")
 
 
 class DecisionLogger:
