@@ -1,7 +1,9 @@
 # tests/unit/test_pfpl_init.py
+import importlib
 from asyncio import Semaphore
 from decimal import Decimal
 import logging
+import sys
 import pytest
 from bots.pfpl import PFPLStrategy
 import bots.pfpl.strategy as strategy_module
@@ -86,6 +88,63 @@ def test_yaml_config_overrides_cli_args(monkeypatch):
         if strategy is not None:
             _remove_strategy_handler(strategy.symbol)
         PFPLStrategy._FILE_HANDLERS.clear()
+
+
+def test_init_loads_yaml_config(monkeypatch):
+    _set_credentials(monkeypatch, "HL_ACCOUNT_ADDRESS", "HL_PRIVATE_KEY")
+
+    strategy: PFPLStrategy | None = None
+    try:
+        PFPLStrategy._FILE_HANDLERS.clear()
+        _remove_strategy_handler()
+
+        strategy = PFPLStrategy(config={}, semaphore=Semaphore(1))
+
+        assert strategy.config.get("order_usd") == 10
+    finally:
+        if strategy is not None:
+            _remove_strategy_handler(strategy.symbol)
+        PFPLStrategy._FILE_HANDLERS.clear()
+
+
+def test_strategy_import_requires_pyyaml(monkeypatch):
+    module_name = "bots.pfpl.strategy"
+    package_name = "bots.pfpl"
+
+    try:
+        original_yaml_module = importlib.import_module("yaml")
+    except ModuleNotFoundError:
+        original_yaml_module = None
+
+    sys.modules.pop(module_name, None)
+    sys.modules.pop(package_name, None)
+    if original_yaml_module is not None:
+        sys.modules["yaml"] = original_yaml_module
+    else:
+        sys.modules.pop("yaml", None)
+    monkeypatch.setitem(sys.modules, "yaml", None)
+
+    restored_strategy_module = None
+    restored_package_module = None
+    try:
+        with pytest.raises(RuntimeError) as excinfo:
+            importlib.import_module(module_name)
+
+        assert "PyYAML" in str(excinfo.value)
+    finally:
+        sys.modules.pop(module_name, None)
+        sys.modules.pop(package_name, None)
+        if original_yaml_module is not None:
+            sys.modules["yaml"] = original_yaml_module
+        else:
+            sys.modules.pop("yaml", None)
+
+        restored_package_module = importlib.import_module(package_name)
+        restored_strategy_module = importlib.import_module(module_name)
+
+        global strategy_module, PFPLStrategy
+        strategy_module = restored_strategy_module
+        PFPLStrategy = restored_package_module.PFPLStrategy
 
 
 @pytest.mark.parametrize(
