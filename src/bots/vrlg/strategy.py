@@ -33,7 +33,7 @@ from .execution_engine import ExecutionEngine
 from .risk_management import RiskManager
 from .metrics import Metrics  # 〔この import がすること〕 Prometheus 送信ラッパを使えるようにする
 from .data_feed import run_feeds, FeatureSnapshot  # 〔この import がすること〕 L2購読→100ms特徴量生成（run_feeds）と特徴量型を使えるようにする
-from .decision_log import DecisionLogger  # 〔この import がすること〕 意思決定のJSONログを使えるようにする
+from hl_core.utils.decision_log import DecisionLogger  # 〔この import がすること〕 意思決定のJSONログを使えるようにする
 from .size_allocator import SizeAllocator  # 〔この import がすること〕 口座割合ベースのサイズ決定を使えるようにする
 
 logger = get_logger("VRLG")
