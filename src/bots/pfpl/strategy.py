@@ -74,7 +74,7 @@ class PFPLStrategy:
             with yml_path.open(encoding="utf-8") as f:
                 raw_conf = f.read()
             yaml_conf = yaml.safe_load(raw_conf) or {}
-        self.config = {**yaml_conf, **config}
+        self.config = {**config, **yaml_conf}
         # --- Funding 直前クローズ用バッファ秒数（デフォルト 120）
         self.funding_close_buffer_secs: int = int(
             getattr(self, "cfg", getattr(self, "config", {})).get(
