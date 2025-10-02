@@ -525,25 +525,30 @@ class VRLGStrategy:
                 # 〔このブロックがすること〕
                 # 「TTL経過」 vs 「スプレッド≤1tick縮小」の先着で処理を分岐します。
                 ttl_s = float(self.cfg.exec.order_ttl_ms) / 1000.0
+                wait_start = time.time()
+                # 早期エグジット候補：スプレッドが 1 tick に縮小したら即クローズ
+                # 〔この行がすること〕 しきい値を設定から受け取り、縮小判定に使う
+                collapsed = await self._wait_spread_collapse(
+                    threshold_ticks=float(getattr(self.cfg.exec, "spread_collapse_ticks", 1.0)),
+                    timeout_s=ttl_s,
+                    poll_s=0.02,
+                )
+                # 〔このブロックがすること〕 forbid_market の場合は早期IOCをスキップする旨を先に記録（TTL へフォールバック）
+                if collapsed and adv.forbid_market:
+                    self.decisions.log("exit_policy", policy="forbid_market_skip_ioc", trace_id=getattr(sig, "trace_id", None))
+                elapsed = time.time() - wait_start
+                remaining_ttl = max(0.0, ttl_s - elapsed)
 
                 if adv.forbid_market:
                     self.decisions.log("exit_policy", policy="forbid_market")  # 〔この行がすること〕 早期IOCを行わない方針であることを記録
                     # 成行は禁止 → 通常通り TTL まで待ってキャンセル（Time‑Stopは別途走る）
 
-                    await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
+                    await self.exe.wait_fill_or_ttl(order_ids, timeout_s=remaining_ttl)
 
                     self.decisions.log("exit", reason="ttl", trace_id=getattr(sig, "trace_id", None))  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
 
                 else:
-                    # 早期エグジット候補：スプレッドが 1 tick に縮小したら即クローズ
-                    # 〔この行がすること〕 しきい値を設定から受け取り、縮小判定に使う
-                    collapsed = await self._wait_spread_collapse(
-                        threshold_ticks=float(getattr(self.cfg.exec, "spread_collapse_ticks", 1.0)),
-                        timeout_s=ttl_s,
-                        poll_s=0.02,
-                    )
-
-                    if collapsed:
+                    if collapsed and not adv.forbid_market:  # 〔この行がすること〕 forbid_market=True のときは早期IOCを行わず、TTL 処理へ回す
                         self.decisions.log("exit", reason="spread_collapse", trace_id=getattr(sig, "trace_id", None))  # 〔この行がすること〕 スプレッド縮小で早期IOCしたことを記録
                         # 〔このブロックがすること〕 早期IOCでクローズしたので、保護用STOPを取り消し、Time‑Stopを中断する
                         try:
@@ -573,7 +578,7 @@ class VRLGStrategy:
                         except Exception:
                             pass
                         # 縮小しなかった → TTL まで待って通常解消
-                        await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
+                        await self.exe.wait_fill_or_ttl(order_ids, timeout_s=remaining_ttl)
 
                         await self.exe.flatten_ioc()
                         await _cancel_stops_and_timers()
