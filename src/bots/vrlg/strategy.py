@@ -185,6 +185,7 @@ class VRLGStrategy:
                         obi=float(feat.obi),
                         trace_id=sig.trace_id,
                     )  # 〔この行がすること〕 シグナルの根拠となる特徴量を記録
+                    self.metrics.inc_signals(1)  # 〔この行がすること〕 RotationがActiveのもとで立ったシグナルを1件カウントする
                     self.metrics.inc_signal()  # 〔この行がすること〕 シグナル発火回数をカウントアップ
                     await self.q_signals.put(sig)
             except asyncio.CancelledError:
