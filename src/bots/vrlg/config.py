@@ -127,7 +127,7 @@ def coerce_vrlg_config(data: Any) -> VRLGConfig:
     g = _sec(data, "signal")
     e = _sec(data, "exec")
     r = _sec(data, "risk")
-    l = _sec(data, "latency")
+    latency_section = _sec(data, "latency")
 
     symbol = SymbolCfg(
         name=str(_val(s, "name", SymbolCfg.name)),
@@ -170,9 +170,9 @@ def coerce_vrlg_config(data: Any) -> VRLGConfig:
         block_interval_stop_s=float(_val(r, "block_interval_stop_s", RiskCfg.block_interval_stop_s)),
     )
     latency = LatencyCfg(
-        ingest_ms=int(_val(l, "ingest_ms", LatencyCfg.ingest_ms)),
-        order_rt_ms=int(_val(l, "order_rt_ms", LatencyCfg.order_rt_ms)),
-        max_staleness_ms=int(_val(l, "max_staleness_ms", LatencyCfg.max_staleness_ms)),
+        ingest_ms=int(_val(latency_section, "ingest_ms", LatencyCfg.ingest_ms)),
+        order_rt_ms=int(_val(latency_section, "order_rt_ms", LatencyCfg.order_rt_ms)),
+        max_staleness_ms=int(_val(latency_section, "max_staleness_ms", LatencyCfg.max_staleness_ms)),
     )
     return VRLGConfig(symbol=symbol, signal=signal, exec=exec_, risk=risk, latency=latency)
 

@@ -10,7 +10,7 @@ import contextlib  # 〔この import がすること〕 タイマータスク�
 import signal
 import sys
 import time  # 〔この import がすること〕 ブロック間隔の計算（秒）に使用します
-from typing import Optional, TYPE_CHECKING
+from typing import Optional
 
 # uvloop があれば高速化（なくても動く）
 try:
@@ -21,9 +21,6 @@ except Exception:  # pragma: no cover
 # 〔この関数がすること〕: 共通ロガー/コンフィグ読込は PFPL と共有（hl_core）を使います。
 from hl_core.utils.logger import get_logger
 from hl_core.utils.config import load_config
-
-if TYPE_CHECKING:
-    from .config import VRLGConfig
 
 # 〔この import 群がすること〕
 # データ購読・位相検出・シグナル判定・発注・リスク管理の各コンポーネントを司令塔に読ませます。
