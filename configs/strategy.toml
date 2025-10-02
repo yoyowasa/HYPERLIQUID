@@ -1,53 +1,52 @@
+# configs/strategy.toml
 # 〔このファイルがすること〕
-# VRLG 戦略の全コンポーネント（データ/位相/シグナル/発注/リスク）が参照する設定をまとめます。
-# PFPL と共通の設定ローダ（hl_core.utils.config）で読み込みます。
+# VRLG 戦略の全設定（起動用の既定値）。これまで実装した各モジュールが参照するキーを網羅しています。
 
 [symbol]
-# 〔このセクションがすること〕 銘柄とティックサイズの定義
-name = "BTCUSD-PERP"   # 取引シンボル名
-tick_size = 0.5        # 価格の最小刻み
+name      = "BTCUSD-PERP"  # 〔銘柄名〕
+tick_size = 0.5            # 〔価格の最小刻み〕
 
 [signal]
-# 〔このセクションがすること〕 シグナルの4条件ゲートと周期検出のパラメータ
-N = 80                 # DoB ローリング中央値の窓サイズ
-x = 0.25               # DoB 閾: dob < median * (1 - x)
-y = 2                  # スプレッド閾（ティック）
-z = 0.6                # 位相ゲートの半幅（比率, 0<z<0.5に自動クリップ）
-obi_limit = 0.6        # 板不均衡 |OBI| の上限
-T_roll = 30.0          # 周期推定のロール窓（秒, RotationDetector 用）
-# RotationDetector 調整用（必要なときだけ変更）
-p_thresh = 0.01              # 〔この設定がすること〕 p値の閾値（片側）
-period_min_s = 0.8           # 〔この設定がすること〕 周期探索の下限（秒）
-period_max_s = 5.0           # 〔この設定がすること〕 周期探索の上限（秒）
-min_boundary_samples = 200   # 〔この設定がすること〕 境界で必要な最小サンプル数
-min_off_samples = 50         # 〔この設定がすること〕 非境界で必要な最小サンプル数
+N           = 80     # 〔中央値窓〕DoB の中央値を出すための履歴サイズ
+x           = 0.25   # 〔DoB 閾〕中央値の (1-x) 未満で薄板とみなす
+y           = 2.0    # 〔スプレッド閾（ticks）〕この値以上で広がったとみなす
+z           = 0.6    # 〔位相幅（周期比）〕phase < z or phase > 1-z を境界とする
+obi_limit   = 0.6    # 〔OBI 上限〕|OBI| ≤ 0.6 のときだけフェア値近辺を狙う
+T_roll      = 30.0   # 〔周期推定のロール窓（秒）〕自己相関・検定の対象期間
+# RotationDetector 調整（Step42）
+p_thresh             = 0.01  # 〔p値閾〕DoB/Spread ともにこれ未満で Active
+period_min_s         = 0.8   # 〔周期探索下限（秒）〕
+period_max_s         = 5.0   # 〔周期探索上限（秒）〕
+min_boundary_samples = 200   # 〔位相境界の必要サンプル数〕
+min_off_samples      = 50    # 〔非境界の必要サンプル数〕
 
 [exec]
-# 〔このセクションがすること〕 発注ロジック（post-only Iceberg/TTL/クールダウン）の設定
-order_ttl_ms = 1000        # 指値の寿命（ミリ秒）
-display_ratio = 0.25       # Iceberg display = total * display_ratio（min/maxで挟む）
-min_display_btc = 0.01     # Iceberg の最小表示数量
-max_exposure_btc = 0.8     # 総エクスポージャ上限（片側合計）
-cooldown_factor = 2.0      # フィル後の同方向クールダウン時間 = 2×R* 秒
-percent_min = 0.002        # 〔この設定がすること〕 口座残高に対する最小割合（0.2%）
-percent_max = 0.005        # 〔この設定がすること〕 口座残高に対する最大割合（0.5%）
-splits = 1                 # 〔この設定がすること〕 クリップ分割数（>1 で均等割り）
-min_clip_btc = 0.001       # 〔この設定がすること〕 1クリップの最小BTC数量
-equity_usd = 10000.0       # 〔この設定がすること〕 口座残高USD（API未接続時の既定値）
-offset_ticks_normal = 0.5     # 〔この設定がすること〕 通常置きの価格オフセット（±tick）
-offset_ticks_deep   = 1.5     # 〔この設定がすること〕 深置きの価格オフセット（±tick）
-spread_collapse_ticks = 1.0   # 〔この設定がすること〕 早期IOCの縮小判定のしきい値（tick）
-side_mode = "both"        # 〔この設定がすること〕 発注の向き: "both" | "buy" | "sell"
+order_ttl_ms     = 1000    # 〔TTL（ms）〕未充足はこの時間でキャンセル
+display_ratio    = 0.25    # 〔表示量比率〕display = min(max(total×ratio, min_display), total)
+min_display_btc  = 0.01    # 〔最小表示量（BTC）〕
+max_exposure_btc = 0.8     # 〔メーカー露出の上限（BTC）〕
+cooldown_factor  = 2.0     # 〔クールダウン長〕= factor × R*（秒）
+# 置き方（Step31）
+offset_ticks_normal     = 0.5   # 〔通常置きオフセット〕mid ± 0.5 tick
+offset_ticks_deep       = 1.5   # 〔深置きオフセット〕mid ± 1.5 ticks
+spread_collapse_ticks   = 1.0   # 〔早期IOC〕スプレッドがこの値以下に縮んだら即クローズ
+side_mode               = "both" # 〔発注の向き〕"both" | "buy" | "sell"
+# 分割（Step43）
+splits           = 1      # 〔子注文本数（片面あたり）〕
+# サイズ割当（Step64）
+percent_min      = 0.002  # 〔口座比率の下限〕0.2%
+percent_max      = 0.005  # 〔口座比率の上限〕0.5%
+min_clip_btc     = 0.001  # 〔クリップの最小BTC〕これ未満は発注しない
+equity_usd       = 10000.0 # 〔想定口座USD（紙/簡易運用用）〕
 
 [risk]
-# 〔このセクションがすること〕 ルールベースのリスク管理の閾値
-max_slippage_ticks = 1     # 1分平均の滑りがこれを超えたら成行禁止/深置き
-max_book_impact = 0.02     # 5秒の板消費率合計（TopDepth比）が2%超でサイズ半減
-time_stop_ms = 1200        # タイムストップの上限（ミリ秒）
-stop_ticks = 3             # OCO用の逆指値距離（ティック）
+max_slippage_ticks    = 1.0   # 〔滑り上限（1分平均）〕超で成行禁止＆深置き
+max_book_impact       = 0.02  # 〔板消費率（5秒合計）上限〕超でサイズ0.5倍
+time_stop_ms          = 1200  # 〔Time-Stop（ms）〕保有がこれを超えたら強制クローズ
+stop_ticks            = 3.0   # 〔OCO損切り幅（ticks）〕
+block_interval_stop_s = 4.0   # 〔ブロック間隔のkill-switch閾（移動中央値, 秒）〕
 
 [latency]
-# 〔このセクションがすること〕 レイテンシ想定（バックテスト/監視のメトリクスに使用）
-ingest_ms = 10             # 購読（WS）遅延の想定
-order_rt_ms = 60           # 発注/キャンセルの往復遅延の想定
-max_staleness_ms = 300    # 〔この設定がすること〕 特徴量の鮮度しきい値（ms）。これを超えると発注をスキップ
+ingest_ms        = 10   # 〔WS取り込み遅延（ms, BT用注入）〕
+order_rt_ms      = 60   # 〔発注RTT（ms, BT用注入）〕
+max_staleness_ms = 300  # 〔鮮度ゲート〕特徴量がこの閾超なら発注スキップ
