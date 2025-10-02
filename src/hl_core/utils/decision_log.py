@@ -1,7 +1,6 @@
 
 # 〔このモジュールがすること〕
-# VRLG の意思決定イベントを「1行JSON」で記録します（リングバッファ + 任意でファイル書き出し）。
-# ログ項目例: signal/order_intent/order_submitted/exit/risk_pause/fill/block_interval など。
+# Bot 横断で使える「意思決定イベントの1行JSONロガー」を提供します（リングバッファ + 任意のJSONL追記）。
 
 from __future__ import annotations
 
