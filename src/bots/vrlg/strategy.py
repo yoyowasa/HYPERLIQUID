@@ -545,6 +545,16 @@ class VRLGStrategy:
 
                     if collapsed:
                         self.decisions.log("exit", reason="spread_collapse", trace_id=getattr(sig, "trace_id", None))  # 〔この行がすること〕 スプレッド縮小で早期IOCしたことを記録
+                        # 〔このブロックがすること〕 早期IOCでクローズしたので、保護用STOPを取り消し、Time‑Stopを中断する
+                        try:
+                            for _sid in stop_ids:
+                                await self.exe.cancel_order_safely(_sid)  # STOP注文の取消（reduce-only）
+                        except Exception:
+                            pass
+                        try:
+                            ts_task.cancel()  # Time‑Stopタスクを中断
+                        except Exception:
+                            pass
                         # 先に maker を素早くキャンセルしてから IOC で解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=0.0)
 
@@ -552,6 +562,16 @@ class VRLGStrategy:
                         await _cancel_stops_and_timers()
                     else:
                         self.decisions.log("exit", reason="ttl", trace_id=getattr(sig, "trace_id", None))  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
+                        # 〔このブロックがすること〕 TTL到達でクローズしたので、保護用STOPを取り消し、Time‑Stopを中断する
+                        try:
+                            for _sid in stop_ids:
+                                await self.exe.cancel_order_safely(_sid)  # STOP注文の取消（reduce-only）
+                        except Exception:
+                            pass
+                        try:
+                            ts_task.cancel()  # Time‑Stopタスクを中断
+                        except Exception:
+                            pass
                         # 縮小しなかった → TTL まで待って通常解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
 
