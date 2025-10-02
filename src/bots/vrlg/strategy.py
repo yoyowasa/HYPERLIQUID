@@ -20,7 +20,6 @@ except Exception:  # pragma: no cover
 
 # 〔この関数がすること〕: 共通ロガー/コンフィグ読込は PFPL と共有（hl_core）を使います。
 from hl_core.utils.logger import get_logger
-from hl_core.utils.config import load_config
 
 # 〔この import 群がすること〕
 # データ購読・位相検出・シグナル判定・発注・リスク管理の各コンポーネントを司令塔に読ませます。
@@ -29,10 +28,25 @@ from .signal_detector import SignalDetector
 from .execution_engine import ExecutionEngine
 from .risk_management import RiskManager
 from .metrics import Metrics  # 〔この import がすること〕 Prometheus 送信ラッパを使えるようにする
-from .config import VRLGConfig, coerce_vrlg_config  # 〔この import がすること〕 dict設定を dataclass へ変換し、型ヒントとしても利用する
+from .config import (
+    VRLGConfig,
+    coerce_vrlg_config,
+    load_vrlg_config,
+)  # 〔この import がすること〕 dict設定を dataclass へ変換し、型ヒントと専用ローダーを利用する
+
 from .data_feed import run_feeds, FeatureSnapshot  # 〔この import がすること〕 L2購読→100ms特徴量生成（run_feeds）と特徴量型を使えるようにする
 from hl_core.utils.decision_log import DecisionLogger  # 〔この import がすること〕 共通ロガー（PFPL等と共有）を利用する
 from .size_allocator import SizeAllocator  # 〔この import がすること〕 クリップサイズ算出ロジックを利用する
+
+
+def load_config(path: str):
+    """〔この関数がすること〕
+    VRLG の設定をファイルから読み込み、必ず dataclass（VRLGConfig）で返します。
+    ・実行時: load_vrlg_config を呼んで TOML/YAML を読み込み → dataclass 化
+    ・テスト時: monkeypatch で strategy_mod.load_config を差し替え可能（dict を返されても後段の coerce で吸収）
+    """
+
+    return load_vrlg_config(path)
 
 
 logger = get_logger("VRLG")
