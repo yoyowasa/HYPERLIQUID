@@ -32,6 +32,7 @@ from .signal_detector import SignalDetector
 from .execution_engine import ExecutionEngine
 from .risk_management import RiskManager
 from .metrics import Metrics  # 〔この import がすること〕 Prometheus 送信ラッパを使えるようにする
+from .config import coerce_vrlg_config  # 〔この import がすること〕 dict設定を dataclass へ変換する関数を使えるようにする
 from .data_feed import run_feeds, FeatureSnapshot  # 〔この import がすること〕 L2購読→100ms特徴量生成（run_feeds）と特徴量型を使えるようにする
 from hl_core.utils.decision_log import DecisionLogger  # 〔この import がすること〕 共通ロガー（PFPL等と共有）を利用する
 from .size_allocator import SizeAllocator  # 〔この import がすること〕 クリップサイズ算出ロジックを利用する
@@ -57,10 +58,8 @@ class VRLGStrategy:
         """
         self.config_path = config_path
         self.paper = paper
-        raw_cfg = load_config(config_path)
-        from .config import coerce_vrlg_config  # 局所 import（循環回避と単一ステップ適用のため）
-
-        self.cfg: VRLGConfig = coerce_vrlg_config(raw_cfg)
+        self.cfg = load_config(config_path)
+        self.cfg = coerce_vrlg_config(self.cfg)  # 〔この行がすること〕 dict から VRLGConfig（属性アクセス可）へ変換する
         self._tasks: list[asyncio.Task] = []
         self._stopping = asyncio.Event()
 
