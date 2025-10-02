@@ -66,8 +66,6 @@ class PFPLStrategy:
         last_order_ts: float | None,
         funding_blocked: bool,
     ) -> dict:
-        import time, logging
-
         logger = getattr(self, "logger", None) or getattr(self, "log", None) or logging.getLogger(__name__)
         now = time.time()
 
