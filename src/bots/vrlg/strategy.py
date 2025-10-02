@@ -33,6 +33,7 @@ from .config import (
     coerce_vrlg_config,
     load_vrlg_config,
 )  # 〔この import がすること〕 dict設定を dataclass へ変換し、型ヒントと専用ローダーを利用する
+
 from .data_feed import run_feeds, FeatureSnapshot  # 〔この import がすること〕 L2購読→100ms特徴量生成（run_feeds）と特徴量型を使えるようにする
 from hl_core.utils.decision_log import DecisionLogger  # 〔この import がすること〕 共通ロガー（PFPL等と共有）を利用する
 from .size_allocator import SizeAllocator  # 〔この import がすること〕 クリップサイズ算出ロジックを利用する
