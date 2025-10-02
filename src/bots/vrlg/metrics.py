@@ -53,11 +53,14 @@ class Metrics:
         self.period_s = Gauge("vrlg_period_s", "Estimated rotation period R* (seconds).")
         self.active_flag = Gauge("vrlg_is_active", "Rotation gate active (1) or paused (0).")
         self.cooldown_s = Gauge("vrlg_cooldown_s", "Current cooldown window (s).")
-        self.signal_count = Counter("vrlg_signals", "Number of signals emitted.")
+        self.signal_total = Counter("vrlg_signals", "Number of signals emitted.")
 
         # 実行系
         self.slippage_ticks = Histogram("vrlg_slippage_ticks", "Per-fill slippage (ticks).")
         self.fills = Counter("vrlg_fills", "Number of fills observed.")
+        self.signal_count = Counter(
+            "vrlg_signal_count", "Number of actionable signals (rotation active)."
+        )  # 〔この行がすること〕 実行対象のシグナル件数を数える
         self.orders_rejected = Counter("vrlg_orders_rejected", "Number of orders rejected by venue.")
         self.orders_canceled = Counter(
             "vrlg_orders_canceled", "Number of orders canceled (TTL/explicit)."
@@ -142,6 +145,13 @@ class Metrics:
         """〔この関数がすること〕 約定件数カウンタを +n します。"""
         try:
             self.fills.inc(int(n))
+        except Exception:
+            pass
+
+    def inc_signals(self, n: int = 1) -> None:
+        """〔この関数がすること〕 実行対象のシグナル件数を +n します（Rotation が Active のときに限る想定）。"""
+        try:
+            self.signal_count.inc(int(n))
         except Exception:
             pass
 
@@ -265,6 +275,6 @@ class Metrics:
     def inc_signal(self) -> None:
         """〔この関数がすること〕 シグナル発火回数を +1 します。"""
         try:
-            self.signal_count.inc()
+            self.signal_total.inc()
         except Exception:
             pass

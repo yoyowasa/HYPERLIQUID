@@ -81,6 +81,7 @@ class VRLGStrategy:
 
         # 〔この属性がすること〕直近の特徴量を保持し、発注時に板消費率などの参照に使います。
         self._last_features: Optional[FeatureSnapshot] = None
+        self._order_trace: dict[str, str] = {}  # 〔この行がすること〕 order_id → trace_id の対応を保持して、fills で trace_id を引けるようにする
 
         # 〔この属性がすること〕: 各コンポーネントの実体を生成し司令塔に保持します。
         self.rot = RotationDetector(self.cfg)
@@ -172,6 +173,10 @@ class VRLGStrategy:
 
                 sig = self.sigdet.update_and_maybe_signal(float(feat.t), feat)
                 if sig:
+                    # 〔このブロックがすること〕 R*（周期検出）が非アクティブの間は執行せずスキップする
+                    if not self.rot.is_active():
+                        self.decisions.log("rotation_paused", reason="inactive", trace_id=getattr(sig, "trace_id", None))
+                        continue
                     self.decisions.log(
                         "signal",
                         phase=phase,
@@ -180,6 +185,7 @@ class VRLGStrategy:
                         obi=float(feat.obi),
                         trace_id=sig.trace_id,
                     )  # 〔この行がすること〕 シグナルの根拠となる特徴量を記録
+                    self.metrics.inc_signals(1)  # 〔この行がすること〕 RotationがActiveのもとで立ったシグナルを1件カウントする
                     self.metrics.inc_signal()  # 〔この行がすること〕 シグナル発火回数をカウントアップ
                     await self.q_signals.put(sig)
             except asyncio.CancelledError:
@@ -225,6 +231,20 @@ class VRLGStrategy:
                     self.metrics.set_book_impact_5s(self.risk.book_impact_sum_5s())   # Gauge を最新化
             except Exception:
                 pass
+
+        # 〔このブロックがすること〕 submitted で order_id→trace_id を登録、cancel で削除する
+        try:
+            if kind == "submitted":
+                oid = str(fields.get("order_id", "") or "")
+                tid = fields.get("trace_id")
+                if oid and tid:
+                    self._order_trace[oid] = str(tid)
+            elif kind == "cancel":
+                oid = str(fields.get("order_id", "") or "")
+                if oid:
+                    self._order_trace.pop(oid, None)
+        except Exception:
+            pass
 
     async def _trigger_killswitch(self, reason: str) -> None:
         """〔このメソッドがすること〕
@@ -325,6 +345,7 @@ class VRLGStrategy:
                 price = float(getattr(ev, "price", 0.0))
                 ts = float(getattr(ev, "t", None) or getattr(ev, "timestamp", None) or time.time())
                 oid = str(getattr(ev, "order_id", "") or "")
+                trace = self._order_trace.get(oid) if oid else None  # 〔この行がすること〕 約定が紐づく trace_id を対応表から取得（無ければ None）
             except Exception:
                 continue
 
@@ -363,6 +384,7 @@ class VRLGStrategy:
                     ref_mid=float(ref_mid),
                     slip_ticks=float(slip_ticks),
                     order_id=oid or None,
+                    trace_id=trace,
                     timestamp=float(ts),
                 )
             except Exception:
