@@ -528,7 +528,9 @@ class VRLGStrategy:
 
                 # 〔このブロックがすること〕
                 # 「TTL経過」 vs 「スプレッド≤1tick縮小」の先着で処理を分岐します。
+
                 ttl_s = float(getattr(self.cfg.exec, "order_ttl_ms", 1000)) / 1000.0  # 〔この行がすること〕 設定の TTL(ms) を秒へ直して以降の待機/解消に共通利用する
+
                 wait_start = time.time()
                 # 早期エグジット候補：スプレッドが 1 tick に縮小したら即クローズ
                 # 〔この行がすること〕 しきい値を設定から受け取り、縮小判定に使う
@@ -548,6 +550,7 @@ class VRLGStrategy:
                     # 成行は禁止 → 通常通り TTL まで待ってキャンセル（Time‑Stopは別途走る）
 
                     await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)  # 〔この行がすること〕 ハードコードの 1.0 秒を廃し、設定由来の TTL 秒を使う
+
 
                     self.decisions.log("exit", reason="ttl", trace_id=getattr(sig, "trace_id", None))  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
 
