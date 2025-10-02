@@ -34,7 +34,8 @@ from .risk_management import RiskManager
 from .metrics import Metrics  # 〔この import がすること〕 Prometheus 送信ラッパを使えるようにする
 from .data_feed import run_feeds, FeatureSnapshot  # 〔この import がすること〕 L2購読→100ms特徴量生成（run_feeds）と特徴量型を使えるようにする
 from hl_core.utils.decision_log import DecisionLogger  # 〔この import がすること〕 共通ロガー（PFPL等と共有）を利用する
-from .size_allocator import SizeAllocator  # 〔この import がすること〕 口座割合ベースのサイズ決定を使えるようにする
+from .size_allocator import SizeAllocator  # 〔この import がすること〕 クリップサイズ算出ロジックを利用する
+
 
 logger = get_logger("VRLG")
 
@@ -81,7 +82,7 @@ class VRLGStrategy:
         # 〔この行がすること〕 発注イベント（skip/submitted/reject/cancel）を Strategy で受け取れるよう接続
         self.exe.on_order_event = self._on_order_event
         self.risk = RiskManager(self.cfg)
-        self.sizer = SizeAllocator(self.cfg)  # 〔この行がすること〕 0.2–0.5% 基準のサイズ決定器を用意
+        self.sizer = SizeAllocator(self.cfg)  # 〔この行がすること〕 発注直前に使うサイズ決定器を初期化
 
     async def start(self) -> None:
         """〔このメソッドがすること〕
