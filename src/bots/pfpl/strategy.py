@@ -15,7 +15,7 @@ from typing import Any, cast
 
 import anyio
 from hl_core.config import load_settings
-from hl_core.utils.logger import setup_logger
+from hl_core.utils.logger import setup_logger, get_logger
 # 既存 import 群の最後あたりに追加
 from hyperliquid.exchange import Exchange
 
@@ -44,7 +44,14 @@ except Exception:  # noqa: F401 - fallback when eth_account isn't installed
             return _Wallet(key)
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
+
+
+def _maybe_enable_test_propagation() -> None:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        # pytest では caplog が root ロガーをフックするため、伝播を許可して
+        # 既存のテストでログを捕捉できるようにする
+        logger.propagate = True
 
 
 class PFPLStrategy:
@@ -66,6 +73,9 @@ class PFPLStrategy:
         last_order_ts: float | None,
         funding_blocked: bool,
     ) -> dict:
+
+        _maybe_enable_test_propagation()
+
         logger = getattr(self, "logger", None) or getattr(self, "log", None) or logging.getLogger(__name__)
         now = time.time()
 
@@ -136,6 +146,7 @@ class PFPLStrategy:
     def __init__(
         self, *, config: dict[str, Any], semaphore: asyncio.Semaphore | None = None
     ):
+        _maybe_enable_test_propagation()
         if not PFPLStrategy._LOGGER_INITIALISED:
             setup_logger(bot_name="pfpl")
             PFPLStrategy._LOGGER_INITIALISED = True
@@ -478,6 +489,7 @@ class PFPLStrategy:
     # ------------------------------------------------------------------ Tick loop
     # ─────────────────────────────────────────────────────────────
     def evaluate(self) -> None:
+        _maybe_enable_test_propagation()
         if not self._check_funding_window():
             return
         # ── fair / mid がまだ揃っていないなら何もしない ─────────
