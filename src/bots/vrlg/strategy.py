@@ -36,6 +36,7 @@ from .data_feed import run_feeds, FeatureSnapshot  # 〔この import がする�
 from hl_core.utils.decision_log import DecisionLogger  # 〔この import がすること〕 共通ロガー（PFPL等と共有）を利用する
 from .size_allocator import SizeAllocator  # 〔この import がすること〕 クリップサイズ算出ロジックを利用する
 
+
 logger = get_logger("VRLG")
 
 
