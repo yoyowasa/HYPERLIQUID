@@ -172,6 +172,10 @@ class VRLGStrategy:
 
                 sig = self.sigdet.update_and_maybe_signal(float(feat.t), feat)
                 if sig:
+                    # 〔このブロックがすること〕 R*（周期検出）が非アクティブの間は執行せずスキップする
+                    if not self.rot.is_active():
+                        self.decisions.log("rotation_paused", reason="inactive", trace_id=getattr(sig, "trace_id", None))
+                        continue
                     self.decisions.log(
                         "signal",
                         phase=phase,
