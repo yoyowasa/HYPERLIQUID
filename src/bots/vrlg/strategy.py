@@ -204,7 +204,7 @@ class VRLGStrategy:
         except Exception:
             pass
 
-        # 2) メトリクスへ（submitted は既に別で集計しているため二重加算を避ける）
+        # 〔このブロックがすること〕 "reject"/"cancel" の件数をメトリクスへ加算（運用監視用）
         try:
             if kind == "reject":
                 self.metrics.inc_orders_rejected(1)
