@@ -10,7 +10,7 @@ import contextlib  # 〔この import がすること〕 タイマータスク�
 import signal
 import sys
 import time  # 〔この import がすること〕 ブロック間隔の計算（秒）に使用します
-from typing import Optional, TYPE_CHECKING
+from typing import Optional
 
 # uvloop があれば高速化（なくても動く）
 try:
@@ -20,10 +20,6 @@ except Exception:  # pragma: no cover
 
 # 〔この関数がすること〕: 共通ロガー/コンフィグ読込は PFPL と共有（hl_core）を使います。
 from hl_core.utils.logger import get_logger
-from hl_core.utils.config import load_config
-
-if TYPE_CHECKING:
-    from .config import VRLGConfig
 
 # 〔この import 群がすること〕
 # データ購読・位相検出・シグナル判定・発注・リスク管理の各コンポーネントを司令塔に読ませます。
@@ -32,9 +28,24 @@ from .signal_detector import SignalDetector
 from .execution_engine import ExecutionEngine
 from .risk_management import RiskManager
 from .metrics import Metrics  # 〔この import がすること〕 Prometheus 送信ラッパを使えるようにする
+from .config import (
+    VRLGConfig,
+    coerce_vrlg_config,
+    load_vrlg_config,
+)  # 〔この import がすること〕 dict設定を dataclass へ変換し、型ヒントと専用ローダーを利用する
 from .data_feed import run_feeds, FeatureSnapshot  # 〔この import がすること〕 L2購読→100ms特徴量生成（run_feeds）と特徴量型を使えるようにする
 from hl_core.utils.decision_log import DecisionLogger  # 〔この import がすること〕 共通ロガー（PFPL等と共有）を利用する
 from .size_allocator import SizeAllocator  # 〔この import がすること〕 クリップサイズ算出ロジックを利用する
+
+
+def load_config(path: str):
+    """〔この関数がすること〕
+    VRLG の設定をファイルから読み込み、必ず dataclass（VRLGConfig）で返します。
+    ・実行時: load_vrlg_config を呼んで TOML/YAML を読み込み → dataclass 化
+    ・テスト時: monkeypatch で strategy_mod.load_config を差し替え可能（dict を返されても後段の coerce で吸収）
+    """
+
+    return load_vrlg_config(path)
 
 
 logger = get_logger("VRLG")
@@ -58,9 +69,7 @@ class VRLGStrategy:
         self.config_path = config_path
         self.paper = paper
         raw_cfg = load_config(config_path)
-        from .config import coerce_vrlg_config  # 局所 import（循環回避と単一ステップ適用のため）
-
-        self.cfg: VRLGConfig = coerce_vrlg_config(raw_cfg)
+        self.cfg: VRLGConfig = coerce_vrlg_config(raw_cfg)  # 〔この行がすること〕 dict から VRLGConfig（属性アクセス可）へ変換する
         self._tasks: list[asyncio.Task] = []
         self._stopping = asyncio.Event()
 
@@ -290,8 +299,12 @@ class VRLGStrategy:
 
     async def _fills_loop(self) -> None:
         """〔このメソッドがすること〕
-        fills（約定）WSを購読し、滑り（ticks）を算出→RiskManagerへ登録→Prometheusへ送信し、
-        さらに ExecutionEngine のクールダウン（register_fill）を開始します。
+        取引所の fills（約定）ストリームを購読し、1件ごとに：
+          - 充足価格と直近 mid から滑り（ticks）を計算しメトリクスへ観測
+          - RiskManager へ滑りを登録（1分平均などの判定に利用）
+          - ExecutionEngine へ register_fill(side) でクールダウンを発火
+          - Decision Log に fill を 1行JSON で記録
+        WS アダプタが無い環境では停止イベントまで安全に待機します。
         """
         try:
             from hl_core.api.ws import subscribe_fills  # type: ignore
@@ -300,52 +313,60 @@ class VRLGStrategy:
             await self._stopping.wait()
             return
 
-        # シンボル名とティックサイズ（設定から安全取得）
-        try:
-            symbol = getattr(self.cfg.symbol, "name")
-            tick = float(getattr(self.cfg.symbol, "tick_size"))
-        except Exception:
-            symbol = self.cfg["symbol"]["name"]  # type: ignore[index]
-            tick = float(self.cfg["symbol"]["tick_size"])  # type: ignore[index]
+        tick = float(getattr(self.cfg.symbol, "tick_size", 0.5))
 
-        async for fill in subscribe_fills(symbol):
+        async for ev in subscribe_fills(getattr(self.cfg.symbol, "name", "BTCUSD-PERP")):
             if self._stopping.is_set():
                 break
 
-            # 約定から side/price を安全取得
+            # 約定の基本情報を安全に取り出す
             try:
-                side = str(getattr(fill, "side", None) or fill.get("side", "")).upper()
-                price = float(getattr(fill, "price", None) or fill.get("price"))
+                side = str(getattr(ev, "side", "")).upper()
+                price = float(getattr(ev, "price", 0.0))
+                ts = float(getattr(ev, "t", None) or getattr(ev, "timestamp", None) or time.time())
+                oid = str(getattr(ev, "order_id", "") or "")
             except Exception:
                 continue
 
-            # 直近の mid（100ms特徴）と比較して滑りを算出（直近が無ければ自分自身を参照）
-            ref_mid = float(self._last_features.mid) if self._last_features else price
+            # 参照 mid（最新スナップショットが無ければ fill 価格を使って滑り0扱い）
+            snap = self._last_features
+            ref_mid = float(getattr(snap, "mid", price)) if snap else float(price)
+            slip_ticks = 0.0 if tick <= 0 else abs(price - ref_mid) / tick
+
+            # メトリクス：滑り観測 + 件数カウント
             try:
-                self.risk.register_fill(fill_price=price, ref_mid=ref_mid, tick_size=tick)  # 滑り→リスク評価
+                self.metrics.observe_slippage(slip_ticks)
+                self.metrics.inc_fills(1)
+            except Exception:
+                logger.debug("metrics.observe_slippage/inc_fills failed (ignored)")
+
+            # リスク：滑りを登録（1分平均の監視などに利用）
+            try:
+                self.risk.register_fill(fill_price=price, ref_mid=ref_mid, tick_size=tick)
             except Exception:
                 logger.debug("risk.register_fill failed (ignored)")
 
-            # メトリクス（滑り＆fillsカウント）
-            try:
-                slip_ticks = abs(price - ref_mid) / max(tick, 1e-12)
-                self.metrics.observe_slippage(slip_ticks)
-                self.metrics.inc_fills(1)
-                self.decisions.log("fill", side=side, price=float(price), ref_mid=float(ref_mid), slip_ticks=float(slip_ticks))  # 〔この行がすること〕 約定と滑りを記録
-            except Exception:
-                logger.debug("metrics(slippage/fills) failed (ignored)")
-
-            # クールダウン開始（同方向の再エントリー抑制）
+            # クールダウン：充足方向にクールダウンを設定し、Gauge を更新
             try:
                 self.exe.register_fill(side)
-            except Exception:
-                logger.debug("exe.register_fill failed (ignored)")
-            # 〔このブロックがすること〕 約定でクールダウンを設定した直後に、現在の窓（秒）を Gauge に反映します
-            try:
                 period = float(self.rot.current_period() or 1.0)
                 self.metrics.set_cooldown(self.exe.cooldown_factor * period)
             except Exception:
-                logger.debug("metrics.set_cooldown (after fill) failed (ignored)")
+                logger.debug("cooldown update after fill failed (ignored)")
+
+            # 意思決定ログ：fill を記録（trace_id は不明なら省略）
+            try:
+                self.decisions.log(
+                    "fill",
+                    side=side,
+                    price=float(price),
+                    ref_mid=float(ref_mid),
+                    slip_ticks=float(slip_ticks),
+                    order_id=oid or None,
+                    timestamp=float(ts),
+                )
+            except Exception:
+                logger.debug("decision log (fill) failed (ignored)")
 
     async def _blocks_loop(self) -> None:
         """〔このメソッドがすること〕
