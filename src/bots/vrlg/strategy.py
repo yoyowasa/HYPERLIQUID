@@ -417,19 +417,23 @@ class VRLGStrategy:
 
             prev_ts = ts
 
-    async def _wait_spread_collapse(self, threshold_ticks: float = 1.0, timeout_s: float = 1.0, poll_s: float = 0.02) -> bool:
+    async def _wait_spread_collapse(self, threshold_ticks: float, timeout_s: float, poll_s: float = 0.02) -> bool:
         """〔このメソッドがすること〕
-        一定時間内に「スプレッドが threshold_ticks 以下」に縮小したら True を返します。
-        - self._last_features（100ms特徴）をポーリングして判定します。
-        - タイムアウトまたは停止指示で False を返します。
+        直近スナップショットの spread_ticks が threshold 以下になるまで待ちます。
+        timeout_s を過ぎたら False。停止フラグが立っても False を返します。
         """
 
-        deadline = time.monotonic() + max(0.0, float(timeout_s))
-        while time.monotonic() < deadline and not self._stopping.is_set():
+        t0 = time.time()
+        while (time.time() - t0) < float(timeout_s):
+            if self._stopping.is_set():
+                return False
             snap = self._last_features
-            if snap is not None and float(snap.spread_ticks) <= float(threshold_ticks):
+            if snap is not None and float(getattr(snap, "spread_ticks", 1e9)) <= float(threshold_ticks):
                 return True
-            await asyncio.sleep(float(poll_s))
+            try:
+                await asyncio.sleep(max(0.0, float(poll_s)))
+            except Exception:
+                break
         return False
 
     async def _exec_loop(self) -> None:
