@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 # ───────────── dataclass 定義（既定値は設計書の例を採用） ─────────────
@@ -84,11 +84,11 @@ class LatencyCfg:
 class VRLGConfig:
     """〔このクラスがすること〕 VRLG の設定ルート（サブセクションを内包）です。"""
 
-    symbol: SymbolCfg = SymbolCfg()
-    signal: SignalCfg = SignalCfg()
-    exec: ExecCfg = ExecCfg()
-    risk: RiskCfg = RiskCfg()
-    latency: LatencyCfg = LatencyCfg()
+    symbol: SymbolCfg = field(default_factory=SymbolCfg)
+    signal: SignalCfg = field(default_factory=SignalCfg)
+    exec: ExecCfg = field(default_factory=ExecCfg)
+    risk: RiskCfg = field(default_factory=RiskCfg)
+    latency: LatencyCfg = field(default_factory=LatencyCfg)
 
 
 # ───────────── ヘルパー（dict/属性どちらでも取り出せるように） ─────────────
