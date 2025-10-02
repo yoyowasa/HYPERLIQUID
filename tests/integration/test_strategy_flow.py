@@ -86,7 +86,7 @@ def _cfg_dict() -> dict:
             "percent_max": 0.005,
             "splits": 1,
             "min_clip_btc": 0.001,
-            "equity_usd": 10000.0,
+            "equity_usd": 20000.0,  # 0.5% × equity → 0.0014BTC として最小クリップを上回るように調整
         },
         "risk": {
             "max_slippage_ticks": 1.0,
