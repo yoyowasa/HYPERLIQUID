@@ -1,104 +1,27 @@
 # 〔このモジュールがすること〕
-# VRLG の設定スキーマ（symbol/signal/exec/risk/latency）を「型つき」で定義し、
-# 辞書や属性ベースの生設定から VRLGConfig に変換（coerce）します。
-# pydantic があれば BaseModel を使用、無ければ dataclass で代替します。
+# VRLG の設定（dict など）を「属性アクセスできる dataclass」へ変換します。
+# - coerce_vrlg_config(data): dict/オブジェクト → VRLGConfig（symbol/signal/exec/risk/latency）
+# - load_vrlg_config(path): hl_core.utils.config.load_config を使って読み込み → coerce に通す
 
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping, TypeVar, cast
+from dataclasses import dataclass, field
+from typing import Any, Mapping
 
-T = TypeVar("T")
-
-# ─────────────── 可能なら pydantic、無ければ dataclass にフォールバック ───────────────
-try:  # pragma: no cover - optional dependency
-    from pydantic import BaseModel as _ImportedBaseModel  # type: ignore
-except Exception:  # pragma: no cover - runtime fallback
-    _ImportedBaseModel = None
-
-_PydanticBaseModel: type[Any] | None = cast("type[Any] | None", _ImportedBaseModel)
-
-_USE_PYDANTIC = _PydanticBaseModel is not None
-
-_BaseConfig: type[Any]
-
-if _USE_PYDANTIC:
-
-    class _PydanticBase(_PydanticBaseModel):
-        """〔この基底クラスがすること〕 pydantic モデルの共通基底。"""
-
-        pass
-
-    _BaseConfig = _PydanticBase
-
-    def _decorate_impl_pydantic(cls: type[Any]) -> type[Any]:
-        return cls
-
-    def _section_default_impl_pydantic(factory: Callable[[], Any]) -> Any:
-        return factory()
-
-    _decorate_impl = _decorate_impl_pydantic
-    _section_default_impl = _section_default_impl_pydantic
-
-else:
-    from dataclasses import dataclass as _dataclass, field as _dc_field
-
-    class _DataclassBase:
-        """〔この基底クラスがすること〕 dataclass フォールバック時のダミー基底。"""
-
-        pass
-
-    _BaseConfig = _DataclassBase
-
-    def _decorate_impl_dataclass(cls: type[Any]) -> type[Any]:
-        return _dataclass(frozen=False)(cls)
-
-    def _section_default_impl_dataclass(factory: Callable[[], Any]) -> Any:
-        return _dc_field(default_factory=factory)
-
-    _decorate_impl = _decorate_impl_dataclass
-    _section_default_impl = _section_default_impl_dataclass
+# ───────────── dataclass 定義（既定値は設計書の例を採用） ─────────────
 
 
-def _decorate(cls: type[T]) -> type[T]:
-    return cast(type[T], _decorate_impl(cls))
-
-
-def _section_default(factory: Callable[[], T]) -> Any:
-    return _section_default_impl(factory)
-
-
-def _get_section(raw: Any, name: str) -> Mapping[str, Any]:
-    """〔この関数がすること〕
-    生設定（dict または属性オブジェクト）からセクション名 name を辞書として取り出します。
-    無ければ空辞書を返します。
-    """
-
-    try:
-        sec = getattr(raw, name)
-        if isinstance(sec, Mapping):
-            return sec  # type: ignore[return-value]
-        # 属性オブジェクトを dict っぽく変換
-        return {k: getattr(sec, k) for k in dir(sec) if not k.startswith("__")}
-    except Exception:
-        try:
-            return raw.get(name, {})  # type: ignore[union-attr]
-        except Exception:
-            return {}
-
-
-# ─────────────── セクション定義（pydantic か dataclass） ───────────────
-
-@_decorate
-class SymbolCfg(_BaseConfig):
-    """〔このクラスがすること〕 銘柄とティックサイズの設定を表します。"""
+@dataclass
+class SymbolCfg:
+    """〔このクラスがすること〕 銘柄関連の設定を保持します。"""
 
     name: str = "BTCUSD-PERP"
     tick_size: float = 0.5
 
 
-@_decorate
-class SignalCfg(_BaseConfig):
-    """〔このクラスがすること〕 位相検出・4条件ゲートのパラメータを表します。"""
+@dataclass
+class SignalCfg:
+    """〔このクラスがすること〕 シグナル判定・周期検出の設定を保持します。"""
 
     N: int = 80
     x: float = 0.25
@@ -106,142 +29,168 @@ class SignalCfg(_BaseConfig):
     z: float = 0.6
     obi_limit: float = 0.6
     T_roll: float = 30.0
-    # 〔このフィールド群がすること〕 RotationDetector の挙動を調整します
-    p_thresh: float = 0.01            # p値の閾値（片側）: これ以下で有意
-    period_min_s: float = 0.8         # 周期探索の下限（秒）
-    period_max_s: float = 5.0         # 周期探索の上限（秒）
-    min_boundary_samples: int = 200   # 位相境界で必要な最小サンプル数
-    min_off_samples: int = 50         # 非境界で必要な最小サンプル数
+    # RotationDetector 調整（Step42）
+    p_thresh: float = 0.01
+    period_min_s: float = 0.8
+    period_max_s: float = 5.0
+    min_boundary_samples: int = 200
+    min_off_samples: int = 50
 
 
-@_decorate
-class ExecCfg(_BaseConfig):
-    """〔このクラスがすること〕 発注ロジック（TTL/アイスバーグ/クールダウン）を表します。"""
+@dataclass
+class ExecCfg:
+    """〔このクラスがすること〕 執行（置き方/TTL/分割/露出）関連の設定を保持します。"""
 
     order_ttl_ms: int = 1000
     display_ratio: float = 0.25
     min_display_btc: float = 0.01
     max_exposure_btc: float = 0.8
     cooldown_factor: float = 2.0
-    side_mode: str = "both"        # 〔このフィールドがすること〕 発注の向き: "both" | "buy" | "sell"
-    offset_ticks_normal: float = 0.5   # 〔このフィールドがすること〕 通常置きの価格オフセット（±tick）
-    offset_ticks_deep: float = 1.5     # 〔このフィールドがすること〕 深置きの価格オフセット（±tick）
-    spread_collapse_ticks: float = 1.0 # 〔このフィールドがすること〕 早期IOCの縮小判定のしきい値（tick）
-    percent_min: float = 0.002     # 〔このフィールドがすること〕 口座残高に対する最小割合（0.2%）
-    percent_max: float = 0.005     # 〔このフィールドがすること〕 口座残高に対する最大割合（0.5%）
-    splits: int = 1                # 〔このフィールドがすること〕 クリップ分割数（>1 で均等割り）
-    min_clip_btc: float = 0.001    # 〔このフィールドがすること〕 1クリップの最小BTC数量
-    equity_usd: float = 10000.0    # 〔このフィールドがすること〕 口座残高USD（API未接続時の既定値）
+    # 置き方（Step31）
+    offset_ticks_normal: float = 0.5
+    offset_ticks_deep: float = 1.5
+    spread_collapse_ticks: float = 1.0
+    side_mode: str = "both"  # "both" | "buy" | "sell"
+    # 分割（Step43）
+    splits: int = 1
+    # サイズ割当（Step64）
+    percent_min: float = 0.002
+    percent_max: float = 0.005
+    min_clip_btc: float = 0.001
+    equity_usd: float = 10_000.0
 
 
-@_decorate
-class RiskCfg(_BaseConfig):
-    """〔このクラスがすること〕 ルールベースのリスク閾値を表します。"""
+@dataclass
+class RiskCfg:
+    """〔このクラスがすること〕 リスク管理の設定を保持します。"""
 
     max_slippage_ticks: float = 1.0
     max_book_impact: float = 0.02
     time_stop_ms: int = 1200
     stop_ticks: float = 3.0
+    block_interval_stop_s: float = 4.0  # kill-switch 閾値（移動中央値）
 
 
-@_decorate
-class LatencyCfg(_BaseConfig):
-    """〔このクラスがすること〕 レイテンシ想定（主にメトリクス/BT用）を表します。"""
+@dataclass
+class LatencyCfg:
+    """〔このクラスがすること〕 レイテンシ・鮮度の設定を保持します。"""
 
     ingest_ms: int = 10
     order_rt_ms: int = 60
-    max_staleness_ms: int = 300  # 〔このフィールドがすること〕 この ms を超えて古い特徴量は発注ロジックから除外
+    max_staleness_ms: int = 300
 
 
-@_decorate
-class VRLGConfig(_BaseConfig):
-    """〔このクラスがすること〕 VRLG のトップレベル設定（全セクションを内包）を表します。"""
+@dataclass
+class VRLGConfig:
+    """〔このクラスがすること〕 VRLG の設定ルート（サブセクションを内包）です。"""
 
-    symbol: SymbolCfg = _section_default(SymbolCfg)
-    signal: SignalCfg = _section_default(SignalCfg)
-    exec: ExecCfg = _section_default(ExecCfg)
-    risk: RiskCfg = _section_default(RiskCfg)
-    latency: LatencyCfg = _section_default(LatencyCfg)
-
-
-# ─────────────── 変換ユーティリティ ───────────────
+    symbol: SymbolCfg = field(default_factory=SymbolCfg)
+    signal: SignalCfg = field(default_factory=SignalCfg)
+    exec: ExecCfg = field(default_factory=ExecCfg)
+    risk: RiskCfg = field(default_factory=RiskCfg)
+    latency: LatencyCfg = field(default_factory=LatencyCfg)
 
 
-def coerce_vrlg_config(raw: Any) -> VRLGConfig:
-    """〔この関数がすること〕
-    dict や属性オブジェクトなど「生の設定」から VRLGConfig へ安全に変換します。
-    足りないキーは既定値で補います。
-    """
+# ───────────── ヘルパー（dict/属性どちらでも取り出せるように） ─────────────
 
-    # すでに VRLGConfig ならそのまま返す
-    if isinstance(raw, VRLGConfig):
-        return raw
 
-    sec_symbol = _get_section(raw, "symbol")
-    sec_signal = _get_section(raw, "signal")
-    sec_exec = _get_section(raw, "exec")
-    sec_risk = _get_section(raw, "risk")
-    sec_latency = _get_section(raw, "latency")
+def _sec(raw: Any, name: str) -> Any:
+    """〔この関数がすること〕 セクション（symbol/signal/exec/risk/latency）を安全に取り出します。"""
 
-    symbol = SymbolCfg(**{
-        "name": sec_symbol.get("name", "BTCUSD-PERP"),  # type: ignore[union-attr]
-        "tick_size": float(sec_symbol.get("tick_size", 0.5)),  # type: ignore[union-attr]
-    })
-    signal = SignalCfg(**{
-        "N": int(sec_signal.get("N", 80)),
-        "x": float(sec_signal.get("x", 0.25)),
-        "y": float(sec_signal.get("y", 2.0)),
-        "z": float(sec_signal.get("z", 0.6)),
-        "obi_limit": float(sec_signal.get("obi_limit", 0.6)),
-        "T_roll": float(sec_signal.get("T_roll", 30.0)),
-        "p_thresh": float(sec_signal.get("p_thresh", 0.01)),
-        "period_min_s": float(sec_signal.get("period_min_s", 0.8)),
-        "period_max_s": float(sec_signal.get("period_max_s", 5.0)),
-        "min_boundary_samples": int(sec_signal.get("min_boundary_samples", 200)),
-        "min_off_samples": int(sec_signal.get("min_off_samples", 50)),
-    })
-    exec_ = ExecCfg(**{
-        "order_ttl_ms": int(sec_exec.get("order_ttl_ms", 1000)),
-        "display_ratio": float(sec_exec.get("display_ratio", 0.25)),
-        "min_display_btc": float(sec_exec.get("min_display_btc", 0.01)),
-        "max_exposure_btc": float(sec_exec.get("max_exposure_btc", 0.8)),
-        "cooldown_factor": float(sec_exec.get("cooldown_factor", 2.0)),
-        "side_mode": str(sec_exec.get("side_mode", "both")),
-        "offset_ticks_normal": float(sec_exec.get("offset_ticks_normal", 0.5)),
-        "offset_ticks_deep": float(sec_exec.get("offset_ticks_deep", 1.5)),
-        "spread_collapse_ticks": float(sec_exec.get("spread_collapse_ticks", 1.0)),
-        "percent_min": float(sec_exec.get("percent_min", 0.002)),
-        "percent_max": float(sec_exec.get("percent_max", 0.005)),
-        "splits": int(sec_exec.get("splits", 1)),
-        "min_clip_btc": float(sec_exec.get("min_clip_btc", 0.001)),
-        "equity_usd": float(sec_exec.get("equity_usd", 10000.0)),
-    })
-    risk = RiskCfg(**{
-        "max_slippage_ticks": float(sec_risk.get("max_slippage_ticks", 1.0)),
-        "max_book_impact": float(sec_risk.get("max_book_impact", 0.02)),
-        "time_stop_ms": int(sec_risk.get("time_stop_ms", 1200)),
-        "stop_ticks": float(sec_risk.get("stop_ticks", 3.0)),
-    })
-    latency = LatencyCfg(**{
-        "ingest_ms": int(sec_latency.get("ingest_ms", 10)),
-        "order_rt_ms": int(sec_latency.get("order_rt_ms", 60)),
-        "max_staleness_ms": int(sec_latency.get("max_staleness_ms", 300)),
-    })
+    try:
+        if isinstance(raw, Mapping):
+            return raw.get(name, {})  # type: ignore[return-value]
+        return getattr(raw, name)
+    except Exception:
+        return {}
 
+
+def _val(sec: Any, key: str, default: Any) -> Any:
+    """〔この関数がすること〕 値を dict/属性両対応で安全に取得します。"""
+
+    try:
+        if isinstance(sec, Mapping) and key in sec:  # type: ignore[arg-type]
+            return sec[key]  # type: ignore[index]
+        v = getattr(sec, key)
+        return v
+    except Exception:
+        return default
+
+
+# ───────────── 入口関数 ─────────────
+
+
+def coerce_vrlg_config(data: Any) -> VRLGConfig:
+    """〔この関数がすること〕 dict 等の生設定を VRLGConfig（属性アクセス可）へ変換します。"""
+
+    s = _sec(data, "symbol")
+    g = _sec(data, "signal")
+    e = _sec(data, "exec")
+    r = _sec(data, "risk")
+    latency_section = _sec(data, "latency")
+
+    symbol = SymbolCfg(
+        name=str(_val(s, "name", SymbolCfg.name)),
+        tick_size=float(_val(s, "tick_size", SymbolCfg.tick_size)),
+    )
+    signal = SignalCfg(
+        N=int(_val(g, "N", SignalCfg.N)),
+        x=float(_val(g, "x", SignalCfg.x)),
+        y=float(_val(g, "y", SignalCfg.y)),
+        z=float(_val(g, "z", SignalCfg.z)),
+        obi_limit=float(_val(g, "obi_limit", SignalCfg.obi_limit)),
+        T_roll=float(_val(g, "T_roll", SignalCfg.T_roll)),
+        p_thresh=float(_val(g, "p_thresh", SignalCfg.p_thresh)),
+        period_min_s=float(_val(g, "period_min_s", SignalCfg.period_min_s)),
+        period_max_s=float(_val(g, "period_max_s", SignalCfg.period_max_s)),
+        min_boundary_samples=int(_val(g, "min_boundary_samples", SignalCfg.min_boundary_samples)),
+        min_off_samples=int(_val(g, "min_off_samples", SignalCfg.min_off_samples)),
+    )
+    exec_ = ExecCfg(
+        order_ttl_ms=int(_val(e, "order_ttl_ms", ExecCfg.order_ttl_ms)),
+        display_ratio=float(_val(e, "display_ratio", ExecCfg.display_ratio)),
+        min_display_btc=float(_val(e, "min_display_btc", ExecCfg.min_display_btc)),
+        max_exposure_btc=float(_val(e, "max_exposure_btc", ExecCfg.max_exposure_btc)),
+        cooldown_factor=float(_val(e, "cooldown_factor", ExecCfg.cooldown_factor)),
+        offset_ticks_normal=float(_val(e, "offset_ticks_normal", ExecCfg.offset_ticks_normal)),
+        offset_ticks_deep=float(_val(e, "offset_ticks_deep", ExecCfg.offset_ticks_deep)),
+        spread_collapse_ticks=float(_val(e, "spread_collapse_ticks", ExecCfg.spread_collapse_ticks)),
+        side_mode=str(_val(e, "side_mode", ExecCfg.side_mode)).lower(),
+        splits=int(_val(e, "splits", ExecCfg.splits)),
+        percent_min=float(_val(e, "percent_min", ExecCfg.percent_min)),
+        percent_max=float(_val(e, "percent_max", ExecCfg.percent_max)),
+        min_clip_btc=float(_val(e, "min_clip_btc", ExecCfg.min_clip_btc)),
+        equity_usd=float(_val(e, "equity_usd", ExecCfg.equity_usd)),
+    )
+    risk = RiskCfg(
+        max_slippage_ticks=float(_val(r, "max_slippage_ticks", RiskCfg.max_slippage_ticks)),
+        max_book_impact=float(_val(r, "max_book_impact", RiskCfg.max_book_impact)),
+        time_stop_ms=int(_val(r, "time_stop_ms", RiskCfg.time_stop_ms)),
+        stop_ticks=float(_val(r, "stop_ticks", RiskCfg.stop_ticks)),
+        block_interval_stop_s=float(_val(r, "block_interval_stop_s", RiskCfg.block_interval_stop_s)),
+    )
+    latency = LatencyCfg(
+        ingest_ms=int(_val(latency_section, "ingest_ms", LatencyCfg.ingest_ms)),
+        order_rt_ms=int(_val(latency_section, "order_rt_ms", LatencyCfg.order_rt_ms)),
+        max_staleness_ms=int(_val(latency_section, "max_staleness_ms", LatencyCfg.max_staleness_ms)),
+    )
     return VRLGConfig(symbol=symbol, signal=signal, exec=exec_, risk=risk, latency=latency)
 
 
-def vrlg_config_to_dict(cfg: VRLGConfig) -> dict[str, Any]:
-    """〔この関数がすること〕 VRLGConfig を辞書に変換します（ロギング/保存に利用できます）。"""
+def load_vrlg_config(path: str) -> VRLGConfig:
+    """〔この関数がすること〕 ファイルから設定を読み込み、VRLGConfig に変換します。"""
 
-    if _USE_PYDANTIC and hasattr(cfg, "model_dump"):
-        return cfg.model_dump()  # type: ignore[return-value]
-    # dataclass フォールバック
-    return {
-        "symbol": vars(cfg.symbol),
-        "signal": vars(cfg.signal),
-        "exec": vars(cfg.exec),
-        "risk": vars(cfg.risk),
-        "latency": vars(cfg.latency),
-    }
-
+    try:
+        from hl_core.utils.config import load_config  # 共通ローダ（YAML/TOML）
+        raw = load_config(path)
+    except Exception:
+        # 軽量 TOML フォールバック
+        try:
+            import tomllib  # py3.11+
+            with open(path, "rb") as f:
+                raw = tomllib.load(f)
+        except Exception:
+            import tomli  # type: ignore
+            with open(path, "rb") as f:
+                raw = tomli.load(f)
+    return coerce_vrlg_config(raw)

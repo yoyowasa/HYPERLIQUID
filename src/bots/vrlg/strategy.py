@@ -10,7 +10,7 @@ import contextlib  # 〔この import がすること〕 タイマータスク�
 import signal
 import sys
 import time  # 〔この import がすること〕 ブロック間隔の計算（秒）に使用します
-from typing import Optional, TYPE_CHECKING
+from typing import Optional
 
 # uvloop があれば高速化（なくても動く）
 try:
@@ -22,9 +22,6 @@ except Exception:  # pragma: no cover
 from hl_core.utils.logger import get_logger
 from hl_core.utils.config import load_config
 
-if TYPE_CHECKING:
-    from .config import VRLGConfig
-
 # 〔この import 群がすること〕
 # データ購読・位相検出・シグナル判定・発注・リスク管理の各コンポーネントを司令塔に読ませます。
 from .rotation_detector import RotationDetector
@@ -32,6 +29,7 @@ from .signal_detector import SignalDetector
 from .execution_engine import ExecutionEngine
 from .risk_management import RiskManager
 from .metrics import Metrics  # 〔この import がすること〕 Prometheus 送信ラッパを使えるようにする
+from .config import VRLGConfig, coerce_vrlg_config  # 〔この import がすること〕 dict設定を dataclass へ変換し、型ヒントとしても利用する
 from .data_feed import run_feeds, FeatureSnapshot  # 〔この import がすること〕 L2購読→100ms特徴量生成（run_feeds）と特徴量型を使えるようにする
 from hl_core.utils.decision_log import DecisionLogger  # 〔この import がすること〕 共通ロガー（PFPL等と共有）を利用する
 from .size_allocator import SizeAllocator  # 〔この import がすること〕 クリップサイズ算出ロジックを利用する
@@ -58,9 +56,7 @@ class VRLGStrategy:
         self.config_path = config_path
         self.paper = paper
         raw_cfg = load_config(config_path)
-        from .config import coerce_vrlg_config  # 局所 import（循環回避と単一ステップ適用のため）
-
-        self.cfg: VRLGConfig = coerce_vrlg_config(raw_cfg)
+        self.cfg: VRLGConfig = coerce_vrlg_config(raw_cfg)  # 〔この行がすること〕 dict から VRLGConfig（属性アクセス可）へ変換する
         self._tasks: list[asyncio.Task] = []
         self._stopping = asyncio.Event()
 
