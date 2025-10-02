@@ -10,7 +10,7 @@ import contextlib  # 〔この import がすること〕 タイマータスク�
 import signal
 import sys
 import time  # 〔この import がすること〕 ブロック間隔の計算（秒）に使用します
-from typing import Optional, TYPE_CHECKING
+from typing import Optional
 
 # uvloop があれば高速化（なくても動く）
 try:
@@ -20,10 +20,6 @@ except Exception:  # pragma: no cover
 
 # 〔この関数がすること〕: 共通ロガー/コンフィグ読込は PFPL と共有（hl_core）を使います。
 from hl_core.utils.logger import get_logger
-from hl_core.utils.config import load_config
-
-if TYPE_CHECKING:
-    from .config import VRLGConfig
 
 # 〔この import 群がすること〕
 # データ購読・位相検出・シグナル判定・発注・リスク管理の各コンポーネントを司令塔に読ませます。
@@ -32,9 +28,24 @@ from .signal_detector import SignalDetector
 from .execution_engine import ExecutionEngine
 from .risk_management import RiskManager
 from .metrics import Metrics  # 〔この import がすること〕 Prometheus 送信ラッパを使えるようにする
+from .config import (
+    VRLGConfig,
+    coerce_vrlg_config,
+    load_vrlg_config,
+)  # 〔この import がすること〕 dict設定を dataclass へ変換し、型ヒントと専用ローダーを利用する
 from .data_feed import run_feeds, FeatureSnapshot  # 〔この import がすること〕 L2購読→100ms特徴量生成（run_feeds）と特徴量型を使えるようにする
 from hl_core.utils.decision_log import DecisionLogger  # 〔この import がすること〕 共通ロガー（PFPL等と共有）を利用する
 from .size_allocator import SizeAllocator  # 〔この import がすること〕 クリップサイズ算出ロジックを利用する
+
+
+def load_config(path: str):
+    """〔この関数がすること〕
+    VRLG の設定をファイルから読み込み、必ず dataclass（VRLGConfig）で返します。
+    ・実行時: load_vrlg_config を呼んで TOML/YAML を読み込み → dataclass 化
+    ・テスト時: monkeypatch で strategy_mod.load_config を差し替え可能（dict を返されても後段の coerce で吸収）
+    """
+
+    return load_vrlg_config(path)
 
 
 logger = get_logger("VRLG")
@@ -58,9 +69,7 @@ class VRLGStrategy:
         self.config_path = config_path
         self.paper = paper
         raw_cfg = load_config(config_path)
-        from .config import coerce_vrlg_config  # 局所 import（循環回避と単一ステップ適用のため）
-
-        self.cfg: VRLGConfig = coerce_vrlg_config(raw_cfg)
+        self.cfg: VRLGConfig = coerce_vrlg_config(raw_cfg)  # 〔この行がすること〕 dict から VRLGConfig（属性アクセス可）へ変換する
         self._tasks: list[asyncio.Task] = []
         self._stopping = asyncio.Event()
 
@@ -290,8 +299,12 @@ class VRLGStrategy:
 
     async def _fills_loop(self) -> None:
         """〔このメソッドがすること〕
-        fills（約定）WSを購読し、滑り（ticks）を算出→RiskManagerへ登録→Prometheusへ送信し、
-        さらに ExecutionEngine のクールダウン（register_fill）を開始します。
+        取引所の fills（約定）ストリームを購読し、1件ごとに：
+          - 充足価格と直近 mid から滑り（ticks）を計算しメトリクスへ観測
+          - RiskManager へ滑りを登録（1分平均などの判定に利用）
+          - ExecutionEngine へ register_fill(side) でクールダウンを発火
+          - Decision Log に fill を 1行JSON で記録
+        WS アダプタが無い環境では停止イベントまで安全に待機します。
         """
         try:
             from hl_core.api.ws import subscribe_fills  # type: ignore
@@ -300,52 +313,60 @@ class VRLGStrategy:
             await self._stopping.wait()
             return
 
-        # シンボル名とティックサイズ（設定から安全取得）
-        try:
-            symbol = getattr(self.cfg.symbol, "name")
-            tick = float(getattr(self.cfg.symbol, "tick_size"))
-        except Exception:
-            symbol = self.cfg["symbol"]["name"]  # type: ignore[index]
-            tick = float(self.cfg["symbol"]["tick_size"])  # type: ignore[index]
+        tick = float(getattr(self.cfg.symbol, "tick_size", 0.5))
 
-        async for fill in subscribe_fills(symbol):
+        async for ev in subscribe_fills(getattr(self.cfg.symbol, "name", "BTCUSD-PERP")):
             if self._stopping.is_set():
                 break
 
-            # 約定から side/price を安全取得
+            # 約定の基本情報を安全に取り出す
             try:
-                side = str(getattr(fill, "side", None) or fill.get("side", "")).upper()
-                price = float(getattr(fill, "price", None) or fill.get("price"))
+                side = str(getattr(ev, "side", "")).upper()
+                price = float(getattr(ev, "price", 0.0))
+                ts = float(getattr(ev, "t", None) or getattr(ev, "timestamp", None) or time.time())
+                oid = str(getattr(ev, "order_id", "") or "")
             except Exception:
                 continue
 
-            # 直近の mid（100ms特徴）と比較して滑りを算出（直近が無ければ自分自身を参照）
-            ref_mid = float(self._last_features.mid) if self._last_features else price
+            # 参照 mid（最新スナップショットが無ければ fill 価格を使って滑り0扱い）
+            snap = self._last_features
+            ref_mid = float(getattr(snap, "mid", price)) if snap else float(price)
+            slip_ticks = 0.0 if tick <= 0 else abs(price - ref_mid) / tick
+
+            # メトリクス：滑り観測 + 件数カウント
             try:
-                self.risk.register_fill(fill_price=price, ref_mid=ref_mid, tick_size=tick)  # 滑り→リスク評価
+                self.metrics.observe_slippage(slip_ticks)
+                self.metrics.inc_fills(1)
+            except Exception:
+                logger.debug("metrics.observe_slippage/inc_fills failed (ignored)")
+
+            # リスク：滑りを登録（1分平均の監視などに利用）
+            try:
+                self.risk.register_fill(fill_price=price, ref_mid=ref_mid, tick_size=tick)
             except Exception:
                 logger.debug("risk.register_fill failed (ignored)")
 
-            # メトリクス（滑り＆fillsカウント）
-            try:
-                slip_ticks = abs(price - ref_mid) / max(tick, 1e-12)
-                self.metrics.observe_slippage(slip_ticks)
-                self.metrics.inc_fills(1)
-                self.decisions.log("fill", side=side, price=float(price), ref_mid=float(ref_mid), slip_ticks=float(slip_ticks))  # 〔この行がすること〕 約定と滑りを記録
-            except Exception:
-                logger.debug("metrics(slippage/fills) failed (ignored)")
-
-            # クールダウン開始（同方向の再エントリー抑制）
+            # クールダウン：充足方向にクールダウンを設定し、Gauge を更新
             try:
                 self.exe.register_fill(side)
-            except Exception:
-                logger.debug("exe.register_fill failed (ignored)")
-            # 〔このブロックがすること〕 約定でクールダウンを設定した直後に、現在の窓（秒）を Gauge に反映します
-            try:
                 period = float(self.rot.current_period() or 1.0)
                 self.metrics.set_cooldown(self.exe.cooldown_factor * period)
             except Exception:
-                logger.debug("metrics.set_cooldown (after fill) failed (ignored)")
+                logger.debug("cooldown update after fill failed (ignored)")
+
+            # 意思決定ログ：fill を記録（trace_id は不明なら省略）
+            try:
+                self.decisions.log(
+                    "fill",
+                    side=side,
+                    price=float(price),
+                    ref_mid=float(ref_mid),
+                    slip_ticks=float(slip_ticks),
+                    order_id=oid or None,
+                    timestamp=float(ts),
+                )
+            except Exception:
+                logger.debug("decision log (fill) failed (ignored)")
 
     async def _blocks_loop(self) -> None:
         """〔このメソッドがすること〕
@@ -396,19 +417,23 @@ class VRLGStrategy:
 
             prev_ts = ts
 
-    async def _wait_spread_collapse(self, threshold_ticks: float = 1.0, timeout_s: float = 1.0, poll_s: float = 0.02) -> bool:
+    async def _wait_spread_collapse(self, threshold_ticks: float, timeout_s: float, poll_s: float = 0.02) -> bool:
         """〔このメソッドがすること〕
-        一定時間内に「スプレッドが threshold_ticks 以下」に縮小したら True を返します。
-        - self._last_features（100ms特徴）をポーリングして判定します。
-        - タイムアウトまたは停止指示で False を返します。
+        直近スナップショットの spread_ticks が threshold 以下になるまで待ちます。
+        timeout_s を過ぎたら False。停止フラグが立っても False を返します。
         """
 
-        deadline = time.monotonic() + max(0.0, float(timeout_s))
-        while time.monotonic() < deadline and not self._stopping.is_set():
+        t0 = time.time()
+        while (time.time() - t0) < float(timeout_s):
+            if self._stopping.is_set():
+                return False
             snap = self._last_features
-            if snap is not None and float(snap.spread_ticks) <= float(threshold_ticks):
+            if snap is not None and float(getattr(snap, "spread_ticks", 1e9)) <= float(threshold_ticks):
                 return True
-            await asyncio.sleep(float(poll_s))
+            try:
+                await asyncio.sleep(max(0.0, float(poll_s)))
+            except Exception:
+                break
         return False
 
     async def _exec_loop(self) -> None:
@@ -503,27 +528,42 @@ class VRLGStrategy:
 
                 # 〔このブロックがすること〕
                 # 「TTL経過」 vs 「スプレッド≤1tick縮小」の先着で処理を分岐します。
-                ttl_s = float(self.cfg.exec.order_ttl_ms) / 1000.0
+                ttl_s = float(getattr(self.cfg.exec, "order_ttl_ms", 1000)) / 1000.0  # 〔この行がすること〕 設定の TTL(ms) を秒へ直して以降の待機/解消に共通利用する
+                wait_start = time.time()
+                # 早期エグジット候補：スプレッドが 1 tick に縮小したら即クローズ
+                # 〔この行がすること〕 しきい値を設定から受け取り、縮小判定に使う
+                collapsed = await self._wait_spread_collapse(
+                    threshold_ticks=float(getattr(self.cfg.exec, "spread_collapse_ticks", 1.0)),
+                    timeout_s=ttl_s,
+                    poll_s=0.02,
+                )
+                # 〔このブロックがすること〕 forbid_market の場合は早期IOCをスキップする旨を先に記録（TTL へフォールバック）
+                if collapsed and adv.forbid_market:
+                    self.decisions.log("exit_policy", policy="forbid_market_skip_ioc", trace_id=getattr(sig, "trace_id", None))
+                elapsed = time.time() - wait_start
+                remaining_ttl = max(0.0, ttl_s - elapsed)
 
                 if adv.forbid_market:
                     self.decisions.log("exit_policy", policy="forbid_market")  # 〔この行がすること〕 早期IOCを行わない方針であることを記録
                     # 成行は禁止 → 通常通り TTL まで待ってキャンセル（Time‑Stopは別途走る）
 
-                    await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
+                    await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)  # 〔この行がすること〕 ハードコードの 1.0 秒を廃し、設定由来の TTL 秒を使う
 
                     self.decisions.log("exit", reason="ttl", trace_id=getattr(sig, "trace_id", None))  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
 
                 else:
-                    # 早期エグジット候補：スプレッドが 1 tick に縮小したら即クローズ
-                    # 〔この行がすること〕 しきい値を設定から受け取り、縮小判定に使う
-                    collapsed = await self._wait_spread_collapse(
-                        threshold_ticks=float(getattr(self.cfg.exec, "spread_collapse_ticks", 1.0)),
-                        timeout_s=ttl_s,
-                        poll_s=0.02,
-                    )
-
-                    if collapsed:
+                    if collapsed and not adv.forbid_market:  # 〔この行がすること〕 forbid_market=True のときは早期IOCを行わず、TTL 処理へ回す
                         self.decisions.log("exit", reason="spread_collapse", trace_id=getattr(sig, "trace_id", None))  # 〔この行がすること〕 スプレッド縮小で早期IOCしたことを記録
+                        # 〔このブロックがすること〕 早期IOCでクローズしたので、保護用STOPを取り消し、Time‑Stopを中断する
+                        try:
+                            for _sid in stop_ids:
+                                await self.exe.cancel_order_safely(_sid)  # STOP注文の取消（reduce-only）
+                        except Exception:
+                            pass
+                        try:
+                            ts_task.cancel()  # Time‑Stopタスクを中断
+                        except Exception:
+                            pass
                         # 先に maker を素早くキャンセルしてから IOC で解消
                         await self.exe.wait_fill_or_ttl(order_ids, timeout_s=0.0)
 
@@ -531,8 +571,18 @@ class VRLGStrategy:
                         await _cancel_stops_and_timers()
                     else:
                         self.decisions.log("exit", reason="ttl", trace_id=getattr(sig, "trace_id", None))  # 〔この行がすること〕 TTL 到達で通常解消したことを記録
+                        # 〔このブロックがすること〕 TTL到達でクローズしたので、保護用STOPを取り消し、Time‑Stopを中断する
+                        try:
+                            for _sid in stop_ids:
+                                await self.exe.cancel_order_safely(_sid)  # STOP注文の取消（reduce-only）
+                        except Exception:
+                            pass
+                        try:
+                            ts_task.cancel()  # Time‑Stopタスクを中断
+                        except Exception:
+                            pass
                         # 縮小しなかった → TTL まで待って通常解消
-                        await self.exe.wait_fill_or_ttl(order_ids, timeout_s=ttl_s)
+                        await self.exe.wait_fill_or_ttl(order_ids, timeout_s=remaining_ttl)
 
                         await self.exe.flatten_ioc()
                         await _cancel_stops_and_timers()

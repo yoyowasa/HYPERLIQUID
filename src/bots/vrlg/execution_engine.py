@@ -273,35 +273,43 @@ class ExecutionEngine:
             logger.warning("place_reverse_stop failed: %s", e)
             return None
 
-    async def cancel_order_safely(self, order_id: Optional[str]) -> None:
-        """〔このメソッドがすること〕 単一注文のキャンセルを安全に実行します（存在しなくてもOK）。"""
+    async def cancel_order_safely(self, order_id: str) -> None:
+        """〔このメソッドがすること〕
+        単一の注文を安全にキャンセルします。APIが無くてもプレースホルダで動作し、
+        ・露出台帳（_open_maker_btc / _order_size）を必ず減算
+        ・on_order_event('cancel', {...}) を通知（trace_id / open_maker_btc 付き）
+        を行います。
+        """
         if not order_id:
             return
+
         try:
             from hl_core.api.http import cancel_order  # type: ignore
-        except Exception:
-            logger.info("[paper=%s] cancel placeholder: %s", self.paper, order_id)
-            return
-        try:
-            await cancel_order(self.symbol, order_id)  # type: ignore[misc]
-            # 〔この行がすること〕 手動キャンセルでも露出を減算
-            self._reduce_open_maker(order_id)
-            # 〔このブロックがすること〕 手動キャンセルの通知（露出も併記）
             try:
-                if self.on_order_event:
-                    self.on_order_event(
-                        "cancel",
-                        {
-                            "order_id": str(order_id),
-                            "open_maker_btc": float(self._open_maker_btc),
-                            "trace_id": self.trace_id,
-                        },
-                    )
+                await cancel_order(self.symbol, order_id)  # type: ignore[misc]
             except Exception:
+                # API 失敗は握り潰して台帳だけ整合を取る
                 pass
+        except Exception:
+            # API 自体が無い環境 → ログだけで継続
+            logger.info("[paper=%s] cancel placeholder: %s", self.paper, order_id)
 
-        except Exception as e:
-            logger.debug("cancel_order (safe) ignored: %s", e)
+        # 台帳を減算（同一IDに対しては一度だけ作用）
+        self._reduce_open_maker(order_id)
+
+        # イベント通知（露出も併記・trace_id 継承）
+        try:
+            if self.on_order_event:
+                self.on_order_event(
+                    "cancel",
+                    {
+                        "order_id": str(order_id),
+                        "open_maker_btc": float(self._open_maker_btc),
+                        "trace_id": self.trace_id,
+                    },
+                )
+        except Exception:
+            pass
 
     async def time_stop_after(self, ms: int) -> None:
         """〔このメソッドがすること〕
