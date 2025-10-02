@@ -7,7 +7,7 @@ spread_threshold: 0.05     # インデックス乖離率 (%)
 
 # ── 売買判定閾値 ───────────────────────────────
 threshold: 1.0             # 絶対値 (USD)
-threshold_pct: 0.03        # 割合 (%) ─ 上記 threshold と併用可
+threshold_pct: 0.001       # 割合 (%) ─ 上記 threshold と併用可
 cooldown_sec: 1.0          # 連続発注のクールダウン秒
 max_order_per_sec: 3       # 取引所 API 制限に合わせた同時発注上限
 
