@@ -2,6 +2,7 @@
 import importlib
 from asyncio import Semaphore
 from decimal import Decimal
+from pathlib import Path
 import logging
 import sys
 
@@ -29,13 +30,17 @@ def _set_credentials(
 
 def _remove_strategy_handler(symbol: str = "ETH-PERP") -> None:
     PFPLStrategy._FILE_HANDLERS.discard(symbol)
-    root_logger = logging.getLogger()
-    for handler in list(root_logger.handlers):
-        if isinstance(handler, logging.FileHandler):
-            filename = getattr(handler, "baseFilename", "")
-            if filename.endswith(f"strategy_{symbol}.log"):
-                root_logger.removeHandler(handler)
-                handler.close()
+    module_logger = strategy_module.logger
+    handler_suffix = f"strategy_{symbol}.log"
+    for handler in list(module_logger.handlers):
+        if isinstance(handler, logging.FileHandler) and getattr(
+            handler, "baseFilename", ""
+        ).endswith(handler_suffix):
+            module_logger.removeHandler(handler)
+            handler.close()
+    log_path = Path(handler_suffix)
+    if log_path.exists():
+        log_path.unlink()
 
 
 def test_init_adds_file_handler_once(monkeypatch):
@@ -44,20 +49,31 @@ def test_init_adds_file_handler_once(monkeypatch):
     _remove_strategy_handler()
 
     sem = Semaphore(1)
+    module_logger = strategy_module.logger
+    symbol = "ETH-PERP"
+    handler_suffix = f"strategy_{symbol}.log"
+
+    def _count_handlers() -> int:
+        return sum(
+            1
+            for handler in module_logger.handlers
+            if isinstance(handler, logging.FileHandler)
+            and getattr(handler, "baseFilename", "").endswith(handler_suffix)
+        )
 
     first_strategy = None
     try:
-        before = len(logging.getLogger().handlers)
+        before = _count_handlers()
         first_strategy = PFPLStrategy(config={}, semaphore=sem)
-        after_first = len(logging.getLogger().handlers)
+        after_first = _count_handlers()
         PFPLStrategy(config={}, semaphore=sem)
-        after_second = len(logging.getLogger().handlers)
+        after_second = _count_handlers()
     finally:
-        symbol = first_strategy.symbol if first_strategy else "ETH-PERP"
-        _remove_strategy_handler(symbol)
+        cleanup_symbol = first_strategy.symbol if first_strategy else symbol
+        _remove_strategy_handler(cleanup_symbol)
         PFPLStrategy._FILE_HANDLERS.clear()
 
-    assert after_first == after_second > before
+    assert after_first == after_second == before + 1
 
 
 def test_yaml_config_overrides_cli_args(monkeypatch):
@@ -87,6 +103,32 @@ def test_yaml_config_overrides_cli_args(monkeypatch):
         assert strategy.config.get("dry_run") == yaml_override["dry_run"]
         assert strategy.config.get("target_symbol") != cli_symbol
         assert strategy.config.get("dry_run") != cli_dry_run
+    finally:
+        if strategy is not None:
+            _remove_strategy_handler(strategy.symbol)
+        PFPLStrategy._FILE_HANDLERS.clear()
+
+
+def test_caplog_keeps_symbol_file_logging(monkeypatch, caplog):
+    _set_credentials(monkeypatch, "HL_ACCOUNT_ADDRESS", "HL_PRIVATE_KEY")
+
+    PFPLStrategy._FILE_HANDLERS.clear()
+    _remove_strategy_handler()
+
+    strategy = None
+    try:
+        with caplog.at_level(logging.INFO, logger=strategy_module.logger.name):
+            strategy = PFPLStrategy(config={}, semaphore=Semaphore(1))
+            log_message = "caplog-symbol-file-check"
+            strategy_module.logger.info(log_message)
+
+        assert strategy is not None
+
+        log_path = Path(f"strategy_{strategy.symbol}.log")
+        assert log_path.exists()
+        content = log_path.read_text(encoding="utf-8")
+        assert log_message in content
+        assert log_message in caplog.text
     finally:
         if strategy is not None:
             _remove_strategy_handler(strategy.symbol)
