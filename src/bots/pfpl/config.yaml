@@ -6,7 +6,6 @@ target_symbol: "ETH-PERP"  # 取引するペア
 fair_feed: indexPrices     # fair price に用いるフィード
 spread_threshold: 0.05     # インデックス乖離率 (%)
 
-# ── 売買判定閾値 ───────────────────────────────
 # エントリーの絶対しきい値（USD）。この値以上の有利差でのみ新規建てします。
 threshold: 0.25
 threshold_pct: 0.001       # 割合 (%) ─ 上記 threshold と併用可
