@@ -89,7 +89,7 @@ class VRLGStrategy:
         # 〔この行がすること〕 シグナル判定のゲート評価を受け取り、メトリクス/意思決定ログへ反映できるようにする
         self.sigdet.on_gate_eval = self._on_gate_eval
         self.exe = ExecutionEngine(self.cfg, paper=self.paper)
-        # 〔この行がすること〕 発注イベント（skip/submitted/reject/cancel）を Strategy で受け取れるよう接続
+        # 〔この行がすること〕 ExecutionEngine→Strategy へ発注イベントを通知するコールバックを配線
         self.exe.on_order_event = self._on_order_event
         self.risk = RiskManager(self.cfg)
         self.sizer = SizeAllocator(self.cfg)  # 〔この行がすること〕 発注直前に使うサイズ決定器を初期化
@@ -246,6 +246,27 @@ class VRLGStrategy:
         except Exception:
             pass
 
+        # 〔このブロックがすること〕 skip（露出/クールダウン）をメトリクスへ加算し、意思決定ログに残す
+        try:
+            if kind == "skip":
+                reason = str(fields.get("reason", ""))
+                side = fields.get("side")
+                open_maker = fields.get("open_maker_btc")
+                trace = fields.get("trace_id")
+                if reason == "exposure":
+                    self.metrics.inc_order_skips_exposure(1)
+                elif reason == "cooldown":
+                    self.metrics.inc_order_skips_cooldown(1)
+                self.decisions.log(
+                    "skip",
+                    reason=reason,
+                    side=side,
+                    open_maker_btc=open_maker,
+                    trace_id=trace,
+                )
+        except Exception:
+            pass
+
     async def _trigger_killswitch(self, reason: str) -> None:
         """〔このメソッドがすること〕
         Kill‑switch 発火時に「即フラット → メトリクス落とす → 戦略停止」を安全に行います。
@@ -348,6 +369,13 @@ class VRLGStrategy:
                 trace = self._order_trace.get(oid) if oid else None  # 〔この行がすること〕 約定が紐づく trace_id を対応表から取得（無ければ None）
             except Exception:
                 continue
+
+            # 〔このブロックがすること〕 maker の子注文が fill されたら、その order_id で未約定露出を即座に減算する
+            if oid:
+                try:
+                    self.exe.on_child_filled(oid)
+                except Exception:
+                    logger.debug("on_child_filled failed (ignored)")
 
             # 参照 mid（最新スナップショットが無ければ fill 価格を使って滑り0扱い）
             snap = self._last_features
