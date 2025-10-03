@@ -169,12 +169,132 @@ def setup_logger(
     rotating_log_path = target_dir / f"{bot_name or 'common'}.log"
     error_log_path = target_dir / "error.log"
 
+    def _build_bot_filter() -> logging.Filter | None:
+        if not bot_name:
+            return None
+
+        target = (bot_name or "").lower()
+
+        class _BotFilter(logging.Filter):
+            def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
+                name = (record.name or "").lower()
+                if not target:
+                    return True
+
+                if target == "runner" and name in {"__main__", "run_bot", "runner"}:
+                    return True
+
+                if name == target or name.startswith(f"{target}."):
+                    return True
+
+                if name.startswith(f"bots.{target}"):
+                    return True
+
+                if name.startswith("hl_core.") or name.startswith("hyperliquid."):
+                    return True
+
+                return False
+
+        return _BotFilter()
+
     def _ensure_rotating_file_handler() -> None:
-        for handler in root_logger.handlers:
-            if isinstance(handler, logging.handlers.TimedRotatingFileHandler) and (
-                getattr(handler, "baseFilename", None) == str(rotating_log_path)
-            ):
+        existing_handler: logging.handlers.TimedRotatingFileHandler | None = None
+
+        def _detach_from_non_propagating(
+            handler: logging.handlers.TimedRotatingFileHandler,
+        ) -> None:
+            attached = getattr(handler, "_hyperliquid_attached_loggers", ())
+            if not attached:
                 return
+
+            for logger_name in tuple(attached):
+                logger = logging.getLogger(logger_name)
+                try:
+                    logger.removeHandler(handler)
+                except ValueError:
+                    pass
+            setattr(handler, "_hyperliquid_attached_loggers", ())
+
+        def _attach_to_non_propagating(
+            handler: logging.handlers.TimedRotatingFileHandler,
+            *,
+            bot_filter: logging.Filter | None,
+            target_path: Path,
+        ) -> None:
+            if not bot_filter:
+                setattr(handler, "_hyperliquid_attached_loggers", ())
+                return
+
+            attached: tuple[str, ...] = getattr(
+                handler, "_hyperliquid_attached_loggers", ()
+            )
+            if attached:
+                _detach_from_non_propagating(handler)
+
+            matched: list[str] = []
+            manager = logging.Logger.manager
+            for name, candidate in manager.loggerDict.items():
+                if not isinstance(candidate, logging.Logger):
+                    continue
+
+                logger = candidate
+                if logger.propagate:
+                    continue
+
+                if any(
+                    getattr(existing, "baseFilename", None) == str(target_path)
+                    for existing in logger.handlers
+                ):
+                    continue
+
+                probe = logging.LogRecord(
+                    name=name,
+                    level=logging.INFO,
+                    pathname="",
+                    lineno=0,
+                    msg="",
+                    args=(),
+                    exc_info=None,
+                )
+                if not bot_filter.filter(probe):
+                    continue
+
+                logger.addHandler(handler)
+                matched.append(name)
+
+            setattr(handler, "_hyperliquid_attached_loggers", tuple(matched))
+
+        for handler in list(root_logger.handlers):
+            if not isinstance(handler, logging.handlers.TimedRotatingFileHandler):
+                continue
+
+            if getattr(handler, "baseFilename", None) == str(rotating_log_path):
+                existing_handler = handler
+                continue
+
+            _detach_from_non_propagating(handler)
+            root_logger.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass
+
+        bot_filter = _build_bot_filter()
+
+        if existing_handler is not None:
+            existing_handler.setLevel(file_level_value)
+            existing_handler.setFormatter(
+                logging.Formatter(_LOG_FMT, "%Y-%m-%d %H:%M:%S")
+            )
+            existing_handler.filters[:] = []
+            if bot_filter:
+                existing_handler.addFilter(bot_filter)
+            _attach_to_non_propagating(
+                existing_handler,
+                bot_filter=bot_filter,
+                target_path=rotating_log_path,
+            )
+            return
 
         fh = logging.handlers.TimedRotatingFileHandler(
             filename=str(rotating_log_path),
@@ -186,7 +306,14 @@ def setup_logger(
         )
         fh.setLevel(file_level_value)
         fh.setFormatter(logging.Formatter(_LOG_FMT, "%Y-%m-%d %H:%M:%S"))
+        if bot_filter:
+            fh.addFilter(bot_filter)
         root_logger.addHandler(fh)
+        _attach_to_non_propagating(
+            fh,
+            bot_filter=bot_filter,
+            target_path=rotating_log_path,
+        )
 
     def _ensure_error_file_handler() -> None:
         for handler in root_logger.handlers:
