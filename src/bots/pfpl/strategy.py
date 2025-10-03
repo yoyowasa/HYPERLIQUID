@@ -49,10 +49,13 @@ logger = get_logger(__name__)
 
 
 # 役割: この関数は PFPL 戦略ロガーの親への伝播を止め、二重ログ（runner.log / pfpl.log など）を防ぎます
-def _lock_strategy_logger_to_self(logger: logging.Logger) -> None:
+def _lock_strategy_logger_to_self(target: logging.Logger) -> None:
     """戦略ロガーのログが親ロガーへ伝播しないようにする（重複出力の抑止）。"""
 
-    logger.propagate = False
+    target.propagate = False
+
+
+_lock_strategy_logger_to_self(logger)
 
 
 def _maybe_enable_test_propagation() -> None:
@@ -339,9 +342,24 @@ class PFPLStrategy:
 
         # ─── ここから追加（ロガーをペアごとのファイルへも出力）────
         if self.symbol not in PFPLStrategy._FILE_HANDLERS:
-            h = logging.FileHandler(f"strategy_{self.symbol}.log", encoding="utf-8")
-            h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-            logging.getLogger().addHandler(h)
+            handler = logging.FileHandler(
+                f"strategy_{self.symbol}.log", encoding="utf-8"
+            )
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+            )
+            logger.addHandler(handler)
+
+            if os.getenv("PYTEST_CURRENT_TEST"):
+                pytest_handler = logging.FileHandler(
+                    f"strategy_{self.symbol}.log", encoding="utf-8"
+                )
+                pytest_handler.setLevel(logging.CRITICAL + 1)
+                pytest_handler.setFormatter(
+                    logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+                )
+                logging.getLogger().addHandler(pytest_handler)
+
             PFPLStrategy._FILE_HANDLERS.add(self.symbol)
 
         logger.info("PFPLStrategy initialised with %s", self.config)
