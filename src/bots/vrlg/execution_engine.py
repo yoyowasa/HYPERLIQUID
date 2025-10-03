@@ -71,7 +71,7 @@ class ExecutionEngine:
         self.trace_id: Optional[str] = None  # 〔この行がすること〕 Strategy から注入される相関IDを保持します
 
         self._open_maker_btc: float = 0.0  # 〔この属性がすること〕 未キャンセルの maker 注文サイズ合計（BTC）を管理
-        self._order_size: Dict[str, float] = {}  # 〔この属性がすること〕 order_id → 発注 total サイズの対応
+        self._order_size: dict[str, float] = {}  # 〔この属性がすること〕 order_id → 発注 total サイズの対応
 
     def set_period_hint(self, period_s: float) -> None:
         """〔このメソッドがすること〕
@@ -382,15 +382,34 @@ class ExecutionEngine:
 
     def _reduce_open_maker(self, order_id: str) -> None:
         """〔このメソッドがすること〕
-        指定 order_id の発注サイズを台帳から引き当て、未約定メーカー露出を減算します。
-        （同じ order_id に対しては一度だけ作用）
+        台帳から order_id に紐づく未約定メーカー量を一度だけ減算します（無ければ何もしない）。
         """
         try:
-            size = float(self._order_size.pop(order_id, 0.0))
+            key = str(order_id)
+            sz = float(self._order_size.pop(key, 0.0))
+            if sz > 0.0:
+                self._open_maker_btc = max(0.0, float(self._open_maker_btc) - sz)
         except Exception:
-            size = 0.0
-        if size > 0.0:
-            self._open_maker_btc = max(0.0, self._open_maker_btc - size)
+            pass
+
+    def on_child_filled(self, order_id: str) -> None:
+        """〔このメソッドがすること〕
+        取引所の fill（子注文約定）を受け、未約定メーカー露出を減算し、イベントで通知します。
+        Strategy の fills ループから呼ぶ想定です。
+        """
+        self._reduce_open_maker(order_id)
+        try:
+            if self.on_order_event:
+                self.on_order_event(
+                    "filled_reduce",
+                    {
+                        "order_id": str(order_id),
+                        "open_maker_btc": float(self._open_maker_btc),
+                        "trace_id": self.trace_id,
+                    },
+                )
+        except Exception:
+            pass
 
     # ─────────────── クールダウン管理（簡易） ───────────────
 

@@ -370,6 +370,13 @@ class VRLGStrategy:
             except Exception:
                 continue
 
+            # 〔このブロックがすること〕 maker の子注文が fill されたら、その order_id で未約定露出を即座に減算する
+            if oid:
+                try:
+                    self.exe.on_child_filled(oid)
+                except Exception:
+                    logger.debug("on_child_filled failed (ignored)")
+
             # 参照 mid（最新スナップショットが無ければ fill 価格を使って滑り0扱い）
             snap = self._last_features
             ref_mid = float(getattr(snap, "mid", price)) if snap else float(price)
