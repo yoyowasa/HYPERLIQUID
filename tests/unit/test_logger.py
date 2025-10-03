@@ -148,6 +148,7 @@ def test_runner_logs_do_not_leak_into_other_bot_log(tmp_path, monkeypatch):
 
     pfpl_logger = logging.getLogger("bots.pfpl.strategy")
     pfpl_logger.setLevel(logging.INFO)
+    pfpl_logger.propagate = False
     pfpl_logger.info("pfpl-message")
 
     runner_logger.info("runner-after")
