@@ -65,6 +65,12 @@ class Metrics:
         self.orders_canceled = Counter(
             "vrlg_orders_canceled", "Number of orders canceled (TTL/explicit)."
         )
+        self.order_skips_exposure = Counter(
+            "vrlg_order_skips_exposure", "Order skips due to exposure limit."
+        )  # 〔この行がすること〕 露出上限でのスキップ回数を数える
+        self.order_skips_cooldown = Counter(
+            "vrlg_order_skips_cooldown", "Order skips due to cooldown."
+        )  # 〔この行がすること〕 クールダウン中のスキップ回数を数える
         self.orders_submitted = Counter("vrlg_orders_submitted", "Number of maker orders submitted.")
 
         # 市場構造/鮮度
@@ -189,6 +195,20 @@ class Metrics:
         """〔この関数がすること〕 キャンセル件数を +n します。"""
         try:
             self.orders_canceled.inc(int(n))
+        except Exception:
+            pass
+
+    def inc_order_skips_exposure(self, n: int = 1) -> None:
+        """〔この関数がすること〕 露出上限によるスキップを +n カウントします。"""
+        try:
+            self.order_skips_exposure.inc(int(n))
+        except Exception:
+            pass
+
+    def inc_order_skips_cooldown(self, n: int = 1) -> None:
+        """〔この関数がすること〕 クールダウンによるスキップを +n カウントします。"""
+        try:
+            self.order_skips_cooldown.inc(int(n))
         except Exception:
             pass
 
