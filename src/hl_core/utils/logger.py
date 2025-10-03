@@ -213,7 +213,7 @@ def setup_logger(
                     logger.removeHandler(handler)
                 except ValueError:
                     pass
-            handler._hyperliquid_attached_loggers = ()
+            setattr(handler, "_hyperliquid_attached_loggers", ())
 
         def _attach_to_non_propagating(
             handler: logging.handlers.TimedRotatingFileHandler,
@@ -222,7 +222,7 @@ def setup_logger(
             target_path: Path,
         ) -> None:
             if not bot_filter:
-                handler._hyperliquid_attached_loggers = ()
+                setattr(handler, "_hyperliquid_attached_loggers", ())
                 return
 
             attached: tuple[str, ...] = getattr(
@@ -262,7 +262,7 @@ def setup_logger(
                 logger.addHandler(handler)
                 matched.append(name)
 
-            handler._hyperliquid_attached_loggers = tuple(matched)
+            setattr(handler, "_hyperliquid_attached_loggers", tuple(matched))
 
         for handler in list(root_logger.handlers):
             if not isinstance(handler, logging.handlers.TimedRotatingFileHandler):
