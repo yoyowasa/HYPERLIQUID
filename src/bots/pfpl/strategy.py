@@ -341,26 +341,26 @@ class PFPLStrategy:
                 )
 
         # ─── ここから追加（ロガーをペアごとのファイルへも出力）────
-        if self.symbol not in PFPLStrategy._FILE_HANDLERS:
-            handler = logging.FileHandler(
-                f"strategy_{self.symbol}.log", encoding="utf-8"
-            )
+        handler_filename = f"strategy_{self.symbol}.log"
+        module_logger = logger
+        existing_handler = next(
+            (
+                h
+                for h in module_logger.handlers
+                if isinstance(h, logging.FileHandler)
+                and getattr(h, "baseFilename", "").endswith(handler_filename)
+            ),
+            None,
+        )
+
+        if existing_handler is None:
+            handler = logging.FileHandler(handler_filename, encoding="utf-8")
             handler.setFormatter(
                 logging.Formatter("%(asctime)s %(levelname)s %(message)s")
             )
-            logger.addHandler(handler)
+            module_logger.addHandler(handler)
 
-            if os.getenv("PYTEST_CURRENT_TEST"):
-                pytest_handler = logging.FileHandler(
-                    f"strategy_{self.symbol}.log", encoding="utf-8"
-                )
-                pytest_handler.setLevel(logging.CRITICAL + 1)
-                pytest_handler.setFormatter(
-                    logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-                )
-                logging.getLogger().addHandler(pytest_handler)
-
-            PFPLStrategy._FILE_HANDLERS.add(self.symbol)
+        PFPLStrategy._FILE_HANDLERS.add(self.symbol)
 
         logger.info("PFPLStrategy initialised with %s", self.config)
 
