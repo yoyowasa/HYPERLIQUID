@@ -246,6 +246,27 @@ class VRLGStrategy:
         except Exception:
             pass
 
+        # 〔このブロックがすること〕 skip（露出/クールダウン）をメトリクスへ加算し、意思決定ログに残す
+        try:
+            if kind == "skip":
+                reason = str(fields.get("reason", ""))
+                side = fields.get("side")
+                open_maker = fields.get("open_maker_btc")
+                trace = fields.get("trace_id")
+                if reason == "exposure":
+                    self.metrics.inc_order_skips_exposure(1)
+                elif reason == "cooldown":
+                    self.metrics.inc_order_skips_cooldown(1)
+                self.decisions.log(
+                    "skip",
+                    reason=reason,
+                    side=side,
+                    open_maker_btc=open_maker,
+                    trace_id=trace,
+                )
+        except Exception:
+            pass
+
     async def _trigger_killswitch(self, reason: str) -> None:
         """〔このメソッドがすること〕
         Kill‑switch 発火時に「即フラット → メトリクス落とす → 戦略停止」を安全に行います。
