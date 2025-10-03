@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import datetime as _dt
 import logging
+from os import getenv
 from pathlib import Path
 from logging.handlers import TimedRotatingFileHandler
 import logging.handlers
@@ -268,6 +269,9 @@ def _attach_daily_file_handler(logger: logging.Logger, logger_name: str) -> None
     """
 
     path = _resolve_log_path(logger_name)
+    if path.name == "strategy.log" and getenv("HL_ENABLE_STRATEGY_GLOBAL_LOG", "0") != "1":
+        # 役割: strategy.log の出力を環境変数で制御し、既定では生成しない
+        return
     for handler in logger.handlers:
         if getattr(handler, "baseFilename", None) == str(path):
             return
