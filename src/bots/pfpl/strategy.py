@@ -46,9 +46,13 @@ except Exception:  # noqa: F401 - fallback when eth_account isn't installed
 
 logger = get_logger(__name__)
 
-# ロガーの伝播を止め、strategy.log 以外（pfpl.log / runner.log）への重複出力を防ぐ
-logger.propagate = False
 
+
+# 役割: この関数は PFPL 戦略ロガーの親への伝播を止め、二重ログ（runner.log / pfpl.log など）を防ぎます
+def _lock_strategy_logger_to_self(logger: logging.Logger) -> None:
+    """戦略ロガーのログが親ロガーへ伝播しないようにする（重複出力の抑止）。"""
+
+    logger.propagate = False
 
 
 def _maybe_enable_test_propagation() -> None:
