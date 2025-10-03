@@ -111,7 +111,7 @@ def test_setup_logger_honours_manual_overrides(tmp_path, monkeypatch):
         assert logging.getLogger(name).getEffectiveLevel() == logging.INFO
 
 
-def test_setup_logger_adds_file_handler_for_new_bot(tmp_path, monkeypatch):
+def test_setup_logger_switches_rotating_handler_for_new_bot(tmp_path, monkeypatch):
     monkeypatch.delenv("LOG_LEVEL", raising=False)
 
     log_root = tmp_path / "logs"
@@ -126,8 +126,53 @@ def test_setup_logger_adds_file_handler_for_new_bot(tmp_path, monkeypatch):
         if isinstance(handler, logging.handlers.TimedRotatingFileHandler)
     ]
 
-    base_filenames = {handler.baseFilename for handler in file_handlers}
-    expected_runner = str((log_root / "runner" / "runner.log").resolve())
+    assert len(file_handlers) == 1
+    handler = file_handlers[0]
     expected_pfpl = str((log_root / "pfpl" / "pfpl.log").resolve())
 
-    assert base_filenames.issuperset({expected_runner, expected_pfpl})
+    assert handler.baseFilename == expected_pfpl
+
+
+def test_runner_logs_do_not_leak_into_other_bot_log(tmp_path, monkeypatch):
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+
+    log_root = tmp_path / "logs"
+
+    setup_logger(bot_name="runner", log_root=log_root)
+
+    runner_logger = logging.getLogger("run_bot")
+    runner_logger.setLevel(logging.INFO)
+    runner_logger.info("runner-before")
+
+    setup_logger(bot_name="pfpl", log_root=log_root)
+
+    pfpl_logger = logging.getLogger("bots.pfpl.strategy")
+    pfpl_logger.setLevel(logging.INFO)
+    pfpl_logger.info("pfpl-message")
+
+    runner_logger.info("runner-after")
+
+    root = logging.getLogger()
+    file_handlers = [
+        handler
+        for handler in root.handlers
+        if isinstance(handler, logging.handlers.TimedRotatingFileHandler)
+    ]
+    assert len(file_handlers) == 1
+
+    for handler in root.handlers:
+        if isinstance(handler, logging.FileHandler):
+            handler.flush()
+
+    pfpl_log = (log_root / "pfpl" / "pfpl.log").resolve()
+    runner_log = (log_root / "runner" / "runner.log").resolve()
+
+    assert pfpl_log.exists()
+    assert file_handlers[0].baseFilename == str(pfpl_log)
+    pfpl_contents = pfpl_log.read_text(encoding="utf-8")
+    assert "pfpl-message" in pfpl_contents
+    assert "runner-after" not in pfpl_contents
+
+    if runner_log.exists():
+        runner_contents = runner_log.read_text(encoding="utf-8")
+        assert "runner-before" in runner_contents

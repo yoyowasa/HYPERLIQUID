@@ -169,12 +169,62 @@ def setup_logger(
     rotating_log_path = target_dir / f"{bot_name or 'common'}.log"
     error_log_path = target_dir / "error.log"
 
+    def _build_bot_filter() -> logging.Filter | None:
+        if not bot_name:
+            return None
+
+        target = (bot_name or "").lower()
+
+        class _BotFilter(logging.Filter):
+            def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
+                name = (record.name or "").lower()
+                if not target:
+                    return True
+
+                if target == "runner" and name in {"__main__", "run_bot", "runner"}:
+                    return True
+
+                if name == target or name.startswith(f"{target}."):
+                    return True
+
+                if name.startswith(f"bots.{target}"):
+                    return True
+
+                if name.startswith("hl_core.") or name.startswith("hyperliquid."):
+                    return True
+
+                return False
+
+        return _BotFilter()
+
     def _ensure_rotating_file_handler() -> None:
-        for handler in root_logger.handlers:
-            if isinstance(handler, logging.handlers.TimedRotatingFileHandler) and (
-                getattr(handler, "baseFilename", None) == str(rotating_log_path)
-            ):
-                return
+        existing_handler: logging.handlers.TimedRotatingFileHandler | None = None
+
+        for handler in list(root_logger.handlers):
+            if not isinstance(handler, logging.handlers.TimedRotatingFileHandler):
+                continue
+
+            if getattr(handler, "baseFilename", None) == str(rotating_log_path):
+                existing_handler = handler
+                continue
+
+            root_logger.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass
+
+        bot_filter = _build_bot_filter()
+
+        if existing_handler is not None:
+            existing_handler.setLevel(file_level_value)
+            existing_handler.setFormatter(
+                logging.Formatter(_LOG_FMT, "%Y-%m-%d %H:%M:%S")
+            )
+            existing_handler.filters[:] = []
+            if bot_filter:
+                existing_handler.addFilter(bot_filter)
+            return
 
         fh = logging.handlers.TimedRotatingFileHandler(
             filename=str(rotating_log_path),
@@ -186,6 +236,8 @@ def setup_logger(
         )
         fh.setLevel(file_level_value)
         fh.setFormatter(logging.Formatter(_LOG_FMT, "%Y-%m-%d %H:%M:%S"))
+        if bot_filter:
+            fh.addFilter(bot_filter)
         root_logger.addHandler(fh)
 
     def _ensure_error_file_handler() -> None:
