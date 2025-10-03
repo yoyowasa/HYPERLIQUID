@@ -89,7 +89,7 @@ class VRLGStrategy:
         # 〔この行がすること〕 シグナル判定のゲート評価を受け取り、メトリクス/意思決定ログへ反映できるようにする
         self.sigdet.on_gate_eval = self._on_gate_eval
         self.exe = ExecutionEngine(self.cfg, paper=self.paper)
-        # 〔この行がすること〕 発注イベント（skip/submitted/reject/cancel）を Strategy で受け取れるよう接続
+        # 〔この行がすること〕 ExecutionEngine→Strategy へ発注イベントを通知するコールバックを配線
         self.exe.on_order_event = self._on_order_event
         self.risk = RiskManager(self.cfg)
         self.sizer = SizeAllocator(self.cfg)  # 〔この行がすること〕 発注直前に使うサイズ決定器を初期化
