@@ -15,7 +15,7 @@ from typing import Any, cast
 
 import anyio
 from hl_core.config import load_settings
-from hl_core.utils.logger import setup_logger
+from hl_core.utils.logger import setup_logger, get_logger
 # 既存 import 群の最後あたりに追加
 from hyperliquid.exchange import Exchange
 
@@ -44,11 +44,98 @@ except Exception:  # noqa: F401 - fallback when eth_account isn't installed
             return _Wallet(key)
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
+
+
+def _maybe_enable_test_propagation() -> None:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        # pytest では caplog が root ロガーをフックするため、伝播を許可して
+        # 既存のテストでログを捕捉できるようにする
+        logger.propagate = True
 
 
 class PFPLStrategy:
     """Price-Fair-Price-Lag bot"""
+
+    # 何をする関数か:
+    # - mid と fair の乖離（絶対値/率）を計算
+    # - threshold / threshold_pct / spread_threshold の合否を判定
+    # - cooldown / 最大ポジション / 最小発注額 / funding guard の合否を判定
+    # - 上記の内訳を1行の DEBUG ログに要約出力（発注はしない）
+    # - 後段の判定/発注で再利用できる dict を返す
+    def _debug_evaluate_signal(
+        self,
+        *,
+        mid_px: float,
+        fair_px: float,
+        order_usd: float,
+        pos_usd: float,
+        last_order_ts: float | None,
+        funding_blocked: bool,
+    ) -> dict:
+        _maybe_enable_test_propagation()
+        logger = getattr(self, "logger", None) or getattr(self, "log", None) or logging.getLogger(__name__)
+        now = time.time()
+
+        diff_abs = mid_px - fair_px
+        diff_pct = (diff_abs / fair_px) if fair_px else 0.0
+
+        thr_abs = getattr(self, "threshold", 0.0)
+        thr_pct = getattr(self, "threshold_pct", 0.0)
+        spread_thr = getattr(self, "spread_threshold", 0.0)
+        cooldown = getattr(self, "cooldown_sec", 0.0)
+        max_pos = getattr(self, "max_position_usd", float("inf"))
+        min_usd = getattr(self, "min_usd", 0.0)
+
+        cooldown_ok = (now - (last_order_ts or 0.0)) >= cooldown
+        abs_ok = (abs(diff_abs) >= thr_abs) if thr_abs else False
+        pct_ok = (abs(diff_pct) >= thr_pct) if thr_pct else False
+        spread_ok = (abs(diff_abs) >= spread_thr) if spread_thr else True
+        pos_ok = (abs(pos_usd) + order_usd) <= max_pos
+        notional_ok = order_usd >= min_usd
+        funding_ok = not funding_blocked
+
+        # 方向の示唆（情報表示のみ）
+        want_long = (diff_abs <= -thr_abs) or (diff_pct <= -thr_pct if thr_pct else False)
+        want_short = (diff_abs >= thr_abs) or (diff_pct >= thr_pct if thr_pct else False)
+
+        logger.debug(
+            "decision mid=%.2f fair=%.2f d_abs=%+.4f d_pct=%+.5f | "
+            "abs>=%.4f:%s pct>=%.5f:%s spread>=%.4f:%s | "
+            "cooldown_ok=%s pos_ok=%s notional_ok=%s funding_ok=%s | "
+            "long=%s short=%s",
+            mid_px,
+            fair_px,
+            diff_abs,
+            diff_pct,
+            thr_abs,
+            abs_ok,
+            thr_pct,
+            pct_ok,
+            spread_thr,
+            spread_ok,
+            cooldown_ok,
+            pos_ok,
+            notional_ok,
+            funding_ok,
+            want_long,
+            want_short,
+        )
+
+        return {
+            "diff_abs": diff_abs,
+            "diff_pct": diff_pct,
+            "abs_ok": abs_ok,
+            "pct_ok": pct_ok,
+            "spread_ok": spread_ok,
+            "cooldown_ok": cooldown_ok,
+            "pos_ok": pos_ok,
+            "notional_ok": notional_ok,
+            "funding_ok": funding_ok,
+            "want_long": want_long,
+            "want_short": want_short,
+            "ts": now,
+        }
 
     # ← シグネチャはそのまま
     _LOGGER_INITIALISED = False
@@ -57,6 +144,7 @@ class PFPLStrategy:
     def __init__(
         self, *, config: dict[str, Any], semaphore: asyncio.Semaphore | None = None
     ):
+        _maybe_enable_test_propagation()
         if not PFPLStrategy._LOGGER_INITIALISED:
             setup_logger(bot_name="pfpl")
             PFPLStrategy._LOGGER_INITIALISED = True
@@ -399,6 +487,7 @@ class PFPLStrategy:
     # ------------------------------------------------------------------ Tick loop
     # ─────────────────────────────────────────────────────────────
     def evaluate(self) -> None:
+        _maybe_enable_test_propagation()
         if not self._check_funding_window():
             return
         # ── fair / mid がまだ揃っていないなら何もしない ─────────

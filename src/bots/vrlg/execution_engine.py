@@ -51,13 +51,13 @@ class ExecutionEngine:
     def __init__(self, cfg, paper: bool) -> None:
         """〔このメソッドがすること〕 コンフィグを読み込み、発注パラメータと内部状態を初期化します。"""
         self.paper = paper
-        self.symbol: str = _safe(cfg, "symbol", "name", "BTCUSD-PERP")
-        self.tick: float = float(_safe(cfg, "symbol", "tick_size", 0.5))
         self.ttl_ms: int = int(_safe(cfg, "exec", "order_ttl_ms", 1000))
         self.display_ratio: float = float(_safe(cfg, "exec", "display_ratio", 0.25))
         self.min_display: float = float(_safe(cfg, "exec", "min_display_btc", 0.01))
-        self.max_exposure: float = float(_safe(cfg, "exec", "max_exposure_btc", 0.8))
         self.cooldown_factor: float = float(_safe(cfg, "exec", "cooldown_factor", 2.0))
+        self.symbol: str = str(_safe(cfg, "symbol", "name", "BTCUSD-PERP"))     # 〔この行がすること〕 取引対象シンボル名を設定から取得して保持する
+        self.tick: float = float(_safe(cfg, "symbol", "tick_size", 0.5))        # 〔この行がすること〕 tick_size（最小価格刻み）を設定から取得して保持する
+        self.max_exposure: float = float(_safe(cfg, "exec", "max_exposure_btc", 0.8))  # 〔この行がすること〕 発注前の露出上限(BTC)を設定から読み込み、place_two_sided の露出ガードに使う
         self.offset_ticks_normal: float = float(_safe(cfg, "exec", "offset_ticks_normal", 0.5))  # 〔この行がすること〕 通常置きのオフセットを保持
         self.offset_ticks_deep: float = float(_safe(cfg, "exec", "offset_ticks_deep", 1.5))      # 〔この行がすること〕 深置きのオフセットを保持
         self.side_mode: str = str(_safe(cfg, "exec", "side_mode", "both")).lower()  # 〔この行がすること〕 片面/両面モード設定を保持
