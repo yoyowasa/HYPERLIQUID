@@ -46,6 +46,10 @@ except Exception:  # noqa: F401 - fallback when eth_account isn't installed
 
 logger = get_logger(__name__)
 
+# ロガーの伝播を止め、strategy.log 以外（pfpl.log / runner.log）への重複出力を防ぐ
+logger.propagate = False
+
+
 
 def _maybe_enable_test_propagation() -> None:
     if os.getenv("PYTEST_CURRENT_TEST"):
