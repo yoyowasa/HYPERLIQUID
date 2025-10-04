@@ -30,7 +30,7 @@ def strategy(monkeypatch: pytest.MonkeyPatch) -> Iterator[PFPLStrategy]:
     for handler in list(root_logger.handlers):
         filename = getattr(handler, "baseFilename", "")
         if isinstance(handler, logging.FileHandler) and filename.endswith(
-            f"strategy_{strat.symbol}.log"
+            f"strategy_{strat.symbol}.csv"
         ):
             root_logger.removeHandler(handler)
             handler.close()

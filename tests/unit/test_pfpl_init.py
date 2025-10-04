@@ -31,7 +31,7 @@ def _set_credentials(
 def _remove_strategy_handler(symbol: str = "ETH-PERP") -> None:
     PFPLStrategy._FILE_HANDLERS.discard(symbol)
     module_logger = strategy_module.logger
-    handler_suffix = f"strategy_{symbol}.log"
+    handler_suffix = f"strategy_{symbol}.csv"
     for handler in list(module_logger.handlers):
         if isinstance(handler, logging.FileHandler) and getattr(
             handler, "baseFilename", ""
@@ -51,7 +51,7 @@ def test_init_adds_file_handler_once(monkeypatch):
     sem = Semaphore(1)
     module_logger = strategy_module.logger
     symbol = "ETH-PERP"
-    handler_suffix = f"strategy_{symbol}.log"
+    handler_suffix = f"strategy_{symbol}.csv"
 
     def _count_handlers() -> int:
         return sum(
@@ -124,7 +124,7 @@ def test_caplog_keeps_symbol_file_logging(monkeypatch, caplog):
 
         assert strategy is not None
 
-        log_path = Path(f"strategy_{strategy.symbol}.log")
+        log_path = Path(f"strategy_{strategy.symbol}.csv")
         assert log_path.exists()
         content = log_path.read_text(encoding="utf-8")
         assert log_message in content

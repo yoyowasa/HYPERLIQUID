@@ -128,7 +128,7 @@ def test_setup_logger_switches_rotating_handler_for_new_bot(tmp_path, monkeypatc
 
     assert len(file_handlers) == 1
     handler = file_handlers[0]
-    expected_pfpl = str((log_root / "pfpl" / "pfpl.log").resolve())
+    expected_pfpl = str((log_root / "pfpl" / "pfpl.csv").resolve())
 
     assert handler.baseFilename == expected_pfpl
 
@@ -165,8 +165,8 @@ def test_runner_logs_do_not_leak_into_other_bot_log(tmp_path, monkeypatch):
         if isinstance(handler, logging.FileHandler):
             handler.flush()
 
-    pfpl_log = (log_root / "pfpl" / "pfpl.log").resolve()
-    runner_log = (log_root / "runner" / "runner.log").resolve()
+    pfpl_log = (log_root / "pfpl" / "pfpl.csv").resolve()
+    runner_log = (log_root / "runner" / "runner.csv").resolve()
 
     assert pfpl_log.exists()
     assert file_handlers[0].baseFilename == str(pfpl_log)
