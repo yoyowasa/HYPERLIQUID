@@ -15,7 +15,7 @@ from typing import Any, cast
 
 import anyio
 from hl_core.config import load_settings
-from hl_core.utils.logger import setup_logger, get_logger
+from hl_core.utils.logger import create_csv_formatter, setup_logger, get_logger
 # 既存 import 群の最後あたりに追加
 from hyperliquid.exchange import Exchange
 
@@ -48,7 +48,7 @@ logger = get_logger(__name__)
 
 
 
-# 役割: この関数は PFPL 戦略ロガーの親への伝播を止め、二重ログ（runner.log / pfpl.log など）を防ぎます
+# 役割: この関数は PFPL 戦略ロガーの親への伝播を止め、二重ログ（runner.csv / pfpl.csv など）を防ぎます
 def _lock_strategy_logger_to_self(target: logging.Logger) -> None:
     """戦略ロガーのログが親ロガーへ伝播しないようにする（重複出力の抑止）。"""
 
@@ -341,7 +341,7 @@ class PFPLStrategy:
                 )
 
         # ─── ここから追加（ロガーをペアごとのファイルへも出力）────
-        handler_filename = f"strategy_{self.symbol}.log"
+        handler_filename = f"strategy_{self.symbol}.csv"
         module_logger = logger
         existing_handler = next(
             (
@@ -355,9 +355,7 @@ class PFPLStrategy:
 
         if existing_handler is None:
             handler = logging.FileHandler(handler_filename, encoding="utf-8")
-            handler.setFormatter(
-                logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-            )
+            handler.setFormatter(create_csv_formatter(include_logger_name=False))
             module_logger.addHandler(handler)
 
         PFPLStrategy._FILE_HANDLERS.add(self.symbol)

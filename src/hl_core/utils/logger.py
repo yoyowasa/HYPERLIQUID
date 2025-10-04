@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import copy
+import csv
 import datetime as _dt
+import io
 import logging
 from os import getenv
 from pathlib import Path
@@ -21,6 +23,8 @@ from colorama import Fore, Style, init as _color_init
 # ────────────────────────────────────────────────────────────
 _TZ: Final = _dt.timezone.utc  # すべて UTC
 _LOG_FMT: Final = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+_CSV_FIELDS_WITH_LOGGER: Final = ("asctime", "levelname", "name", "message")
+_CSV_FIELDS_NO_LOGGER: Final = ("asctime", "levelname", "message")
 _LEVEL_COLOR: Final = {
     logging.DEBUG: Fore.CYAN,
     logging.INFO: Fore.GREEN,
@@ -55,6 +59,55 @@ class _ColorFormatter(logging.Formatter):
         if color:
             record.msg = f"{color}{record.msg}{Style.RESET_ALL}"
         return super().format(record)
+
+
+class _CsvFormatter(logging.Formatter):
+    """CSV 形式でログ行を生成するフォーマッタ."""
+
+    def __init__(
+        self,
+        *,
+        fields: tuple[str, ...],
+        datefmt: str | None = None,
+    ) -> None:
+        super().__init__(None, datefmt)
+        self._fields = fields
+
+    def format(self, record: logging.LogRecord) -> str:  # noqa: D401
+        record = copy.copy(record)
+        record.message = record.getMessage()
+
+        if record.exc_info and not record.exc_text:
+            record.exc_text = self.formatException(record.exc_info)
+        if record.stack_info:
+            record.stack_info = self.formatStack(record.stack_info)
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        row: list[str] = []
+        for field in self._fields:
+            if field == "asctime":
+                row.append(self.formatTime(record, self.datefmt))
+            elif field == "message":
+                row.append(record.message)
+            else:
+                value = getattr(record, field, "")
+                row.append(str(value) if value is not None else "")
+        writer.writerow(row)
+        output = buffer.getvalue().rstrip("\r\n")
+
+        if record.exc_text:
+            output = f"{output}\n{record.exc_text}"
+        if record.stack_info:
+            output = f"{output}\n{record.stack_info}"
+        return output
+
+
+def create_csv_formatter(*, include_logger_name: bool = True) -> logging.Formatter:
+    fields = (
+        _CSV_FIELDS_WITH_LOGGER if include_logger_name else _CSV_FIELDS_NO_LOGGER
+    )
+    return _CsvFormatter(fields=fields, datefmt="%Y-%m-%d %H:%M:%S")
 
 
 # ────────────────────────────────────────────────────────────
@@ -166,8 +219,8 @@ def setup_logger(
     log_root = Path(log_root).resolve()
     target_dir = log_root / (bot_name or "common")
     target_dir.mkdir(parents=True, exist_ok=True)
-    rotating_log_path = target_dir / f"{bot_name or 'common'}.log"
-    error_log_path = target_dir / "error.log"
+    rotating_log_path = target_dir / f"{bot_name or 'common'}.csv"
+    error_log_path = target_dir / "error.csv"
 
     def _build_bot_filter() -> logging.Filter | None:
         if not bot_name:
@@ -283,9 +336,7 @@ def setup_logger(
 
         if existing_handler is not None:
             existing_handler.setLevel(file_level_value)
-            existing_handler.setFormatter(
-                logging.Formatter(_LOG_FMT, "%Y-%m-%d %H:%M:%S")
-            )
+            existing_handler.setFormatter(create_csv_formatter())
             existing_handler.filters[:] = []
             if bot_filter:
                 existing_handler.addFilter(bot_filter)
@@ -305,7 +356,7 @@ def setup_logger(
             utc=True,
         )
         fh.setLevel(file_level_value)
-        fh.setFormatter(logging.Formatter(_LOG_FMT, "%Y-%m-%d %H:%M:%S"))
+        fh.setFormatter(create_csv_formatter())
         if bot_filter:
             fh.addFilter(bot_filter)
         root_logger.addHandler(fh)
@@ -326,7 +377,7 @@ def setup_logger(
 
         eh = logging.FileHandler(str(error_log_path), encoding="utf-8")
         eh.setLevel(logging.WARNING)
-        eh.setFormatter(logging.Formatter(_LOG_FMT, "%Y-%m-%d %H:%M:%S"))
+        eh.setFormatter(create_csv_formatter())
         root_logger.addHandler(eh)
 
     global _LOGGER_CONFIGURED
@@ -368,7 +419,7 @@ def get_logger(name: Optional[str] = None) -> logging.Logger:
     if name is None:
         name = logger.name
     _attach_daily_file_handler(logger, name)
-    # 役割: 戦略ロガー(bots.*)が root に伝播して runner.log 等へ二重出力されるのを防ぐ
+    # 役割: 戦略ロガー(bots.*)が root に伝播して runner.csv 等へ二重出力されるのを防ぐ
     if name.startswith("bots."):
         logger.propagate = False
     return logger
@@ -376,8 +427,8 @@ def get_logger(name: Optional[str] = None) -> logging.Logger:
 
 def _resolve_log_path(logger_name: str) -> Path:
     """
-    logger名から logs/<bot>/<bot>.log を返す。
-    'pfpl'や'pfplstrategy'を含む場合は logs/pfpl/pfpl.log に正規化する。
+    logger名から logs/<bot>/<bot>.csv を返す。
+    'pfpl'や'pfplstrategy'を含む場合は logs/pfpl/pfpl.csv に正規化する。
     ディレクトリが無ければ作成する。
     """
 
@@ -385,7 +436,7 @@ def _resolve_log_path(logger_name: str) -> Path:
     bot = "pfpl" if ("pfpl" in raw or "pfplstrategy" in raw) else raw
     log_dir = Path("logs") / bot
     log_dir.mkdir(parents=True, exist_ok=True)
-    return log_dir / f"{bot}.log"
+    return log_dir / f"{bot}.csv"
 
 
 def _attach_daily_file_handler(logger: logging.Logger, logger_name: str) -> None:
@@ -396,8 +447,8 @@ def _attach_daily_file_handler(logger: logging.Logger, logger_name: str) -> None
     """
 
     path = _resolve_log_path(logger_name)
-    if path.name == "strategy.log" and getenv("HL_ENABLE_STRATEGY_GLOBAL_LOG", "0") != "1":
-        # 役割: strategy.log の出力を環境変数で制御し、既定では生成しない
+    if path.name == "strategy.csv" and getenv("HL_ENABLE_STRATEGY_GLOBAL_LOG", "0") != "1":
+        # 役割: strategy.csv の出力を環境変数で制御し、既定では生成しない
         return
     for handler in logger.handlers:
         if getattr(handler, "baseFilename", None) == str(path):
@@ -412,11 +463,6 @@ def _attach_daily_file_handler(logger: logging.Logger, logger_name: str) -> None
         delay=False,
     )
     file_handler.setLevel(logger.level)
-    file_handler.setFormatter(
-        logging.Formatter(
-            fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-    )
+    file_handler.setFormatter(create_csv_formatter())
     logger.addHandler(file_handler)
     logger.propagate = False
