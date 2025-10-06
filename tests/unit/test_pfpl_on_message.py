@@ -45,3 +45,47 @@ def test_on_message_missing_mid_keeps_previous(strategy: PFPLStrategy, caplog):
         and record.message == "allMids: waiting for mid for ETH-PERP (base=ETH)"
         for record in caplog.records
     )
+
+
+def test_on_message_fair_updates_when_symbol_only_index(strategy: PFPLStrategy):
+    strategy.mid = Decimal("1000")
+    strategy.fair_feed = "indexPrices"
+    calls: list[Decimal | None] = []
+
+    def fake_evaluate(self: PFPLStrategy) -> None:
+        calls.append(self.fair)
+
+    strategy.evaluate = fake_evaluate.__get__(strategy, PFPLStrategy)
+
+    strategy.on_message(
+        {
+            "channel": "indexPrices",
+            "data": {"prices": {strategy.symbol: "1234.56"}},
+        }
+    )
+
+    assert strategy.idx == Decimal("1234.56")
+    assert strategy.fair == Decimal("1234.56")
+    assert calls == [Decimal("1234.56")]
+
+
+def test_on_message_fair_updates_when_symbol_only_oracle(strategy: PFPLStrategy):
+    strategy.mid = Decimal("2000")
+    strategy.fair_feed = "oraclePrices"
+    calls: list[Decimal | None] = []
+
+    def fake_evaluate(self: PFPLStrategy) -> None:
+        calls.append(self.fair)
+
+    strategy.evaluate = fake_evaluate.__get__(strategy, PFPLStrategy)
+
+    strategy.on_message(
+        {
+            "channel": "oraclePrices",
+            "data": {"prices": {strategy.symbol: "4321.09"}},
+        }
+    )
+
+    assert strategy.ora == Decimal("4321.09")
+    assert strategy.fair == Decimal("4321.09")
+    assert calls == [Decimal("4321.09")]

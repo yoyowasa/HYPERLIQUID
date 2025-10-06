@@ -457,6 +457,8 @@ class PFPLStrategy:
         elif ch == "indexPrices":  # インデックス価格
             prices = (msg.get("data") or {}).get("prices") or {}
             price_val = prices.get(self.base_coin)
+            if price_val is None:
+                price_val = prices.get(self.symbol)
             new_idx = Decimal(str(price_val)) if price_val is not None else None
             if new_idx != self.idx:
                 self.idx = new_idx
@@ -466,6 +468,8 @@ class PFPLStrategy:
         elif ch == "oraclePrices":  # オラクル価格
             prices = (msg.get("data") or {}).get("prices") or {}
             price_val = prices.get(self.base_coin)
+            if price_val is None:
+                price_val = prices.get(self.symbol)
             new_ora = Decimal(str(price_val)) if price_val is not None else None
             if new_ora != self.ora:
                 self.ora = new_ora
