@@ -51,6 +51,9 @@ def test_evaluate_logs_signed_diff(
         and "decision" in record.message
         and "d_abs=-1.0000" in record.message
         and "d_pct=-0.00990" in record.message
+        and "abs>=200.0000:False" in record.message
+        and "pct>=200.00000:False" in record.message
+        and "spread>=0.0000:True" in record.message
         for record in caplog.records
     ), "expected positive diff snapshot log"
 
@@ -65,6 +68,9 @@ def test_evaluate_logs_signed_diff(
         and "decision" in record.message
         and "d_abs=+1.0000" in record.message
         and "d_pct=+0.01010" in record.message
+        and "abs>=200.0000:False" in record.message
+        and "pct>=200.00000:False" in record.message
+        and "spread>=0.0000:True" in record.message
         for record in caplog.records
     ), "expected negative diff snapshot log"
 
