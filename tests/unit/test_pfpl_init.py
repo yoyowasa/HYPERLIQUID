@@ -257,3 +257,66 @@ async def test_refresh_position_uses_base_coin(monkeypatch):
     finally:
         _remove_strategy_handler(strategy.symbol)
         PFPLStrategy._FILE_HANDLERS.clear()
+
+
+def test_funding_guard_config_applied(monkeypatch):
+    _set_credentials(monkeypatch, "HL_ACCOUNT_ADDRESS", "HL_PRIVATE_KEY")
+
+    monkeypatch.setattr(strategy_module.yaml, "safe_load", lambda raw_conf: {})
+    PFPLStrategy._FILE_HANDLERS.clear()
+    _remove_strategy_handler()
+
+    strategy = None
+    strategy_disabled = None
+    now = 1_700_000_000.0
+
+    try:
+        strategy = PFPLStrategy(
+            config={
+                "funding_guard": {
+                    "enabled": True,
+                    "buffer_sec": 60,
+                    "reenter_sec": 15,
+                }
+            },
+            semaphore=Semaphore(1),
+        )
+
+        assert strategy.funding_guard_enabled is True
+        assert strategy.funding_guard_buffer_sec == 60
+        assert strategy.funding_guard_reenter_sec == 15
+        assert strategy.funding_close_buffer_secs == 60
+
+        strategy.next_funding_ts = now + 30
+        monkeypatch.setattr(strategy_module.time, "time", lambda: now)
+        assert strategy._check_funding_window() is False
+        assert strategy._funding_pause is True
+
+        monkeypatch.setattr(strategy_module.time, "time", lambda: now + 61)
+        assert strategy._check_funding_window() is True
+        assert strategy._funding_pause is False
+
+        assert strategy._should_close_before_funding(now) is True
+
+        strategy_disabled = PFPLStrategy(
+            config={
+                "funding_guard": {
+                    "enabled": False,
+                    "buffer_sec": 45,
+                    "reenter_sec": 10,
+                }
+            },
+            semaphore=Semaphore(1),
+        )
+
+        strategy_disabled.next_funding_ts = now + 5
+        monkeypatch.setattr(strategy_module.time, "time", lambda: now)
+
+        assert strategy_disabled._check_funding_window() is True
+        assert strategy_disabled._should_close_before_funding(now) is False
+    finally:
+        if strategy is not None:
+            _remove_strategy_handler(strategy.symbol)
+        if strategy_disabled is not None:
+            _remove_strategy_handler(strategy_disabled.symbol)
+        PFPLStrategy._FILE_HANDLERS.clear()

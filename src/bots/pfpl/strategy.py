@@ -167,11 +167,21 @@ class PFPLStrategy:
                 raw_conf = f.read()
             yaml_conf = yaml.safe_load(raw_conf) or {}
         self.config = {**config, **yaml_conf}
-        # --- Funding 直前クローズ用バッファ秒数（デフォルト 120）
+        funding_guard_cfg = self.config.get("funding_guard", {})
+        if not isinstance(funding_guard_cfg, dict):
+            funding_guard_cfg = {}
+        self.funding_guard_enabled: bool = bool(
+            funding_guard_cfg.get("enabled", True)
+        )
+        self.funding_guard_buffer_sec: int = int(
+            funding_guard_cfg.get("buffer_sec", 300)
+        )
+        self.funding_guard_reenter_sec: int = int(
+            funding_guard_cfg.get("reenter_sec", 120)
+        )
+        legacy_close_buffer = self.config.get("funding_close_buffer_secs", 120)
         self.funding_close_buffer_secs: int = int(
-            getattr(self, "cfg", getattr(self, "config", {})).get(
-                "funding_close_buffer_secs", 120
-            )
+            funding_guard_cfg.get("buffer_sec", legacy_close_buffer)
         )
         # --- Order price offset percentage（デフォルト 0.0005 = 0.05 %）
         self.eps_pct: float = float(self.config.get("eps_pct", 0.0005))
@@ -789,12 +799,14 @@ class PFPLStrategy:
         funding 直前・直後は True を返さず evaluate() を停止させる。
         - 5 分前 〜 2 分後 を「危険窓」とする
         """
+        if not self.funding_guard_enabled:
+            return True
         if self.next_funding_ts is None:
             return True  # fundingInfo 未取得なら通常運転
 
         now = time.time()
-        before = 300  # 5 分前
-        after = 120  # 2 分後
+        before = self.funding_guard_buffer_sec
+        after = self.funding_guard_reenter_sec
 
         in_window = self.next_funding_ts - before <= now <= self.next_funding_ts + after
 
@@ -812,10 +824,12 @@ class PFPLStrategy:
     # ------------------------------------------------------------------
     def _should_close_before_funding(self, now_ts: float) -> bool:
         """Return True if we are within the configured buffer before funding."""
+        if not self.funding_guard_enabled:
+            return False
         next_ts = getattr(self, "next_funding_ts", None)
         if not next_ts:
             return False
-        return now_ts > next_ts - self.funding_close_buffer_secs
+        return now_ts > next_ts - self.funding_guard_buffer_sec
 
     async def _close_all_positions(self) -> None:
         """Close every open position for this symbol."""
