@@ -6,6 +6,7 @@ import hmac
 import hashlib
 import json
 import logging
+import logging.handlers
 import os
 import time
 from datetime import datetime, timezone  # ← 追加
@@ -103,6 +104,9 @@ class PFPLStrategy:
         pos_usd: float,
         last_order_ts: float | None,
         funding_blocked: bool,
+        threshold: Decimal | float | str | None = None,
+        threshold_pct: Decimal | float | str | None = None,
+        spread_threshold: Decimal | float | str | None = None,
     ) -> dict:
         _maybe_enable_test_propagation()
         logger = getattr(self, "logger", None) or getattr(self, "log", None) or logging.getLogger(__name__)
@@ -111,24 +115,70 @@ class PFPLStrategy:
         diff_abs = mid_px - fair_px
         diff_pct = (diff_abs / fair_px) if fair_px else 0.0
 
-        thr_abs = getattr(self, "threshold", 0.0)
-        thr_pct = getattr(self, "threshold_pct", 0.0)
-        spread_thr = getattr(self, "spread_threshold", 0.0)
+        config = getattr(self, "config", {}) or {}
+
+        def _resolve_threshold(
+            *,
+            key: str,
+            attr_name: str,
+            override: Decimal | float | str | None,
+        ) -> Decimal:
+            if override is not None:
+                candidate = override
+            elif hasattr(self, attr_name):
+                candidate = getattr(self, attr_name)
+            else:
+                candidate = config.get(key)
+
+            if isinstance(candidate, Decimal):
+                return candidate
+            if candidate is None:
+                return Decimal("0")
+            try:
+                return Decimal(str(candidate))
+            except Exception:
+                return Decimal("0")
+
+        thr_abs_dec = _resolve_threshold(
+            key="threshold", attr_name="threshold", override=threshold
+        )
+        thr_pct_dec = _resolve_threshold(
+            key="threshold_pct", attr_name="threshold_pct", override=threshold_pct
+        )
+        spread_thr_dec = _resolve_threshold(
+            key="spread_threshold",
+            attr_name="spread_threshold",
+            override=spread_threshold,
+        )
+
+        thr_abs = float(thr_abs_dec)
+        thr_pct = float(thr_pct_dec)
+        spread_thr = float(spread_thr_dec)
+
+        has_thr_abs = thr_abs_dec != Decimal("0")
+        has_thr_pct = thr_pct_dec != Decimal("0")
+        has_spread_thr = spread_thr_dec != Decimal("0")
+
         cooldown = getattr(self, "cooldown_sec", 0.0)
         max_pos = getattr(self, "max_position_usd", float("inf"))
         min_usd = getattr(self, "min_usd", 0.0)
 
         cooldown_ok = (now - (last_order_ts or 0.0)) >= cooldown
-        abs_ok = (abs(diff_abs) >= thr_abs) if thr_abs else False
-        pct_ok = (abs(diff_pct) >= thr_pct) if thr_pct else False
-        spread_ok = (abs(diff_abs) >= spread_thr) if spread_thr else True
+        abs_ok = (abs(diff_abs) >= thr_abs) if has_thr_abs else True
+        pct_ok = (abs(diff_pct) >= thr_pct) if has_thr_pct else True
+        spread_ok = (abs(diff_abs) >= spread_thr) if has_spread_thr else True
         pos_ok = (abs(pos_usd) + order_usd) <= max_pos
         notional_ok = order_usd >= min_usd
         funding_ok = not funding_blocked
 
         # 方向の示唆（情報表示のみ）
-        want_long = (diff_abs <= -thr_abs) or (diff_pct <= -thr_pct if thr_pct else False)
-        want_short = (diff_abs >= thr_abs) or (diff_pct >= thr_pct if thr_pct else False)
+        want_long = (diff_abs <= -thr_abs) if has_thr_abs else (diff_abs <= 0.0)
+        if has_thr_pct:
+            want_long = want_long or (diff_pct <= -thr_pct)
+
+        want_short = (diff_abs >= thr_abs) if has_thr_abs else (diff_abs >= 0.0)
+        if has_thr_pct:
+            want_short = want_short or (diff_pct >= thr_pct)
 
         logger.debug(
             "decision mid=%.2f fair=%.2f d_abs=%+.4f d_pct=%+.5f | "
@@ -179,6 +229,22 @@ class PFPLStrategy:
         if not PFPLStrategy._LOGGER_INITIALISED:
             setup_logger(bot_name="pfpl")
             PFPLStrategy._LOGGER_INITIALISED = True
+
+        pfpl_handler = next(
+            (
+                handler
+                for handler in logging.getLogger().handlers
+                if isinstance(handler, logging.handlers.TimedRotatingFileHandler)
+                and getattr(handler, "baseFilename", "").endswith("pfpl.csv")
+            ),
+            None,
+        )
+        if pfpl_handler is not None and not any(
+            getattr(existing, "baseFilename", None)
+            == getattr(pfpl_handler, "baseFilename", None)
+            for existing in logger.handlers
+        ):
+            logger.addHandler(pfpl_handler)
         # ── ① YAML と CLI のマージ ───────────────────────
         yml_path = Path(__file__).with_name("config.yaml")
         yaml_conf: dict[str, Any] = {}
@@ -628,15 +694,6 @@ class PFPLStrategy:
         if mid is None or fair is None:
             return  # データが揃っていない
 
-        self._debug_evaluate_signal(
-            mid_px=float(mid),
-            fair_px=float(fair),
-            order_usd=float(self.order_usd),
-            pos_usd=float(self.pos_usd),
-            last_order_ts=self.last_ts or None,
-            funding_blocked=self._funding_pause,
-        )
-
         diff = fair - mid  # USD 差（符号付き）
         diff_pct = diff / mid * Decimal("100")  # 乖離率 %（符号付き）
         abs_diff = abs(diff)
@@ -645,6 +702,19 @@ class PFPLStrategy:
         # ④ 閾値判定
         th_abs = Decimal(str(self.config.get("threshold", "1.0")))  # USD
         th_pct = Decimal(str(self.config.get("threshold_pct", "0.05")))  # %
+        spread_thr = Decimal(str(self.config.get("spread_threshold", "0")))
+
+        self._debug_evaluate_signal(
+            mid_px=float(mid),
+            fair_px=float(fair),
+            order_usd=float(self.order_usd),
+            pos_usd=float(self.pos_usd),
+            last_order_ts=self.last_ts or None,
+            funding_blocked=self._funding_pause,
+            threshold=th_abs,
+            threshold_pct=th_pct,
+            spread_threshold=spread_thr,
+        )
         mode = self.config.get("mode", "both")  # both / either
 
         if mode == "abs":
