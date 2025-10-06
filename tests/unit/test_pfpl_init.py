@@ -360,4 +360,3 @@ def test_funding_guard_string_config_handled(monkeypatch):
         if strategy is not None:
             _remove_strategy_handler(strategy.symbol)
         PFPLStrategy._FILE_HANDLERS.clear()
-

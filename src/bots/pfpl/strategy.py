@@ -191,30 +191,30 @@ class PFPLStrategy:
         if not isinstance(funding_guard_cfg, dict):
             funding_guard_cfg = {}
 
-        self.funding_guard_enabled: bool = _coerce_bool(
+        self.funding_guard_enabled = _coerce_bool(
             funding_guard_cfg.get("enabled"), default=True
-
         )
-        self.funding_guard_buffer_sec: int = int(
+        self.funding_guard_buffer_sec = int(
             funding_guard_cfg.get("buffer_sec", 300)
         )
-        self.funding_guard_reenter_sec: int = int(
+        self.funding_guard_reenter_sec = int(
             funding_guard_cfg.get("reenter_sec", 120)
         )
         legacy_close_buffer = self.config.get("funding_close_buffer_secs", 120)
-        self.funding_close_buffer_secs: int = int(
+        self.funding_close_buffer_secs = int(
+
             funding_guard_cfg.get("buffer_sec", legacy_close_buffer)
         )
         # --- Order price offset percentage（デフォルト 0.0005 = 0.05 %）
-        self.eps_pct: float = float(self.config.get("eps_pct", 0.0005))
+        self.eps_pct = float(self.config.get("eps_pct", 0.0005))
 
         # ── ② 通貨ペア・Semaphore 初期化 ─────────────────
-        self.symbol: str = self.config.get("target_symbol", "ETH-PERP")
+        self.symbol = self.config.get("target_symbol", "ETH-PERP")
         sym_parts = self.symbol.split("-", 1)
-        self.base_coin: str = sym_parts[0] if sym_parts else self.symbol
+        self.base_coin = sym_parts[0] if sym_parts else self.symbol
 
         max_ops = int(self.config.get("max_order_per_sec", 3))  # 1 秒あたり発注上限
-        self.sem: asyncio.Semaphore = semaphore or asyncio.Semaphore(max_ops)
+        self.sem = semaphore or asyncio.Semaphore(max_ops)
 
         # 以降 (env 読み込み・SDK 初期化 …) は従来コードを続ける
         # ------------------------------------------------------------------
@@ -551,20 +551,50 @@ class PFPLStrategy:
 
         _logger = getattr(self, "logger", logging.getLogger(__name__))
         try:
-            _thr = getattr(self, "threshold", None)
-            _pct = getattr(self, "threshold_pct", None)
-            _spr = getattr(self, "spread_threshold", None)
+
+            _config = getattr(self, "config", {}) or {}
+
+            def _fallback(key: str, attr_name: str | None = None) -> Any:
+                if attr_name and hasattr(self, attr_name):
+                    return getattr(self, attr_name)
+                return _config.get(key)
+
+            def _to_float(val: Any) -> float:
+                if val is None:
+                    return 0.0
+                try:
+                    return float(val)
+                except Exception:
+                    return 0.0
+
+            def _fmt_optional(val: Any) -> Any:
+                if val is None:
+                    return None
+                try:
+                    return f"{float(val):.6f}"
+                except Exception:
+                    try:
+                        return f"{val:.6f}"  # type: ignore[str-format]
+                    except Exception:
+                        return repr(val)
+
+            _thr = _fallback("threshold", "threshold")
+            _pct = _fallback("threshold_pct", "threshold_pct")
+            _spr = _fallback("spread_threshold", "spread_threshold")
+
             _mid = locals().get("mid", locals().get("mid_px", getattr(self, "mid", None)))
             _fair = locals().get("fair", locals().get("fair_px", getattr(self, "fair", None)))
             _diff = None if (_mid is None or _fair is None) else (_mid - _fair)
             _logger.debug(
                 "DECISION_SNAPSHOT mid=%s fair=%s diff=%s | thr=%.6f spr=%.6f pct=%.6f",
-                None if _mid is None else f"{_mid:.6f}",
-                None if _fair is None else f"{_fair:.6f}",
-                None if _diff is None else f"{_diff:.6f}",
-                0.0 if _thr is None else float(_thr),
-                0.0 if _spr is None else float(_spr),
-                0.0 if _pct is None else float(_pct),
+
+                _fmt_optional(_mid),
+                _fmt_optional(_fair),
+                _fmt_optional(_diff),
+                _to_float(_thr),
+                _to_float(_spr),
+                _to_float(_pct),
+
             )
         except Exception as _e:
             _logger.debug("DECISION_SNAPSHOT_UNAVAILABLE reason=%r", _e)
@@ -846,7 +876,6 @@ class PFPLStrategy:
         if not self.funding_guard_enabled:
             if self._funding_pause:
                 self._funding_pause = False
-
             return True
         if self.next_funding_ts is None:
             return True  # fundingInfo 未取得なら通常運転
