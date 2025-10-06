@@ -65,6 +65,26 @@ def _maybe_enable_test_propagation() -> None:
         logger.propagate = True
 
 
+def _coerce_bool(value: Any, *, default: bool) -> bool:
+    """設定値を真偽値へ変換するヘルパー。"""
+
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "0", "false", "off", "no"}:
+            return False
+        if normalized in {"1", "true", "on", "yes"}:
+            return True
+        # それ以外の文字列は Python の bool キャストに合わせる
+        return bool(normalized)
+    return bool(value)
+
+
 class PFPLStrategy:
     """Price-Fair-Price-Lag bot"""
 
@@ -167,22 +187,32 @@ class PFPLStrategy:
                 raw_conf = f.read()
             yaml_conf = yaml.safe_load(raw_conf) or {}
         self.config = {**config, **yaml_conf}
-        # --- Funding 直前クローズ用バッファ秒数（デフォルト 120）
-        self.funding_close_buffer_secs: int = int(
-            getattr(self, "cfg", getattr(self, "config", {})).get(
-                "funding_close_buffer_secs", 120
-            )
+        funding_guard_cfg = self.config.get("funding_guard", {})
+        if not isinstance(funding_guard_cfg, dict):
+            funding_guard_cfg = {}
+        self.funding_guard_enabled = _coerce_bool(
+            funding_guard_cfg.get("enabled"), default=True
+        )
+        self.funding_guard_buffer_sec = int(
+            funding_guard_cfg.get("buffer_sec", 300)
+        )
+        self.funding_guard_reenter_sec = int(
+            funding_guard_cfg.get("reenter_sec", 120)
+        )
+        legacy_close_buffer = self.config.get("funding_close_buffer_secs", 120)
+        self.funding_close_buffer_secs = int(
+            funding_guard_cfg.get("buffer_sec", legacy_close_buffer)
         )
         # --- Order price offset percentage（デフォルト 0.0005 = 0.05 %）
-        self.eps_pct: float = float(self.config.get("eps_pct", 0.0005))
+        self.eps_pct = float(self.config.get("eps_pct", 0.0005))
 
         # ── ② 通貨ペア・Semaphore 初期化 ─────────────────
-        self.symbol: str = self.config.get("target_symbol", "ETH-PERP")
+        self.symbol = self.config.get("target_symbol", "ETH-PERP")
         sym_parts = self.symbol.split("-", 1)
-        self.base_coin: str = sym_parts[0] if sym_parts else self.symbol
+        self.base_coin = sym_parts[0] if sym_parts else self.symbol
 
         max_ops = int(self.config.get("max_order_per_sec", 3))  # 1 秒あたり発注上限
-        self.sem: asyncio.Semaphore = semaphore or asyncio.Semaphore(max_ops)
+        self.sem = semaphore or asyncio.Semaphore(max_ops)
 
         # 以降 (env 読み込み・SDK 初期化 …) は従来コードを続ける
         # ------------------------------------------------------------------
@@ -515,6 +545,54 @@ class PFPLStrategy:
     # ------------------------------------------------------------------ Tick loop
     # ─────────────────────────────────────────────────────────────
     def evaluate(self) -> None:
+        import logging
+
+        _logger = getattr(self, "logger", logging.getLogger(__name__))
+        try:
+            _config = getattr(self, "config", {}) or {}
+
+            def _fallback(key: str, attr_name: str | None = None) -> Any:
+                if attr_name and hasattr(self, attr_name):
+                    return getattr(self, attr_name)
+                return _config.get(key)
+
+            def _to_float(val: Any) -> float:
+                if val is None:
+                    return 0.0
+                try:
+                    return float(val)
+                except Exception:
+                    return 0.0
+
+            def _fmt_optional(val: Any) -> Any:
+                if val is None:
+                    return None
+                try:
+                    return f"{float(val):.6f}"
+                except Exception:
+                    try:
+                        return f"{val:.6f}"  # type: ignore[str-format]
+                    except Exception:
+                        return repr(val)
+
+            _thr = _fallback("threshold", "threshold")
+            _pct = _fallback("threshold_pct", "threshold_pct")
+            _spr = _fallback("spread_threshold", "spread_threshold")
+            _mid = locals().get("mid", locals().get("mid_px", getattr(self, "mid", None)))
+            _fair = locals().get("fair", locals().get("fair_px", getattr(self, "fair", None)))
+            _diff = None if (_mid is None or _fair is None) else (_mid - _fair)
+            _logger.debug(
+                "DECISION_SNAPSHOT mid=%s fair=%s diff=%s | thr=%.6f spr=%.6f pct=%.6f",
+                _fmt_optional(_mid),
+                _fmt_optional(_fair),
+                _fmt_optional(_diff),
+                _to_float(_thr),
+                _to_float(_spr),
+                _to_float(_pct),
+            )
+        except Exception as _e:
+            _logger.debug("DECISION_SNAPSHOT_UNAVAILABLE reason=%r", _e)
+
         _maybe_enable_test_propagation()
         if not self._check_funding_window():
             return
@@ -789,12 +867,16 @@ class PFPLStrategy:
         funding 直前・直後は True を返さず evaluate() を停止させる。
         - 5 分前 〜 2 分後 を「危険窓」とする
         """
+        if not self.funding_guard_enabled:
+            if self._funding_pause:
+                self._funding_pause = False
+            return True
         if self.next_funding_ts is None:
             return True  # fundingInfo 未取得なら通常運転
 
         now = time.time()
-        before = 300  # 5 分前
-        after = 120  # 2 分後
+        before = self.funding_guard_buffer_sec
+        after = self.funding_guard_reenter_sec
 
         in_window = self.next_funding_ts - before <= now <= self.next_funding_ts + after
 
@@ -812,10 +894,12 @@ class PFPLStrategy:
     # ------------------------------------------------------------------
     def _should_close_before_funding(self, now_ts: float) -> bool:
         """Return True if we are within the configured buffer before funding."""
+        if not self.funding_guard_enabled:
+            return False
         next_ts = getattr(self, "next_funding_ts", None)
         if not next_ts:
             return False
-        return now_ts > next_ts - self.funding_close_buffer_secs
+        return now_ts > next_ts - self.funding_guard_buffer_sec
 
     async def _close_all_positions(self) -> None:
         """Close every open position for this symbol."""
