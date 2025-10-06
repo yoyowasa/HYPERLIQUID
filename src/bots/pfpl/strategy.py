@@ -65,6 +65,26 @@ def _maybe_enable_test_propagation() -> None:
         logger.propagate = True
 
 
+def _coerce_bool(value: Any, *, default: bool) -> bool:
+    """設定値を真偽値へ変換するヘルパー。"""
+
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "0", "false", "off", "no"}:
+            return False
+        if normalized in {"1", "true", "on", "yes"}:
+            return True
+        # それ以外の文字列は Python の bool キャストに合わせる
+        return bool(normalized)
+    return bool(value)
+
+
 class PFPLStrategy:
     """Price-Fair-Price-Lag bot"""
 
@@ -170,8 +190,10 @@ class PFPLStrategy:
         funding_guard_cfg = self.config.get("funding_guard", {})
         if not isinstance(funding_guard_cfg, dict):
             funding_guard_cfg = {}
-        self.funding_guard_enabled: bool = bool(
-            funding_guard_cfg.get("enabled", True)
+
+        self.funding_guard_enabled: bool = _coerce_bool(
+            funding_guard_cfg.get("enabled"), default=True
+
         )
         self.funding_guard_buffer_sec: int = int(
             funding_guard_cfg.get("buffer_sec", 300)
@@ -800,6 +822,10 @@ class PFPLStrategy:
         - 5 分前 〜 2 分後 を「危険窓」とする
         """
         if not self.funding_guard_enabled:
+
+            if self._funding_pause:
+                self._funding_pause = False
+
             return True
         if self.next_funding_ts is None:
             return True  # fundingInfo 未取得なら通常運転

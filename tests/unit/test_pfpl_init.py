@@ -320,3 +320,44 @@ def test_funding_guard_config_applied(monkeypatch):
         if strategy_disabled is not None:
             _remove_strategy_handler(strategy_disabled.symbol)
         PFPLStrategy._FILE_HANDLERS.clear()
+
+
+def test_funding_guard_string_config_handled(monkeypatch):
+    _set_credentials(monkeypatch, "HL_ACCOUNT_ADDRESS", "HL_PRIVATE_KEY")
+
+    monkeypatch.setattr(strategy_module.yaml, "safe_load", lambda raw_conf: {})
+    PFPLStrategy._FILE_HANDLERS.clear()
+    _remove_strategy_handler()
+
+    strategy = None
+    now = 1_700_000_000.0
+
+    try:
+        strategy = PFPLStrategy(
+            config={
+                "funding_guard": {
+                    "enabled": "false",
+                    "buffer_sec": "90",
+                    "reenter_sec": "45",
+                }
+            },
+            semaphore=Semaphore(1),
+        )
+
+        assert strategy.funding_guard_enabled is False
+        assert strategy.funding_guard_buffer_sec == 90
+        assert strategy.funding_guard_reenter_sec == 45
+        assert strategy.funding_close_buffer_secs == 90
+
+        strategy._funding_pause = True
+        strategy.next_funding_ts = now + 5
+        monkeypatch.setattr(strategy_module.time, "time", lambda: now)
+
+        assert strategy._check_funding_window() is True
+        assert strategy._funding_pause is False
+        assert strategy._should_close_before_funding(now) is False
+    finally:
+        if strategy is not None:
+            _remove_strategy_handler(strategy.symbol)
+        PFPLStrategy._FILE_HANDLERS.clear()
+
