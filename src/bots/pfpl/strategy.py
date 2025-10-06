@@ -190,9 +190,10 @@ class PFPLStrategy:
         funding_guard_cfg = self.config.get("funding_guard", {})
         if not isinstance(funding_guard_cfg, dict):
             funding_guard_cfg = {}
+
         self.funding_guard_enabled: bool = _coerce_bool(
             funding_guard_cfg.get("enabled"), default=True
-        )
+
         self.funding_guard_buffer_sec: int = int(
             funding_guard_cfg.get("buffer_sec", 300)
         )
@@ -578,6 +579,7 @@ class PFPLStrategy:
             _thr = _fallback("threshold", "threshold")
             _pct = _fallback("threshold_pct", "threshold_pct")
             _spr = _fallback("spread_threshold", "spread_threshold")
+
             _mid = locals().get("mid", locals().get("mid_px", getattr(self, "mid", None)))
             _fair = locals().get("fair", locals().get("fair_px", getattr(self, "fair", None)))
             _diff = None if (_mid is None or _fair is None) else (_mid - _fair)
