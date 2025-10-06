@@ -6,6 +6,7 @@ import hmac
 import hashlib
 import json
 import logging
+import logging.handlers
 import os
 import time
 from datetime import datetime, timezone  # ← 追加
@@ -228,6 +229,22 @@ class PFPLStrategy:
         if not PFPLStrategy._LOGGER_INITIALISED:
             setup_logger(bot_name="pfpl")
             PFPLStrategy._LOGGER_INITIALISED = True
+
+        pfpl_handler = next(
+            (
+                handler
+                for handler in logging.getLogger().handlers
+                if isinstance(handler, logging.handlers.TimedRotatingFileHandler)
+                and getattr(handler, "baseFilename", "").endswith("pfpl.csv")
+            ),
+            None,
+        )
+        if pfpl_handler is not None and not any(
+            getattr(existing, "baseFilename", None)
+            == getattr(pfpl_handler, "baseFilename", None)
+            for existing in logger.handlers
+        ):
+            logger.addHandler(pfpl_handler)
         # ── ① YAML と CLI のマージ ───────────────────────
         yml_path = Path(__file__).with_name("config.yaml")
         yaml_conf: dict[str, Any] = {}
