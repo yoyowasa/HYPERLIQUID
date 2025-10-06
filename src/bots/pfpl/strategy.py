@@ -190,6 +190,7 @@ class PFPLStrategy:
         funding_guard_cfg = self.config.get("funding_guard", {})
         if not isinstance(funding_guard_cfg, dict):
             funding_guard_cfg = {}
+
         self.funding_guard_enabled = _coerce_bool(
             funding_guard_cfg.get("enabled"), default=True
         )
@@ -201,6 +202,7 @@ class PFPLStrategy:
         )
         legacy_close_buffer = self.config.get("funding_close_buffer_secs", 120)
         self.funding_close_buffer_secs = int(
+
             funding_guard_cfg.get("buffer_sec", legacy_close_buffer)
         )
         # --- Order price offset percentage（デフォルト 0.0005 = 0.05 %）
@@ -549,6 +551,7 @@ class PFPLStrategy:
 
         _logger = getattr(self, "logger", logging.getLogger(__name__))
         try:
+
             _config = getattr(self, "config", {}) or {}
 
             def _fallback(key: str, attr_name: str | None = None) -> Any:
@@ -578,17 +581,20 @@ class PFPLStrategy:
             _thr = _fallback("threshold", "threshold")
             _pct = _fallback("threshold_pct", "threshold_pct")
             _spr = _fallback("spread_threshold", "spread_threshold")
+
             _mid = locals().get("mid", locals().get("mid_px", getattr(self, "mid", None)))
             _fair = locals().get("fair", locals().get("fair_px", getattr(self, "fair", None)))
             _diff = None if (_mid is None or _fair is None) else (_mid - _fair)
             _logger.debug(
                 "DECISION_SNAPSHOT mid=%s fair=%s diff=%s | thr=%.6f spr=%.6f pct=%.6f",
+
                 _fmt_optional(_mid),
                 _fmt_optional(_fair),
                 _fmt_optional(_diff),
                 _to_float(_thr),
                 _to_float(_spr),
                 _to_float(_pct),
+
             )
         except Exception as _e:
             _logger.debug("DECISION_SNAPSHOT_UNAVAILABLE reason=%r", _e)
