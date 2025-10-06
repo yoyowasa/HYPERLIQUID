@@ -547,6 +547,28 @@ class PFPLStrategy:
     # ------------------------------------------------------------------ Tick loop
     # ─────────────────────────────────────────────────────────────
     def evaluate(self) -> None:
+        import logging
+
+        _logger = getattr(self, "logger", logging.getLogger(__name__))
+        try:
+            _thr = getattr(self, "threshold", None)
+            _pct = getattr(self, "threshold_pct", None)
+            _spr = getattr(self, "spread_threshold", None)
+            _mid = locals().get("mid", locals().get("mid_px", getattr(self, "mid", None)))
+            _fair = locals().get("fair", locals().get("fair_px", getattr(self, "fair", None)))
+            _diff = None if (_mid is None or _fair is None) else (_mid - _fair)
+            _logger.debug(
+                "DECISION_SNAPSHOT mid=%s fair=%s diff=%s | thr=%.6f spr=%.6f pct=%.6f",
+                None if _mid is None else f"{_mid:.6f}",
+                None if _fair is None else f"{_fair:.6f}",
+                None if _diff is None else f"{_diff:.6f}",
+                0.0 if _thr is None else float(_thr),
+                0.0 if _spr is None else float(_spr),
+                0.0 if _pct is None else float(_pct),
+            )
+        except Exception as _e:
+            _logger.debug("DECISION_SNAPSHOT_UNAVAILABLE reason=%r", _e)
+
         _maybe_enable_test_propagation()
         if not self._check_funding_window():
             return
@@ -822,7 +844,6 @@ class PFPLStrategy:
         - 5 分前 〜 2 分後 を「危険窓」とする
         """
         if not self.funding_guard_enabled:
-
             if self._funding_pause:
                 self._funding_pause = False
 
