@@ -48,10 +48,11 @@ def test_evaluate_logs_signed_diff(
 
     assert any(
         record.levelno == logging.DEBUG
-        and "diff=+1.000000" in record.message
-        and "diff_pct=+1.000000" in record.message
+        and "decision" in record.message
+        and "d_abs=-1.0000" in record.message
+        and "d_pct=-0.00990" in record.message
         for record in caplog.records
-    ), "expected positive diff log"
+    ), "expected positive diff snapshot log"
 
     caplog.clear()
 
@@ -61,10 +62,11 @@ def test_evaluate_logs_signed_diff(
 
     assert any(
         record.levelno == logging.DEBUG
-        and "diff=-1.000000" in record.message
-        and "diff_pct=-1.000000" in record.message
+        and "decision" in record.message
+        and "d_abs=+1.0000" in record.message
+        and "d_pct=+0.01010" in record.message
         for record in caplog.records
-    ), "expected negative diff log"
+    ), "expected negative diff snapshot log"
 
 
 def test_evaluate_quantizes_size_with_qty_tick(

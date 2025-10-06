@@ -628,6 +628,15 @@ class PFPLStrategy:
         if mid is None or fair is None:
             return  # データが揃っていない
 
+        self._debug_evaluate_signal(
+            mid_px=float(mid),
+            fair_px=float(fair),
+            order_usd=float(self.order_usd),
+            pos_usd=float(self.pos_usd),
+            last_order_ts=self.last_ts or None,
+            funding_blocked=self._funding_pause,
+        )
+
         diff = fair - mid  # USD 差（符号付き）
         diff_pct = diff / mid * Decimal("100")  # 乖離率 %（符号付き）
         abs_diff = abs(diff)
@@ -637,17 +646,6 @@ class PFPLStrategy:
         th_abs = Decimal(str(self.config.get("threshold", "1.0")))  # USD
         th_pct = Decimal(str(self.config.get("threshold_pct", "0.05")))  # %
         mode = self.config.get("mode", "both")  # both / either
-
-        logger.debug(
-            "signal: diff=%+.6f diff_pct=%+.6f thr=%.6f thr_pct=%.6f pos_usd=%+.2f order_usd=%.2f dry_run=%s",
-            diff,
-            diff_pct,
-            th_abs,
-            th_pct,
-            self.pos_usd,
-            self.order_usd,
-            self.dry_run,
-        )
 
         if mode == "abs":
             if abs_diff < th_abs:
