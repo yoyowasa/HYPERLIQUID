@@ -776,8 +776,7 @@ class PFPLStrategy:
             _logger.debug(f"edge(abs): {abs(mid - fair)} (edge={mid - fair})")
 
         now_ts = time.time()
-        if not self._can_fire(now_ts):
-            return
+        can_fire = self._can_fire(now_ts)
 
         # ここで notion（USD）を見積もって最小発注額を満たすか確認する
         order_usd = float(getattr(self, "order_usd", 0.0) or 0.0)
@@ -793,18 +792,12 @@ class PFPLStrategy:
         min_needed = self._effective_min_usd()
 
         _logger = getattr(self, "log", None) or getattr(self, "logger", None)
-        if notional < min_needed:
+        notional_ok = notional >= min_needed
+        if not notional_ok:
             if _logger:
                 _logger.debug(
                     f"skip: notional {notional:.2f} < min_usd {min_needed:.2f} (qty={qty})"
                 )
-            return
-
-        # 役割: ここまで来たら「発注してOK」。カウンタだけ進め、既存の発注ロジックへ続行
-        self._last_order_ts = now_ts
-        self._order_count_in_window = (
-            getattr(self, "_order_count_in_window", 0) or 0
-        ) + 1
 
         diff = fair - mid  # USD 差（符号付き）
         diff_pct = diff / mid * Decimal("100")  # 乖離率 %（符号付き）
@@ -827,6 +820,10 @@ class PFPLStrategy:
             threshold_pct=th_pct,
             spread_threshold=spread_thr,
         )
+        if not can_fire:
+            return
+        if not notional_ok:
+            return
         mode = self.config.get("mode", "both")  # both / either
 
         if mode == "abs":
@@ -885,6 +882,11 @@ class PFPLStrategy:
             return
 
         # ⑨ 発注
+        # 役割: ここまで来たら「発注してOK」。カウンタだけ進め、既存の発注ロジックへ続行
+        self._last_order_ts = now_ts
+        self._order_count_in_window = (
+            getattr(self, "_order_count_in_window", 0) or 0
+        ) + 1
         asyncio.create_task(self.place_order(side, float(size)))
 
     # ---------------------------------------------------------------- order
