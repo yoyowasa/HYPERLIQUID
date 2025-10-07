@@ -621,13 +621,19 @@ class PFPLStrategy:
                 self.fair = None
             return
 
-        fair_src = (
+        primary_src_name = (
+            "oraclePrices" if self.fair_feed == "oraclePrices" else "indexPrices"
+        )
+        primary_src = (
             self.oraclePrices if self.fair_feed == "oraclePrices" else self.indexPrices
         )
-        fair_val = self._get_from_feed(fair_src)
+        fair_val = self._get_from_feed(primary_src)
         if fair_val is None:
-            self.fair = None
-            return
+            alt_src = (
+                self.indexPrices if primary_src_name == "oraclePrices" else self.oraclePrices
+            )
+            fair_val = self._get_from_feed(alt_src)
+
 
         try:
             self.fair = Decimal(str(fair_val))
@@ -695,9 +701,6 @@ class PFPLStrategy:
         _maybe_enable_test_propagation()
         if not self._check_funding_window():
             return
-        # ── fair / mid がまだ揃っていないなら何もしない ─────────
-        if self.mid is None or self.fair is None:
-            return
         now = time.time()
         # 0) --- Funding 直前クローズ判定 -----------------------------------
         if self._should_close_before_funding(now):
@@ -718,8 +721,18 @@ class PFPLStrategy:
         # ③ 必要データ取得
         mid = self.mid
         fair = self.fair
+        _logger = getattr(self, "log", None) or getattr(self, "logger", None)
+        if _logger:
+            _logger.debug(
+                f"prices: mid={mid}, fair={fair}, mode={getattr(self, 'mode', None)}, "
+                f"threshold={getattr(self, 'threshold', None)}"
+            )
         if mid is None or fair is None:
-            return  # データが揃っていない
+            if _logger:
+                _logger.debug(f"skip: missing price mid={mid} fair={fair}")
+            return
+        if _logger:
+            _logger.debug(f"edge(abs): {abs(mid - fair)} (edge={mid - fair})")
 
         diff = fair - mid  # USD 差（符号付き）
         diff_pct = diff / mid * Decimal("100")  # 乖離率 %（符号付き）
