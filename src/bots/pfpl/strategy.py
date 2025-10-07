@@ -89,6 +89,16 @@ def _coerce_bool(value: Any, *, default: bool) -> bool:
 class PFPLStrategy:
     """Price-Fair-Price-Lag bot"""
 
+    # 役割: フィード辞書から対象銘柄の価格を取り出す。まず 'ETH-PERP' を探し、無ければ 'ETH'（self.feed_key）でフォールバックする
+    def _get_from_feed(self, feed: dict[str, Any]) -> Any:
+        if not feed:
+            return None
+        if self.target_symbol in feed:
+            return feed[self.target_symbol]
+        if self.feed_key in feed:
+            return feed[self.feed_key]
+        return None
+
     # 何をする関数か:
     # - mid と fair の乖離（絶対値/率）を計算
     # - threshold / threshold_pct / spread_threshold の合否を判定
@@ -278,6 +288,8 @@ class PFPLStrategy:
         self.symbol = self.config.get("target_symbol", "ETH-PERP")
         sym_parts = self.symbol.split("-", 1)
         self.base_coin = sym_parts[0] if sym_parts else self.symbol
+        self.target_symbol = self.symbol
+        self.feed_key = self.base_coin
 
         max_ops = int(self.config.get("max_order_per_sec", 3))  # 1 秒あたり発注上限
         self.sem = semaphore or asyncio.Semaphore(max_ops)
@@ -413,6 +425,9 @@ class PFPLStrategy:
         self.idx: Decimal | None = None  # indexPrices
         self.ora: Decimal | None = None  # oraclePrices
         self.fair: Decimal | None = None  # 平均した公正価格
+        self.allMids: dict[str, Any] = {}
+        self.indexPrices: dict[str, Any] = {}
+        self.oraclePrices: dict[str, Any] = {}
 
         # ── 内部ステート ────────────────────────────────
         self.last_side: str | None = None
@@ -520,20 +535,18 @@ class PFPLStrategy:
 
         if ch == "allMids":  # 板 mid 群
             mids = (msg.get("data") or {}).get("mids") or {}
-
+            self.allMids = mids
+            mid_raw = self._get_from_feed(self.allMids)
             mid_key: str | None = None
-            mid_raw = None
-            for candidate in (self.base_coin, self.symbol):
-                if candidate and candidate in mids:
-                    mid_raw = mids[candidate]
-                    mid_key = candidate
-                    break
-
+            if self.target_symbol in self.allMids:
+                mid_key = self.target_symbol
+            elif self.feed_key in self.allMids:
+                mid_key = self.feed_key
             if mid_raw is None:
                 logger.debug(
                     "allMids: waiting for mid for %s (base=%s)",
-                    self.symbol,
-                    self.base_coin,
+                    self.target_symbol,
+                    self.feed_key,
                 )
                 return
 
@@ -554,9 +567,8 @@ class PFPLStrategy:
                 should_eval = True
         elif ch == "indexPrices":  # インデックス価格
             prices = (msg.get("data") or {}).get("prices") or {}
-            price_val = prices.get(self.base_coin)
-            if price_val is None:
-                price_val = prices.get(self.symbol)
+            self.indexPrices = prices
+            price_val = self._get_from_feed(self.indexPrices)
             new_idx = Decimal(str(price_val)) if price_val is not None else None
             if new_idx != self.idx:
                 self.idx = new_idx
@@ -565,9 +577,8 @@ class PFPLStrategy:
                     should_eval = True
         elif ch == "oraclePrices":  # オラクル価格
             prices = (msg.get("data") or {}).get("prices") or {}
-            price_val = prices.get(self.base_coin)
-            if price_val is None:
-                price_val = prices.get(self.symbol)
+            self.oraclePrices = prices
+            price_val = self._get_from_feed(self.oraclePrices)
             new_ora = Decimal(str(price_val)) if price_val is not None else None
             if new_ora != self.ora:
                 self.ora = new_ora
@@ -596,16 +607,32 @@ class PFPLStrategy:
             self.evaluate()
 
     def _update_fair(self) -> None:
-        feed = self.fair_feed
-        if feed == "indexPrices":
-            self.fair = self.idx
-        elif feed == "oraclePrices":
-            self.fair = self.ora
-        else:
-            if self.idx is not None and self.ora is not None:
-                self.fair = (self.idx + self.ora) / Decimal("2")
+        if self.fair_feed not in {"indexPrices", "oraclePrices"}:
+            idx_val = self._get_from_feed(self.indexPrices)
+            ora_val = self._get_from_feed(self.oraclePrices)
+            if idx_val is not None and ora_val is not None:
+                try:
+                    self.fair = (
+                        Decimal(str(idx_val)) + Decimal(str(ora_val))
+                    ) / Decimal("2")
+                except Exception:
+                    self.fair = None
             else:
                 self.fair = None
+            return
+
+        fair_src = (
+            self.oraclePrices if self.fair_feed == "oraclePrices" else self.indexPrices
+        )
+        fair_val = self._get_from_feed(fair_src)
+        if fair_val is None:
+            self.fair = None
+            return
+
+        try:
+            self.fair = Decimal(str(fair_val))
+        except Exception:
+            self.fair = None
 
     # ---------------------------------------------------------------- evaluate
 
