@@ -89,6 +89,47 @@ def _coerce_bool(value: Any, *, default: bool) -> bool:
 class PFPLStrategy:
     """Price-Fair-Price-Lag bot"""
 
+    # 役割: クールダウンと1秒あたりの最大発注数を守る（簡易レートリミット）
+    def _can_fire(self, now_ts: float) -> bool:
+        _logger = getattr(self, "log", None) or getattr(self, "logger", None)
+        if not hasattr(self, "_last_order_ts"):
+            self._last_order_ts = 0.0
+        if not hasattr(self, "_order_count_window_start"):
+            self._order_count_window_start = now_ts
+            self._order_count_in_window = 0
+
+        # クールダウン判定
+        cd = float(getattr(self, "cooldown_sec", 0.0) or 0.0)
+        if (now_ts - self._last_order_ts) < cd:
+            if _logger:
+                _logger.debug(
+                    f"skip: cooldown {(now_ts - self._last_order_ts):.2f}s < {cd:.2f}s"
+                )
+            return False
+
+        # 1秒窓の発注回数判定
+        if (now_ts - self._order_count_window_start) >= 1.0:
+            self._order_count_window_start = now_ts
+            self._order_count_in_window = 0
+        if self._order_count_in_window >= int(
+            getattr(self, "max_order_per_sec", 1) or 1
+        ):
+            if _logger:
+                _logger.debug("skip: rate_limit max_order_per_sec reached")
+            return False
+
+        return True
+
+    # 役割: 取引所の minSizeUsd が分かればそれ、無ければ設定値 min_usd を返す
+    def _effective_min_usd(self) -> float:
+        exch_min = getattr(self, "minSizeUsd", None)
+        if exch_min is None:
+            meta = getattr(self, "market_meta", None) or getattr(self, "exchange_meta", None)
+            if isinstance(meta, dict):
+                exch_min = meta.get("minSizeUsd")
+        fallback = float(getattr(self, "min_usd", 0.0) or 0.0)
+        return float(exch_min) if exch_min is not None else fallback
+
     # 役割: フィード辞書から対象銘柄の価格を取り出す。まず 'ETH-PERP' を探し、無ければ 'ETH'（self.feed_key）でフォールバックする
     def _get_from_feed(self, feed: dict[str, Any]) -> Any:
         if not feed:
@@ -733,6 +774,37 @@ class PFPLStrategy:
             return
         if _logger:
             _logger.debug(f"edge(abs): {abs(mid - fair)} (edge={mid - fair})")
+
+        now_ts = time.time()
+        if not self._can_fire(now_ts):
+            return
+
+        # ここで notion（USD）を見積もって最小発注額を満たすか確認する
+        order_usd = float(getattr(self, "order_usd", 0.0) or 0.0)
+        qty_tick = float(
+            getattr(self, "qtyTick", 0.0)
+            or getattr(self, "qty_tick", 0.0)
+            or 0.0
+        )
+        mid_float = float(mid) if mid else 0.0
+        qty_raw = order_usd / mid_float if mid_float else 0.0
+        qty = (int(qty_raw / qty_tick) * qty_tick) if qty_tick > 0 else qty_raw
+        notional = float(qty) * mid_float if mid_float else 0.0
+        min_needed = self._effective_min_usd()
+
+        _logger = getattr(self, "log", None) or getattr(self, "logger", None)
+        if notional < min_needed:
+            if _logger:
+                _logger.debug(
+                    f"skip: notional {notional:.2f} < min_usd {min_needed:.2f} (qty={qty})"
+                )
+            return
+
+        # 役割: ここまで来たら「発注してOK」。カウンタだけ進め、既存の発注ロジックへ続行
+        self._last_order_ts = now_ts
+        self._order_count_in_window = (
+            getattr(self, "_order_count_in_window", 0) or 0
+        ) + 1
 
         diff = fair - mid  # USD 差（符号付き）
         diff_pct = diff / mid * Decimal("100")  # 乖離率 %（符号付き）
