@@ -637,6 +637,7 @@ class PFPLStrategy:
             )
             fair_val = self._get_from_feed(alt_src)
 
+
         try:
             self.fair = Decimal(str(fair_val))
         except Exception:
