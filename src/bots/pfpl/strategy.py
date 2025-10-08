@@ -6,6 +6,7 @@ import hmac
 import hashlib
 import json
 import logging
+import logging as _logging
 import logging.handlers
 import os
 import time
@@ -84,6 +85,14 @@ def _coerce_bool(value: Any, *, default: bool) -> bool:
         # それ以外の文字列は Python の bool キャストに合わせる
         return bool(normalized)
     return bool(value)
+
+# 役割: モジュールが読み込まれた瞬間に一度だけINFOログを出し、"新しい strategy.py が実行された"ことを確実に可視化する
+if not globals().get("_PFPL_STRATEGY_MODULE_BOOT_LOGGED"):
+    _logging.getLogger(__name__).info(
+        "boot: PFPLStrategy module_loaded patch=perp_fallback+guards module=%s",
+        __name__,
+    )
+    globals()["_PFPL_STRATEGY_MODULE_BOOT_LOGGED"] = True
 
 
 class PFPLStrategy:
