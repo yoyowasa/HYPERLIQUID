@@ -332,6 +332,20 @@ class PFPLStrategy:
         self.target_symbol = self.symbol
         self.feed_key = self.base_coin
 
+        # 役割: 起動時に一度だけ、現在の重要設定とパッチ状態を INFO ログへ出す（更新コードで起動したかを即判定）
+        _logger = getattr(self, "log", None) or getattr(self, "logger", None)
+        if _logger:
+            _logger.info(
+                f"boot: PFPLStrategy patch=perp_fallback+guards "
+                f"fair_feed={getattr(self,'fair_feed',None)} "
+                f"target={getattr(self,'target_symbol',None)} "
+                f"feed_key={getattr(self,'feed_key',None)} "
+                f"threshold={getattr(self,'threshold',None)} "
+                f"order_usd={getattr(self,'order_usd',None)} "
+                f"dry_run={getattr(self,'dry_run',None)} "
+                f"testnet={getattr(self,'testnet',None)}"
+            )
+
         max_ops = int(self.config.get("max_order_per_sec", 3))  # 1 秒あたり発注上限
         self.sem = semaphore or asyncio.Semaphore(max_ops)
 
