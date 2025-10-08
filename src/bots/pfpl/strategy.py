@@ -468,6 +468,7 @@ class PFPLStrategy:
         # 役割: クラス内で必ず使えるロガーを確保（self.log/self.logger が無い環境向けの保険）
         self.log = logging.getLogger(__name__)
 
+
         # 役割: 起動時に一度だけ、現在の重要設定とパッチ状態を INFO ログへ出す（更新コードで起動したかを即判定）
         _logger = getattr(self, "log", None) or getattr(self, "logger", None)
         if _logger:
