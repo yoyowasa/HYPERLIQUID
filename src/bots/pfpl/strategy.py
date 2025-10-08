@@ -705,11 +705,29 @@ class PFPLStrategy:
             )
             fair_val = self._get_from_feed(alt_src)
 
-
-        try:
-            self.fair = Decimal(str(fair_val))
-        except Exception:
+        _logger = getattr(self, "log", None) or getattr(self, "logger", None)
+        if _logger:
+            _logger.debug(
+                f"prices: mid={self.mid}, fair={fair_val}, mode={getattr(self,'mode',None)}, "
+                f"threshold={getattr(self,'threshold',None)}"
+            )
+        if self.mid is None or fair_val is None:
+            if _logger:
+                _logger.debug(f"skip: missing price mid={self.mid} fair={fair_val}")
             self.fair = None
+            return
+        try:
+            fair_decimal = Decimal(str(fair_val))
+        except Exception:
+            if _logger:
+                _logger.debug(f"skip: invalid fair value fair={fair_val}")
+            self.fair = None
+            return
+        if _logger:
+            _logger.debug(
+                f"edge(abs): {abs(self.mid - fair_decimal)} (edge={self.mid - fair_decimal})"
+            )
+        self.fair = fair_decimal
 
     # ---------------------------------------------------------------- evaluate
 
