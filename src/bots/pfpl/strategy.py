@@ -6,6 +6,7 @@ import hmac
 import hashlib
 import json
 import logging
+import logging as _logging
 import logging.handlers
 import os
 import time
@@ -84,6 +85,14 @@ def _coerce_bool(value: Any, *, default: bool) -> bool:
         # それ以外の文字列は Python の bool キャストに合わせる
         return bool(normalized)
     return bool(value)
+
+# 役割: モジュールが読み込まれた瞬間に一度だけINFOログを出し、"新しい strategy.py が実行された"ことを確実に可視化する
+if not globals().get("_PFPL_STRATEGY_MODULE_BOOT_LOGGED"):
+    _logging.getLogger(__name__).info(
+        "boot: PFPLStrategy module_loaded patch=perp_fallback+guards module=%s",
+        __name__,
+    )
+    globals()["_PFPL_STRATEGY_MODULE_BOOT_LOGGED"] = True
 
 
 class PFPLStrategy:
@@ -334,20 +343,6 @@ class PFPLStrategy:
 
         self.log = logging.getLogger(__name__)
 
-        # 役割: 起動時に一度だけ、現在の重要設定とパッチ状態を INFO ログへ出す（更新コードで起動したかを即判定）
-        _logger = getattr(self, "log", None) or getattr(self, "logger", None)
-        if _logger:
-            _logger.info(
-                f"boot: PFPLStrategy patch=perp_fallback+guards "
-                f"fair_feed={getattr(self,'fair_feed',None)} "
-                f"target={getattr(self,'target_symbol',None)} "
-                f"feed_key={getattr(self,'feed_key',None)} "
-                f"threshold={getattr(self,'threshold',None)} "
-                f"order_usd={getattr(self,'order_usd',None)} "
-                f"dry_run={getattr(self,'dry_run',None)} "
-                f"testnet={getattr(self,'testnet',None)}"
-            )
-
         max_ops = int(self.config.get("max_order_per_sec", 3))  # 1 秒あたり発注上限
         self.sem = semaphore or asyncio.Semaphore(max_ops)
 
@@ -473,10 +468,28 @@ class PFPLStrategy:
         self.dry_run = bool(self.config.get("dry_run"))
         self.max_pos = Decimal(self.config.get("max_position_usd", 100))
         self.fair_feed = self.config.get("fair_feed", "indexPrices")
+        self.testnet = bool(self.config.get("testnet"))
         self.max_daily_orders = int(self.config.get("max_daily_orders", 500))
         self._order_count = 0
         self._start_day = datetime.now(timezone.utc).date()
         self.enabled = True
+
+        # 役割: クラス内で必ず使えるロガーを確保（self.log/self.logger が無い環境向けの保険）
+        self.log = logging.getLogger(__name__)
+
+        # 役割: 起動時に一度だけ、現在の重要設定とパッチ状態を INFO ログへ出す（更新コードで起動したかを即判定）
+        _logger = getattr(self, "log", None) or getattr(self, "logger", None)
+        if _logger:
+            _logger.info(
+                "boot: PFPLStrategy patch=perp_fallback+guards "
+                f"fair_feed={self.fair_feed} "
+                f"target={self.target_symbol} "
+                f"feed_key={self.feed_key} "
+                f"threshold={self.config.get('threshold')} "
+                f"order_usd={self.order_usd} "
+                f"dry_run={self.dry_run} "
+                f"testnet={self.testnet}"
+            )
         # ── フィード保持用 -------------------------------------------------
         self.mid: Decimal | None = None  # 板 Mid (@1)
         self.idx: Decimal | None = None  # indexPrices
