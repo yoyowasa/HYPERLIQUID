@@ -333,6 +333,7 @@ class PFPLStrategy:
         self.feed_key = self.base_coin
 
         self.log = logging.getLogger(__name__)
+
         # 役割: 起動時に一度だけ、現在の重要設定とパッチ状態を INFO ログへ出す（更新コードで起動したかを即判定）
         _logger = getattr(self, "log", None) or getattr(self, "logger", None)
         if _logger:
