@@ -705,28 +705,29 @@ class PFPLStrategy:
             )
             fair_val = self._get_from_feed(alt_src)
 
-        _logger = getattr(self, "log", None) or getattr(self, "logger", None)
+        mid = getattr(self, "mid", None)
+        # 役割: mid/fair のデバッグと欠損スキップ（prices:/skip:/edge(abs): を必ず出す）
+        _logger = getattr(self, 'log', None) or getattr(self, 'logger', None)
         if _logger:
-            _logger.debug(
-                f"prices: mid={self.mid}, fair={fair_val}, mode={getattr(self,'mode',None)}, "
-                f"threshold={getattr(self,'threshold',None)}"
-            )
-        if self.mid is None or fair_val is None:
+            _logger.debug(f"prices: mid={mid}, fair={fair_val}, mode={getattr(self,'mode',None)}, threshold={getattr(self,'threshold',None)}")
+        if mid is None or fair_val is None:
             if _logger:
-                _logger.debug(f"skip: missing price mid={self.mid} fair={fair_val}")
+                _logger.debug(f"skip: missing price mid={mid} fair={fair_val}")
             self.fair = None
             return
         try:
-            fair_decimal = Decimal(str(fair_val))
+            mid_decimal: Decimal = Decimal(str(mid))
+            fair_decimal: Decimal = Decimal(str(fair_val))
+            diff = mid_decimal - fair_decimal
         except Exception:
             if _logger:
-                _logger.debug(f"skip: invalid fair value fair={fair_val}")
+                _logger.debug(f"skip: missing price mid={mid} fair={fair_val}")
             self.fair = None
             return
         if _logger:
-            _logger.debug(
-                f"edge(abs): {abs(self.mid - fair_decimal)} (edge={self.mid - fair_decimal})"
-            )
+            _logger.debug(f"edge(abs): {abs(diff)} (edge={diff})")
+        # 役割: 後続処理でも参照できるよう、公正価格をプロパティへ反映
+
         self.fair = fair_decimal
 
     # ---------------------------------------------------------------- evaluate
@@ -772,7 +773,13 @@ class PFPLStrategy:
 
             _mid = locals().get("mid", locals().get("mid_px", getattr(self, "mid", None)))
             _fair = locals().get("fair", locals().get("fair_px", getattr(self, "fair", None)))
-            _diff = None if (_mid is None or _fair is None) else (_mid - _fair)
+            if _mid is None or _fair is None:
+                _diff = None
+            else:
+                try:
+                    _diff = Decimal(str(_mid)) - Decimal(str(_fair))
+                except Exception:
+                    _diff = None
             _logger.debug(
                 "DECISION_SNAPSHOT mid=%s fair=%s diff=%s | thr=%.6f spr=%.6f pct=%.6f",
 
@@ -810,18 +817,8 @@ class PFPLStrategy:
         # ③ 必要データ取得
         mid = self.mid
         fair = self.fair
-        _logger = getattr(self, "log", None) or getattr(self, "logger", None)
-        if _logger:
-            _logger.debug(
-                f"prices: mid={mid}, fair={fair}, mode={getattr(self, 'mode', None)}, "
-                f"threshold={getattr(self, 'threshold', None)}"
-            )
         if mid is None or fair is None:
-            if _logger:
-                _logger.debug(f"skip: missing price mid={mid} fair={fair}")
             return
-        if _logger:
-            _logger.debug(f"edge(abs): {abs(mid - fair)} (edge={mid - fair})")
 
         now_ts = time.time()
         can_fire = self._can_fire(now_ts)
