@@ -477,6 +477,7 @@ class PFPLStrategy:
         # 役割: クラス内で必ず使えるロガーを確保（self.log/self.logger が無い環境向けの保険）
         self.log = logging.getLogger(__name__)
 
+
         # 役割: 起動時に一度だけ、現在の重要設定とパッチ状態を INFO ログへ出す（更新コードで起動したかを即判定）
         _logger = getattr(self, "log", None) or getattr(self, "logger", None)
         if _logger:
@@ -704,6 +705,7 @@ class PFPLStrategy:
             )
             fair_val = self._get_from_feed(alt_src)
 
+
         mid = getattr(self, "mid", None)
         # 役割: mid/fair のデバッグと欠損スキップ（prices:/skip:/edge(abs): を必ず出す）
         _logger = getattr(self, 'log', None) or getattr(self, 'logger', None)
@@ -729,7 +731,15 @@ class PFPLStrategy:
         try:
             self.fair = fair_decimal
         except Exception:
+            if _logger:
+                _logger.debug(f"skip: invalid fair value fair={fair_val}")
             self.fair = None
+            return
+        if _logger:
+            _logger.debug(
+                f"edge(abs): {abs(self.mid - fair_decimal)} (edge={self.mid - fair_decimal})"
+            )
+        self.fair = fair_decimal
 
     # ---------------------------------------------------------------- evaluate
 
