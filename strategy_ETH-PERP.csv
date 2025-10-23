@@ -1,0 +1,18 @@
+2025-10-23 21:42:50,INFO,"PFPLStrategy initialised with {'mode': 'abs', 'testnet': True, 'target_symbol': 'ETH-PERP', 'fair_feed': 'oraclePrices', 'spread_threshold': 0, 'threshold': 0.001, 'threshold_pct': 0, 'cooldown_sec': 0.33, 'max_order_per_sec': 3, 'order_usd': 10, 'max_position_usd': 100, 'min_usd': 5, 'dry_run': False, 'log_level': 'DEBUG', 'heartbeat_sec': 30, 'funding_guard': {'enabled': False, 'buffer_sec': 180, 'reenter_sec': 120}}"
+2025-10-23 21:42:50,DEBUG,allMids: mid[ETH]=123.45
+2025-10-23 21:42:50,INFO,min_usd override from config: USD 5.00
+2025-10-23 21:42:50,INFO,pxTick for ETH: 0.01
+2025-10-23 21:42:50,WARNING,qtyTick missing for ETH ➜ fallback 0.0001
+2025-10-23 21:42:50,INFO,boot: PFPLStrategy patch=perp_fallback+guards fair_feed=oraclePrices target=ETH-PERP feed_key=ETH threshold=0.001 order_usd=10 dry_run=False testnet=True
+2025-10-23 21:42:50,INFO,"PFPLStrategy initialised with {'mode': 'abs', 'testnet': True, 'target_symbol': 'ETH-PERP', 'fair_feed': 'oraclePrices', 'spread_threshold': 0, 'threshold': 0.001, 'threshold_pct': 0, 'cooldown_sec': 0.33, 'max_order_per_sec': 3, 'order_usd': 10, 'max_position_usd': 100, 'min_usd': 5, 'dry_run': False, 'log_level': 'DEBUG', 'heartbeat_sec': 30, 'funding_guard': {'enabled': False, 'buffer_sec': 180, 'reenter_sec': 120}}"
+2025-10-23 21:42:50,DEBUG,allMids: waiting for mid for ETH-PERP (base=ETH)
+2025-10-23 21:42:50,INFO,min_usd override from config: USD 5.00
+2025-10-23 21:42:50,INFO,pxTick for ETH: 0.01
+2025-10-23 21:42:50,WARNING,qtyTick missing for ETH ➜ fallback 0.0001
+2025-10-23 21:42:50,INFO,boot: PFPLStrategy patch=perp_fallback+guards fair_feed=oraclePrices target=ETH-PERP feed_key=ETH threshold=0.001 order_usd=10 dry_run=False testnet=True
+2025-10-23 21:42:50,INFO,"PFPLStrategy initialised with {'mode': 'abs', 'testnet': True, 'target_symbol': 'ETH-PERP', 'fair_feed': 'oraclePrices', 'spread_threshold': 0, 'threshold': 0.001, 'threshold_pct': 0, 'cooldown_sec': 0.33, 'max_order_per_sec': 3, 'order_usd': 10, 'max_position_usd': 100, 'min_usd': 5, 'dry_run': False, 'log_level': 'DEBUG', 'heartbeat_sec': 30, 'funding_guard': {'enabled': False, 'buffer_sec': 180, 'reenter_sec': 120}}"
+2025-10-23 21:42:50,INFO,min_usd override from config: USD 5.00
+2025-10-23 21:42:50,INFO,pxTick for ETH: 0.01
+2025-10-23 21:42:50,WARNING,qtyTick missing for ETH ➜ fallback 0.0001
+2025-10-23 21:42:50,INFO,boot: PFPLStrategy patch=perp_fallback+guards fair_feed=oraclePrices target=ETH-PERP feed_key=ETH threshold=0.001 order_usd=10 dry_run=False testnet=True
+2025-10-23 21:42:50,INFO,"PFPLStrategy initialised with {'mode': 'abs', 'testnet': True, 'target_symbol': 'ETH-PERP', 'fair_feed': 'oraclePrices', 'spread_threshold': 0, 'threshold': 0.001, 'threshold_pct': 0, 'cooldown_sec': 0.33, 'max_order_per_sec': 3, 'order_usd': 10, 'max_position_usd': 100, 'min_usd': 5, 'dry_run': False, 'log_level': 'DEBUG', 'heartbeat_sec': 30, 'funding_guard': {'enabled': False, 'buffer_sec': 180, 'reenter_sec': 120}}"

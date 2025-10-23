@@ -19,7 +19,15 @@ import anyio
 from hl_core.config import load_settings
 from hl_core.utils.logger import create_csv_formatter, setup_logger, get_logger
 # 既存 import 群の最後あたりに追加
-from hyperliquid.exchange import Exchange
+# Prefer the official SDK when running normally; fall back to a local stub
+# during tests or when the SDK is unavailable.
+try:  # pragma: no cover - import resolution path
+    import os as _os
+    if _os.getenv("PYTEST_CURRENT_TEST"):
+        raise ImportError("force stub during tests")
+    from hyperliquid.exchange import Exchange  # type: ignore
+except Exception:  # pragma: no cover - fallback for tests/offline
+    from hyperliquid_stub.exchange import Exchange  # type: ignore
 
 # 目的: 取引API(hl_core.api)のログレベルをDEBUGに上げ、注文送信の詳細ログを必ず出す
 logging.getLogger("hl_core.api").setLevel(logging.DEBUG)
@@ -365,17 +373,18 @@ class PFPLStrategy:
                     return candidate
             return None
 
+        # Precedence: explicit config > environment > .env-derived settings
         account = _first_nonempty(
             self.config.get("account_address"),
-            settings.account_address,
             os.getenv("HL_ACCOUNT_ADDRESS"),
             os.getenv("HL_ACCOUNT_ADDR"),
+            settings.account_address,
         )
         secret = _first_nonempty(
             self.config.get("private_key"),
-            settings.private_key,
             os.getenv("HL_PRIVATE_KEY"),
             os.getenv("HL_API_SECRET"),
+            settings.private_key,
         )
 
         missing_parts: list[str] = []

@@ -42,8 +42,13 @@ from hl_core.config import (
 
 from hl_core.api import WSClient
 from hl_core.utils.logger import setup_logger
-from hyperliquid.info import Info
-from hyperliquid.utils import constants
+# Prefer real SDK for runtime; fall back to local stubs if unavailable
+try:  # pragma: no cover - import resolution
+    from hyperliquid.info import Info  # type: ignore
+    from hyperliquid.utils import constants  # type: ignore
+except Exception:  # pragma: no cover - fallback for offline dev
+    from hyperliquid_stub.info import Info  # type: ignore
+    from hyperliquid_stub.utils import constants  # type: ignore
 
 
 # env

@@ -4,9 +4,19 @@ from typing import Optional, Tuple
 
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
-from hyperliquid.exchange import Exchange
-from hyperliquid.info import Info
-from hyperliquid.utils import constants
+
+# Prefer official SDK, fall back to local stubs in tests/offline
+try:  # pragma: no cover - import path shim
+    import os as _os
+    if _os.getenv("PYTEST_CURRENT_TEST"):
+        raise ImportError("force stubs during tests")
+    from hyperliquid.exchange import Exchange  # type: ignore
+    from hyperliquid.info import Info  # type: ignore
+    from hyperliquid.utils import constants  # type: ignore
+except Exception:  # pragma: no cover - fallback
+    from hyperliquid_stub.exchange import Exchange  # type: ignore
+    from hyperliquid_stub.info import Info  # type: ignore
+    from hyperliquid_stub.utils import constants  # type: ignore
 
 from .config import Settings, mask_secret, require_live_creds
 

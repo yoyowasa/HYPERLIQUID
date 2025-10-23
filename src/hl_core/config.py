@@ -8,7 +8,13 @@ from pydantic import BaseModel, field_validator
 
 
 def load_env_file() -> None:
-    load_dotenv(override=True)
+    # In tests, avoid pulling developer .env into the environment so that
+    # monkeypatched values remain authoritative and deterministic.
+    import os as _os
+    if _os.getenv("PYTEST_CURRENT_TEST"):
+        return
+    # Outside tests, load .env but do not overwrite existing variables.
+    load_dotenv(override=False)
 
 
 class Settings(BaseModel):
