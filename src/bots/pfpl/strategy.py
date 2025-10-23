@@ -307,12 +307,15 @@ class PFPLStrategy:
             ),
             None,
         )
-        if pfpl_handler is not None and not any(
+        # Avoid duplicate writes during tests where we enable propagation for caplog.
+        if not logger.propagate and pfpl_handler is not None and not any(
             getattr(existing, "baseFilename", None)
             == getattr(pfpl_handler, "baseFilename", None)
             for existing in logger.handlers
         ):
             logger.addHandler(pfpl_handler)
+
+        
         # ── ① YAML と CLI のマージ ───────────────────────
         yml_path = Path(__file__).with_name("config.yaml")
         yaml_conf: dict[str, Any] = {}
@@ -321,6 +324,13 @@ class PFPLStrategy:
                 raw_conf = f.read()
             yaml_conf = yaml.safe_load(raw_conf) or {}
         self.config = {**config, **yaml_conf}
+        # Apply per-config log level if provided (e.g., DEBUG/INFO)
+        lvl = str(self.config.get("log_level") or "").strip()
+        if lvl:
+            try:
+                setup_logger(bot_name="pfpl", console_level=lvl, file_level=lvl)
+            except Exception:
+                pass
         funding_guard_cfg = self.config.get("funding_guard", {})
         if not isinstance(funding_guard_cfg, dict):
             funding_guard_cfg = {}
