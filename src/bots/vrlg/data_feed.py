@@ -16,9 +16,9 @@ from dataclasses import dataclass, replace
 from collections.abc import AsyncIterator, Callable
 from typing import Any, Optional, Tuple, cast
 
-from hl_core.utils.logger import get_logger
+import logging
 
-logger = get_logger("VRLG.data")
+logger = logging.getLogger("bots.vrlg.data")
 
 
 @dataclass(frozen=True)

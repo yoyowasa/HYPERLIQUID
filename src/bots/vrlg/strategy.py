@@ -19,7 +19,10 @@ except Exception:  # pragma: no cover
     uvloop = None  # type: ignore
 
 # 〔この関数がすること〕: 共通ロガー/コンフィグ読込は PFPL と共有（hl_core）を使います。
-from hl_core.utils.logger import get_logger
+import logging
+from pathlib import Path
+import logging.handlers
+from hl_core.utils.logger import create_csv_formatter
 
 # 〔この import 群がすること〕
 # データ購読・位相検出・シグナル判定・発注・リスク管理の各コンポーネントを司令塔に読ませます。
@@ -48,7 +51,7 @@ def load_config(path: str):
     return load_vrlg_config(path)
 
 
-logger = get_logger("VRLG")
+logger = logging.getLogger("bots.vrlg")
 
 
 class VRLGStrategy:
@@ -69,7 +72,36 @@ class VRLGStrategy:
         self.config_path = config_path
         self.paper = paper
         raw_cfg = load_config(config_path)
-        self.cfg: VRLGConfig = coerce_vrlg_config(raw_cfg)  # 〔この行がすること〕 dict から VRLGConfig（属性アクセス可）へ変換する
+        self.cfg: VRLGConfig = coerce_vrlg_config(raw_cfg)
+                # Attach a single per-symbol rotating file handler under logs/vrlg/<SYMBOL>.csv
+        try:
+            symbol = getattr(getattr(self.cfg, "symbol", object()), "name", None) or "UNSPEC"
+        except Exception:
+            symbol = "UNSPEC"
+        log_dir = Path("logs") / "vrlg"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        symbol_log_path = (log_dir / f"{symbol}.csv").resolve()
+        existing_handler = next(
+            (
+                h
+                for h in logger.handlers
+                if isinstance(h, logging.handlers.TimedRotatingFileHandler)
+                and getattr(h, "baseFilename", "") == str(symbol_log_path)
+            ),
+            None,
+        )
+        if existing_handler is None:
+            fh = logging.handlers.TimedRotatingFileHandler(
+                filename=str(symbol_log_path),
+                when="midnight",
+                interval=1,
+                backupCount=14,
+                encoding="utf-8",
+                utc=True,
+            )
+            fh.setFormatter(create_csv_formatter(include_logger_name=True))
+        logger.addHandler(fh)
+        logger.propagate = False
         self._tasks: list[asyncio.Task] = []
         self._stopping = asyncio.Event()
 
@@ -725,3 +757,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+

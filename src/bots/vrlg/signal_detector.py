@@ -7,11 +7,11 @@ from typing import Callable, Deque, Optional
 from uuid import uuid4
 
 
-from hl_core.utils.logger import get_logger
+import logging
 
 from .data_feed import FeatureSnapshot
 
-logger = get_logger("VRLG.signal")
+logger = logging.getLogger("bots.vrlg.signal")
 
 
 @dataclass(frozen=True)

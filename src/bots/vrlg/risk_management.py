@@ -17,9 +17,9 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Deque, Optional, Tuple
 
-from hl_core.utils.logger import get_logger
+import logging
 
-logger = get_logger("VRLG.risk")
+logger = logging.getLogger("bots.vrlg.risk")
 
 
 @dataclass

@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from hl_core.utils.logger import get_logger
+import logging
 
-logger = get_logger("VRLG.metrics")
+logger = logging.getLogger("bots.vrlg.metrics")
 
 # ───────────────── No-op フォールバック ─────────────────
 try:

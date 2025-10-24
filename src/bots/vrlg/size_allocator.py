@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from hl_core.utils.logger import get_logger
+import logging
 
-logger = get_logger("VRLG.size")
+logger = logging.getLogger("bots.vrlg.size")
 
 
 class SizeAllocator:

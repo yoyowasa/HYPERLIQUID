@@ -29,18 +29,30 @@ def _set_credentials(
 
 
 def _remove_strategy_handler(symbol: str = "ETH-PERP") -> None:
-    PFPLStrategy._FILE_HANDLERS.discard(symbol)
+    # Clear PFPLStrategy handler registry
+    PFPLStrategy._FILE_HANDLERS.clear()
     module_logger = strategy_module.logger
-    handler_suffix = f"strategy_{symbol}.csv"
+    # New path: logs/pfpl/<SYMBOL>.csv
+    new_path = (Path("logs") / "pfpl" / f"{symbol}.csv").resolve()
+    removed = False
     for handler in list(module_logger.handlers):
-        if isinstance(handler, logging.FileHandler) and getattr(
-            handler, "baseFilename", ""
-        ).endswith(handler_suffix):
+        base = getattr(handler, "baseFilename", "")
+        if base == str(new_path):
             module_logger.removeHandler(handler)
             handler.close()
-    log_path = Path(handler_suffix)
-    if log_path.exists():
-        log_path.unlink()
+            removed = True
+    # Legacy path: strategy_<SYMBOL>.csv
+    legacy = Path(f"strategy_{symbol}.csv")
+    if not removed:
+        for handler in list(module_logger.handlers):
+            base = getattr(handler, "baseFilename", "")
+            if base.endswith(str(legacy)):
+                module_logger.removeHandler(handler)
+                handler.close()
+    if new_path.exists():
+        new_path.unlink()
+    if legacy.exists():
+        legacy.unlink()
 
 
 def test_init_adds_file_handler_once(monkeypatch):
@@ -51,14 +63,14 @@ def test_init_adds_file_handler_once(monkeypatch):
     sem = Semaphore(1)
     module_logger = strategy_module.logger
     symbol = "ETH-PERP"
-    handler_suffix = f"strategy_{symbol}.csv"
+    symbol_log = (Path("logs") / "pfpl" / f"{symbol}.csv").resolve()
 
     def _count_handlers() -> int:
         return sum(
             1
             for handler in module_logger.handlers
-            if isinstance(handler, logging.FileHandler)
-            and getattr(handler, "baseFilename", "").endswith(handler_suffix)
+            if isinstance(handler, logging.handlers.TimedRotatingFileHandler)
+            and getattr(handler, "baseFilename", "") == str(symbol_log)
         )
 
     first_strategy = None
@@ -124,7 +136,7 @@ def test_caplog_keeps_symbol_file_logging(monkeypatch, caplog):
 
         assert strategy is not None
 
-        log_path = Path(f"strategy_{strategy.symbol}.csv")
+        log_path = (Path("logs") / "pfpl" / f"{strategy.symbol}.csv").resolve()
         assert log_path.exists()
         content = log_path.read_text(encoding="utf-8")
         assert log_message in content

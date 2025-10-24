@@ -10,9 +10,9 @@ import time
 from typing import Optional, Callable, Dict, Any  # 〔この行がすること〕 オーダーイベント用のコールバック型を使えるようにする
 
 
-from hl_core.utils.logger import get_logger
+import logging
 
-logger = get_logger("VRLG.exec")
+logger = logging.getLogger("bots.vrlg.exec")
 
 
 def _safe(cfg, section: str, key: str, default):
