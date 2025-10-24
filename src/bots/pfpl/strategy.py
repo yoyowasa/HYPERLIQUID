@@ -17,7 +17,7 @@ from typing import Any, cast
 
 import anyio
 from hl_core.config import load_settings
-from hl_core.utils.logger import create_csv_formatter, setup_logger, get_logger
+from hl_core.utils.logger import create_csv_formatter, setup_logger
 # 既存 import 群の最後あたりに追加
 # Prefer the official SDK when running normally; fall back to a local stub
 # during tests or when the SDK is unavailable.
@@ -54,7 +54,7 @@ except Exception:  # noqa: F401 - fallback when eth_account isn't installed
             return _Wallet(key)
 
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 
@@ -298,24 +298,8 @@ class PFPLStrategy:
             setup_logger(bot_name="pfpl")
             PFPLStrategy._LOGGER_INITIALISED = True
 
-        pfpl_handler = next(
-            (
-                handler
-                for handler in logging.getLogger().handlers
-                if isinstance(handler, logging.handlers.TimedRotatingFileHandler)
-                and getattr(handler, "baseFilename", "").endswith("pfpl.csv")
-            ),
-            None,
-        )
-        # Avoid duplicate writes during tests where we enable propagation for caplog.
-        if not logger.propagate and pfpl_handler is not None and not any(
-            getattr(existing, "baseFilename", None)
-            == getattr(pfpl_handler, "baseFilename", None)
-            for existing in logger.handlers
-        ):
-            logger.addHandler(pfpl_handler)
-
-        
+        # Dedicated per-symbol rotating file handler will be attached below after
+        # config is loaded.
         # ── ① YAML と CLI のマージ ───────────────────────
         yml_path = Path(__file__).with_name("config.yaml")
         yaml_conf: dict[str, Any] = {}
@@ -324,6 +308,31 @@ class PFPLStrategy:
                 raw_conf = f.read()
             yaml_conf = yaml.safe_load(raw_conf) or {}
         self.config = {**config, **yaml_conf}
+        # Ensure per-symbol rotating log under logs/pfpl/<SYMBOL>.csv
+        log_dir = Path("logs") / "pfpl"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        symbol_log_path = (log_dir / f"{self.config.get('target_symbol', 'ETH-PERP')}.csv").resolve()
+        existing_handler = next(
+            (
+                h
+                for h in logger.handlers
+                if isinstance(h, logging.handlers.TimedRotatingFileHandler)
+                and getattr(h, "baseFilename", "") == str(symbol_log_path)
+            ),
+            None,
+        )
+        if existing_handler is None and str(symbol_log_path) not in PFPLStrategy._FILE_HANDLERS:
+            fh = logging.handlers.TimedRotatingFileHandler(
+                filename=str(symbol_log_path),
+                when="midnight",
+                interval=1,
+                backupCount=14,
+                encoding="utf-8",
+                utc=True,
+            )
+            fh.setFormatter(create_csv_formatter(include_logger_name=False))
+            logger.addHandler(fh)
+            PFPLStrategy._FILE_HANDLERS.add(str(symbol_log_path))
         # Apply per-config log level if provided (e.g., DEBUG/INFO)
         lvl = str(self.config.get("log_level") or "").strip()
         if lvl:
@@ -544,24 +553,7 @@ class PFPLStrategy:
                 )
 
         # ─── ここから追加（ロガーをペアごとのファイルへも出力）────
-        handler_filename = f"strategy_{self.symbol}.csv"
-        module_logger = logger
-        existing_handler = next(
-            (
-                h
-                for h in module_logger.handlers
-                if isinstance(h, logging.FileHandler)
-                and getattr(h, "baseFilename", "").endswith(handler_filename)
-            ),
-            None,
-        )
-
-        if existing_handler is None:
-            handler = logging.FileHandler(handler_filename, encoding="utf-8")
-            handler.setFormatter(create_csv_formatter(include_logger_name=False))
-            module_logger.addHandler(handler)
-
-        PFPLStrategy._FILE_HANDLERS.add(self.symbol)
+        # Per-symbol rotating handler already attached above
 
         logger.info("PFPLStrategy initialised with %s", self.config)
 
