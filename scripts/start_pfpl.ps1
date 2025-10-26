@@ -18,7 +18,8 @@ if ($Debug) { $env:LOG_LEVEL = "DEBUG" }
 
 # .env を読み込みつつ PFPL を実行。終了コード≠0 のとき 5 秒待って再起動
 while ($true) {
-  python -m dotenv run -- python run_bot.py pfpl --symbols $Symbols --order_usd $OrderUsd
+  python run_bot.py pfpl --symbols $Symbols --order_usd $OrderUsd
   if ($LASTEXITCODE -eq 0) { break }
   Start-Sleep -Seconds 5
 }
+
