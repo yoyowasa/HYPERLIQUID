@@ -8,9 +8,10 @@ readme = "README.md"                                   # function: リポのREAD
 
 # function: srcレイアウトで配布対象を限定（hyperliquid/hl_core/bots を src/ 配下から収集）
 packages = [
-  { include = "hyperliquid", from = "src" },
-  { include = "hl_core",     from = "src" },
-  { include = "bots",        from = "src" }
+  # NOTE: Do not package a local 'hyperliquid' module to avoid shadowing the official SDK.
+  { include = "hl_core",           from = "src" },
+  { include = "bots",              from = "src" },
+  { include = "hyperliquid_stub",  from = "src" }
 ]
 
 # function: ランタイム依存（本番・実行に必要なもの）
