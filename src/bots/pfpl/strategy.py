@@ -308,6 +308,12 @@ class PFPLStrategy:
                 raw_conf = f.read()
             yaml_conf = yaml.safe_load(raw_conf) or {}
         self.config = {**config, **yaml_conf}
+        # runtime hot-reload bookkeeping
+        self._cfg_yml_path: Path | None = yml_path if yml_path.exists() else None
+        self._cfg_mtime: float | None = (
+            (self._cfg_yml_path.stat().st_mtime if self._cfg_yml_path else None)
+        )
+        self._last_cfg_check_ts: float = 0.0
         # Ensure per-symbol rotating log under logs/pfpl/<SYMBOL>.csv
         log_dir = Path("logs") / "pfpl"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -556,6 +562,39 @@ class PFPLStrategy:
         # Per-symbol rotating handler already attached above
 
         logger.info("PFPLStrategy initialised with %s", self.config)
+
+    # ---- runtime config reload (max_daily_orders immediate reflect) ----
+    def _maybe_reload_runtime_config(self) -> None:
+        try:
+            now = time.time()
+            if (now - getattr(self, "_last_cfg_check_ts", 0.0)) < 5.0:
+                return
+            self._last_cfg_check_ts = now
+            path = getattr(self, "_cfg_yml_path", None)
+            if not path or not path.exists():
+                return
+            mtime = path.stat().st_mtime
+            prev = getattr(self, "_cfg_mtime", None)
+            if prev is not None and mtime <= prev:
+                return
+            # reload yaml and merge
+            with path.open(encoding="utf-8") as f:
+                new_yaml = yaml.safe_load(f.read()) or {}
+            old_limit = getattr(self, "max_daily_orders", None)
+            self.config.update(new_yaml)
+            self._cfg_mtime = mtime
+            # reflect max_daily_orders immediately
+            try:
+                new_limit = int(self.config.get("max_daily_orders", old_limit or 500))
+            except Exception:
+                new_limit = old_limit or 500
+            if new_limit != old_limit:
+                logger.info(
+                    "config reload: max_daily_orders %s -> %s", old_limit, new_limit
+                )
+                self.max_daily_orders = new_limit
+        except Exception as exc:
+            logger.debug("config reload skipped: %s", exc)
 
     # ── src/bots/pfpl/strategy.py ──
     async def _refresh_position(self) -> None:
@@ -1274,3 +1313,4 @@ def log_order_decision(
         will_send,
         reason,
     )
+
