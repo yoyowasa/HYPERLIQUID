@@ -667,6 +667,45 @@ class PFPLStrategy:
                 fair_inputs_changed = True
                 if uses_oracle:
                     should_eval = True
+        elif ch == "activeAssetCtx":
+            data = msg.get("data") or {}
+            coin = str(data.get("coin") or self.base_coin).upper()
+            if coin != str(self.base_coin).upper():
+                return
+            ctx = data.get("ctx") or {}
+            idx_raw = ctx.get("midPx") or ctx.get("markPx")
+            ora_raw = ctx.get("oraclePx")
+            updated = False
+            if idx_raw is not None:
+                try:
+                    idx_val_dec = Decimal(str(idx_raw))
+                except Exception:
+                    idx_val_dec = None
+                if idx_val_dec is not None:
+                    self.indexPrices[self.symbol] = str(idx_val_dec)
+                    self.indexPrices[self.base_coin] = str(idx_val_dec)
+                    if self.idx != idx_val_dec:
+                        self.idx = idx_val_dec
+                        fair_inputs_changed = True
+                        updated = True
+                        if uses_index:
+                            should_eval = True
+            if ora_raw is not None:
+                try:
+                    ora_val_dec = Decimal(str(ora_raw))
+                except Exception:
+                    ora_val_dec = None
+                if ora_val_dec is not None:
+                    self.oraclePrices[self.symbol] = str(ora_val_dec)
+                    self.oraclePrices[self.base_coin] = str(ora_val_dec)
+                    if self.ora != ora_val_dec:
+                        self.ora = ora_val_dec
+                        fair_inputs_changed = True
+                        updated = True
+                        if uses_oracle:
+                            should_eval = True
+            if not updated:
+                return
         elif ch == "fundingInfo":
             data = msg.get("data", {})
             next_ts = data.get("nextFundingTime") if isinstance(data, dict) else None

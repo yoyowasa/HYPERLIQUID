@@ -219,11 +219,11 @@ async def main() -> None:
     asyncio.create_task(ws.connect())
     await ws.wait_ready()
 
+    # Subscribe to supported public channels
     await ws.subscribe({"type": "allMids"})
     for base in sorted(bases):
-        await ws.subscribe({"type": "indexPrices", "coins": [base]})
-        await ws.subscribe({"type": "oraclePrices", "coins": [base]})
-        await ws.subscribe({"type": "fundingInfo", "coins": [base]})
+        # activeAssetCtx carries midPx/markPx/oraclePx and updates frequently
+        await ws.subscribe({"type": "activeAssetCtx", "coin": base})
     await asyncio.Event().wait()  # 常駐
 
 
