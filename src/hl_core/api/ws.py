@@ -74,9 +74,14 @@ async def _ws_stream(subscription: Dict[str, Any]) -> AsyncGenerator[Dict[str, A
 def _best_level(levels: List[Dict[str, Any]]) -> tuple[float | None, float | None]:
     if not levels:
         return None, None
+    first = levels[0] or {}
+    px_val = first.get("px")
+    sz_val = first.get("sz")
+    if px_val is None or sz_val is None:
+        return None, None
     try:
-        px = float(levels[0].get("px"))
-        sz = float(levels[0].get("sz"))
+        px = float(px_val)
+        sz = float(sz_val)
     except Exception:
         return None, None
     return px, sz

@@ -450,14 +450,16 @@ class PFPLStrategy:
         self.secret: str = secret
 
         # ── Hyperliquid SDK 初期化 ──────────────────────
-        self.wallet = Account.from_key(self.secret)
+        # 型安全: eth_account が無い環境ではスタブ _Wallet を返すため、実行時のみ厳密
+        wallet: Any = Account.from_key(self.secret)
+        self.wallet = wallet
         base_url = (
             "https://api.hyperliquid-testnet.xyz"
             if self.config.get("testnet")
             else "https://api.hyperliquid.xyz"
         )
         self.exchange = Exchange(
-            self.wallet,
+            wallet,
             base_url,
             account_address=self.account,
         )

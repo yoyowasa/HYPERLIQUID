@@ -5,5 +5,8 @@ development so that importing strategy modules does not require the real
 SDK nor network access.
 """
 
-__all__ = ["exchange"]
+from . import exchange as exchange  # re-export for type checkers
+from . import info as info  # optional convenience
+from . import utils as utils
 
+__all__ = ["exchange", "info", "utils"]

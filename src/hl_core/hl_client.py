@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
@@ -33,7 +33,7 @@ def make_account(settings: Settings) -> Optional[LocalAccount]:
     return Account.from_key(settings.private_key)
 
 
-def make_clients(settings: Settings) -> Tuple[Info, Optional[Exchange], str]:
+def make_clients(settings: Settings) -> Tuple[Any, Optional[Any], str]:
     base_url = get_base_url(settings.network)
     info = Info(base_url, skip_ws=True)
     account = make_account(settings)

@@ -1,0 +1,2 @@
+# --- Order price offset percentage（デフォルト 0.0005 = 0.05 %）
+        self.eps_pct = float(self.config.get("eps_pct", 0.00

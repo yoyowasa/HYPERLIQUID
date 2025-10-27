@@ -1,0 +1,6 @@
+unavailable.
+try:  # pragma: no cover - import resolution path
+    import os as _os
+    if _os.getenv("PYTEST_CURRENT_TEST"):
+        raise ImportError("force stub during tests")
+    from hyperliquid.
