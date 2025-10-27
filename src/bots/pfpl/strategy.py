@@ -14,10 +14,28 @@ from datetime import datetime, timezone  # ← 追加
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
 from pathlib import Path
 from typing import Any, cast
+from zoneinfo import ZoneInfo
+from datetime import timedelta
 
 import anyio
 from hl_core.config import load_settings
 from hl_core.utils.logger import create_csv_formatter, setup_logger
+# --- timezone resolver (JST fallback when tzdata is unavailable)
+def _resolve_tz(name: str):
+    """tzinfo を返却。ZoneInfo が使えない/見つからない場合はフォールバック。
+
+    優先順位:
+      1) zoneinfo.ZoneInfo(name) が使えるならそれを使う
+      2) name が Asia/Tokyo/JST の場合は固定 +09:00 (DST 無し) にフォールバック
+      3) それ以外は UTC
+    """
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        pass
+    if name in ("Asia/Tokyo", "JST", "Japan"):
+        return timezone(timedelta(hours=9))
+    return timezone.utc
 # 既存 import 群の最後あたりに追加
 # Prefer the official SDK when running normally; fall back to a local stub
 # during tests or when the SDK is unavailable.
@@ -504,8 +522,11 @@ class PFPLStrategy:
         self.fair_feed = self.config.get("fair_feed", "indexPrices")
         self.testnet = bool(self.config.get("testnet"))
         self.max_daily_orders = int(self.config.get("max_daily_orders", 500))
+        # Timezone: default JST; allow override via config time_zone
+        self.time_zone = str(self.config.get("time_zone", "Asia/Tokyo"))
+        self._tz = _resolve_tz(self.time_zone)
         self._order_count = 0
-        self._start_day = datetime.now(timezone.utc).date()
+        self._start_day = datetime.now(self._tz).date()
         self.enabled = True
 
         # 役割: クラス内で必ず使えるロガーを確保（self.log/self.logger が無い環境向けの保険）
@@ -523,7 +544,8 @@ class PFPLStrategy:
                 f"threshold={self.config.get('threshold')} "
                 f"order_usd={self.order_usd} "
                 f"dry_run={self.dry_run} "
-                f"testnet={self.testnet}"
+                f"testnet={self.testnet} "
+                f"max_daily_orders={self.max_daily_orders}"
             )
         # ── フィード保持用 -------------------------------------------------
         self.mid: Decimal | None = None  # 板 Mid (@1)
@@ -562,6 +584,16 @@ class PFPLStrategy:
         # Per-symbol rotating handler already attached above
 
         logger.info("PFPLStrategy initialised with %s", self.config)
+        try:
+            logger.info(
+                "daily reset schedule: tz=%s day=%s max_daily_orders=%d order_count=%d",
+                getattr(self, "time_zone", "Asia/Tokyo"),
+                self._start_day.isoformat(),
+                self.max_daily_orders,
+                self._order_count,
+            )
+        except Exception:
+            pass
 
     # ---- runtime config reload (max_daily_orders immediate reflect) ----
     def _maybe_reload_runtime_config(self) -> None:
@@ -583,6 +615,18 @@ class PFPLStrategy:
             old_limit = getattr(self, "max_daily_orders", None)
             self.config.update(new_yaml)
             self._cfg_mtime = mtime
+            # reflect time_zone change immediately
+            try:
+                old_tzname = getattr(self, "time_zone", "Asia/Tokyo")
+                new_tzname = str(self.config.get("time_zone", old_tzname))
+                if new_tzname != old_tzname:
+                    self.time_zone = new_tzname
+                    self._tz = _resolve_tz(new_tzname)
+                    logger.info(
+                        "config reload: time_zone %s -> %s", old_tzname, new_tzname
+                    )
+            except Exception:
+                pass
             # reflect max_daily_orders immediately
             try:
                 new_limit = int(self.config.get("max_daily_orders", old_limit or 500))
@@ -593,6 +637,15 @@ class PFPLStrategy:
                     "config reload: max_daily_orders %s -> %s", old_limit, new_limit
                 )
                 self.max_daily_orders = new_limit
+                try:
+                    if getattr(self, "_order_count", 0) >= int(new_limit):
+                        logger.warning(
+                            "order_count %d >= new limit %d: trading disabled until daily reset",
+                            getattr(self, "_order_count", 0),
+                            int(new_limit),
+                        )
+                except Exception:
+                    pass
         except Exception as exc:
             logger.debug("config reload skipped: %s", exc)
 
@@ -645,6 +698,10 @@ class PFPLStrategy:
     # ② ────────────────────────────────────────────────────────────
     # ------------------------------------------------------------------ WS hook
     def on_message(self, msg: dict[str, Any]) -> None:
+        # Hot-reload config (throttled) so max_daily_orders reflects immediately
+        self._maybe_reload_runtime_config()
+        # Log and reset daily counters explicitly on UTC day change
+        self._maybe_daily_reset_and_log()
         ch = msg.get("channel")
         feed = self.fair_feed
         combined_feed = feed not in {"indexPrices", "oraclePrices"}
@@ -828,6 +885,8 @@ class PFPLStrategy:
         import logging
 
         _logger = getattr(self, "logger", logging.getLogger(__name__))
+        # Hot-reload config just before decision logic to reflect changes fast
+        self._maybe_reload_runtime_config()
         try:
 
             _config = getattr(self, "config", {}) or {}
@@ -1166,10 +1225,30 @@ class PFPLStrategy:
         msg = json.dumps(payload, separators=(",", ":")).encode()
         return hmac.new(self.secret.encode(), msg, hashlib.sha256).hexdigest()
 
+    # ------------------------------------------------------------------ daily reset
+    def _maybe_daily_reset_and_log(self) -> None:
+        """UTC日付の変化を検知して、カウンタを明示ログ付きでリセットする"""
+        tz = getattr(self, "_tz", timezone.utc)
+        today = datetime.now(tz).date()
+        if today != getattr(self, "_start_day", today):
+            prev_day = getattr(self, "_start_day", today)
+            prev_cnt = int(getattr(self, "_order_count", 0) or 0)
+            self._start_day = today
+            self._order_count = 0
+            logger.info(
+                "daily reset: tz=%s day %s -> %s | order_count %d -> 0 | max_daily_orders=%d",
+                getattr(self, "time_zone", "Asia/Tokyo"),
+                getattr(prev_day, "isoformat", lambda: str(prev_day))(),
+                today.isoformat(),
+                prev_cnt,
+                int(getattr(self, "max_daily_orders", 0) or 0),
+            )
+
     # ------------------------------------------------------------------ limits
     def _check_limits(self) -> bool:
         """日次の発注数と建玉制限を超えていないか確認"""
-        today = datetime.now(timezone.utc).date()
+        tz = getattr(self, "_tz", timezone.utc)
+        today = datetime.now(tz).date()
         if today != self._start_day:  # 日付が変わったらリセット
             self._start_day = today
             self._order_count = 0
@@ -1313,4 +1392,3 @@ def log_order_decision(
         will_send,
         reason,
     )
-
