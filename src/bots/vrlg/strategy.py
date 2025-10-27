@@ -100,7 +100,7 @@ class VRLGStrategy:
                 utc=False,
             )
             fh.setFormatter(create_csv_formatter(include_logger_name=True))
-        logger.addHandler(fh)
+            logger.addHandler(fh)
         logger.propagate = False
         self._tasks: list[asyncio.Task] = []
         self._stopping = asyncio.Event()
