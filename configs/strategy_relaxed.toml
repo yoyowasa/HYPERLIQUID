@@ -1,0 +1,49 @@
+# VRLG relaxed parameters for faster warm-up (paper calibration)
+
+[symbol]
+name      = "BTCUSD-PERP"
+tick_size = 0.5
+
+[signal]
+N           = 50
+x           = 0.20
+y           = 1.5
+z           = 0.45    # clamped max in code
+obi_limit   = 0.6
+T_roll      = 20.0
+
+# RotationDetector
+p_thresh             = 0.05
+period_min_s         = 0.6
+period_max_s         = 6.0
+min_boundary_samples = 80
+min_off_samples      = 30
+
+[exec]
+order_ttl_ms     = 1000
+display_ratio    = 0.25
+min_display_btc  = 0.01
+max_exposure_btc = 0.8
+cooldown_factor  = 2.0
+offset_ticks_normal   = 0.5
+offset_ticks_deep     = 1.5
+spread_collapse_ticks = 1.0
+side_mode             = "both"
+splits           = 1
+percent_min      = 0.002
+percent_max      = 0.005
+min_clip_btc     = 0.001
+equity_usd       = 10000.0
+
+[risk]
+max_slippage_ticks    = 1.0
+max_book_impact       = 0.02
+time_stop_ms          = 1200
+stop_ticks            = 3.0
+block_interval_stop_s = 4.0
+
+[latency]
+ingest_ms        = 10
+order_rt_ms      = 60
+max_staleness_ms = 300
+

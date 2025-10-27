@@ -50,3 +50,4 @@ block_interval_stop_s = 4.0   # 〔ブロック間隔のkill-switch閾（移動�
 ingest_ms        = 10   # 〔WS取り込み遅延（ms, BT用注入）〕
 order_rt_ms      = 60   # 〔発注RTT（ms, BT用注入）〕
 max_staleness_ms = 300  # 〔鮮度ゲート〕特徴量がこの閾超なら発注スキップ
+
