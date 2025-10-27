@@ -5,6 +5,7 @@ from asyncio import Semaphore
 from decimal import Decimal
 from pathlib import Path
 import logging
+import logging.handlers  # ensure typeshed exposes logging.handlers for type checker
 import sys
 
 import pytest
