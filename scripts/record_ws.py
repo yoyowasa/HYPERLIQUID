@@ -177,14 +177,14 @@ async def _consume_level2(
             continue
 
 
-async def _consume_blocks(sink: RotatingSink, stop: asyncio.Event) -> None:
+async def _consume_blocks(symbol: str, sink: RotatingSink, stop: asyncio.Event) -> None:
     try:
         from hl_core.api.ws import subscribe_blocks  # type: ignore
     except Exception:
         logger.warning("blocks WS adapter not available; skip")
         return
 
-    async for blk in subscribe_blocks():
+    async for blk in subscribe_blocks(symbol):
         if stop.is_set():
             break
         rec = {
@@ -268,7 +268,9 @@ async def main(argv: Optional[Iterable[str]] = None) -> int:
     ]
     if not args.no_blocks:
         tasks.append(
-            asyncio.create_task(_consume_blocks(sink, stop), name="ws_blocks")
+            asyncio.create_task(
+                _consume_blocks(args.symbol, sink, stop), name="ws_blocks"
+            )
         )
     if not args.no_trades:
         tasks.append(

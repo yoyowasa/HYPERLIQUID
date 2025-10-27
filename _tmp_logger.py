@@ -21,7 +21,7 @@ from colorama import Fore, Style, init as _color_init
 # ────────────────────────────────────────────────────────────
 # 内部定数
 # ────────────────────────────────────────────────────────────
-_TZ: Final = _dt.timezone(_dt.timedelta(hours=9))  # すべて UTC
+_TZ: Final = _dt.timezone.utc  # すべて UTC
 _LOG_FMT: Final = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 _CSV_FIELDS_WITH_LOGGER: Final = ("asctime", "levelname", "name", "message")
 _CSV_FIELDS_NO_LOGGER: Final = ("asctime", "levelname", "message")
@@ -353,7 +353,7 @@ def setup_logger(
             interval=1,
             backupCount=7,
             encoding="utf-8",
-            utc=False,
+            utc=True,
         )
         fh.setLevel(file_level_value)
         fh.setFormatter(create_csv_formatter())
@@ -459,14 +459,11 @@ def _attach_daily_file_handler(logger: logging.Logger, logger_name: str) -> None
         when="midnight",
         backupCount=14,
         encoding="utf-8",
-        utc=False,
+        utc=True,
         delay=False,
     )
     file_handler.setLevel(logger.level)
     file_handler.setFormatter(create_csv_formatter())
     logger.addHandler(file_handler)
     logger.propagate = False
-
-
-
 

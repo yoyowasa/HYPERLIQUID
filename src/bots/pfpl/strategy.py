@@ -328,7 +328,7 @@ class PFPLStrategy:
                 interval=1,
                 backupCount=14,
                 encoding="utf-8",
-                utc=True,
+                utc=False,
             )
             fh.setFormatter(create_csv_formatter(include_logger_name=False))
             logger.addHandler(fh)

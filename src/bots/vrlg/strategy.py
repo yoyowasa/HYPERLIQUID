@@ -97,7 +97,7 @@ class VRLGStrategy:
                 interval=1,
                 backupCount=14,
                 encoding="utf-8",
-                utc=True,
+                utc=False,
             )
             fh.setFormatter(create_csv_formatter(include_logger_name=True))
         logger.addHandler(fh)
@@ -467,7 +467,7 @@ class VRLGStrategy:
 
         prev_ts: float | None = None
 
-        async for blk in subscribe_blocks():
+        async for blk in subscribe_blocks(getattr(self.cfg.symbol, "name", "BTCUSD-PERP")):
             if self._stopping.is_set():
                 break
             # ブロック時刻（秒）を安全に取得

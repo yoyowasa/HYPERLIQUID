@@ -9,7 +9,7 @@ import asyncio
 import signal
 
 # 〔この import がすること〕 共通ロガーで一元管理されたロガーを使います
-from hl_core.utils.logger import get_logger
+from hl_core.utils.logger import get_logger, setup_logger
 
 logger = get_logger("VRLG.runner")
 
@@ -40,6 +40,12 @@ async def _main() -> int:
     # ログレベル反映（strategy 側でも反映するが、runner 側でも即時反映）
     try:
         logger.setLevel(str(args.log_level).upper())
+    except Exception:
+        pass
+
+    # Configure console and file handlers for VRLG
+    try:
+        setup_logger(bot_name="vrlg", console_level=args.log_level, file_level=args.log_level)
     except Exception:
         pass
 

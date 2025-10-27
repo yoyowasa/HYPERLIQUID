@@ -1,4 +1,5 @@
 # tests/unit/test_pfpl_init.py
+import contextlib
 import importlib
 from asyncio import Semaphore
 from decimal import Decimal
@@ -49,9 +50,9 @@ def _remove_strategy_handler(symbol: str = "ETH-PERP") -> None:
             if base.endswith(str(legacy)):
                 module_logger.removeHandler(handler)
                 handler.close()
-    if new_path.exists():
+    with contextlib.suppress(FileNotFoundError, PermissionError):
         new_path.unlink()
-    if legacy.exists():
+    with contextlib.suppress(FileNotFoundError, PermissionError):
         legacy.unlink()
 
 
