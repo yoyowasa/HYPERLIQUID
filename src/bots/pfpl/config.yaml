@@ -25,4 +25,3 @@ funding_guard:
   enabled: false
   buffer_sec: 180
   reenter_sec: 120
-

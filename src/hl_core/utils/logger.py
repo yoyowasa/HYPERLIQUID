@@ -466,7 +466,3 @@ def _attach_daily_file_handler(logger: logging.Logger, logger_name: str) -> None
     file_handler.setFormatter(create_csv_formatter())
     logger.addHandler(file_handler)
     logger.propagate = False
-
-
-
-

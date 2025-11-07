@@ -39,4 +39,3 @@ class Exchange:
 
     def __init__(self, *args, **kwargs) -> None:  # pragma: no cover - trivial
         self.info = _Info()
-

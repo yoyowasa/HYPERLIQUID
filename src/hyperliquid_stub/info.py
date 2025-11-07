@@ -25,4 +25,3 @@ class Info:
             ],
             "minSizeUsd": {"ETH": "1"},
         }
-

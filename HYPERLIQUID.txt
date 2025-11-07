@@ -29,7 +29,7 @@ git push -u origin main
 #############################
 
 # ステージ：作業ツリーの全変更（追加・更新・削除）を一括
-git add -A         
+git add -A
 
 # コミット
 git commit -m "chore: bulk update after lint & format"

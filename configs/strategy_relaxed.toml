@@ -46,4 +46,3 @@ block_interval_stop_s = 4.0
 ingest_ms        = 10
 order_rt_ms      = 60
 max_staleness_ms = 300
-

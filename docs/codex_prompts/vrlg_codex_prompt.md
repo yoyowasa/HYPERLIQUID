@@ -1,22 +1,22 @@
 # VRLG (Validator Rotation Liquidity‑Gap) — Codex Implementation Prompt
 
-You are **Codex**. Implement a high‑frequency micro‑scalping bot named **VRLG** inside the **HYPERLIQUID** repository.  
-Target language: **Python 3.12+**. Runtime: **asyncio + uvloop**. Style: **type‑hinted, ruff/black/mypy clean, docstrings first**.  
+You are **Codex**. Implement a high‑frequency micro‑scalping bot named **VRLG** inside the **HYPERLIQUID** repository.
+Target language: **Python 3.12+**. Runtime: **asyncio + uvloop**. Style: **type‑hinted, ruff/black/mypy clean, docstrings first**.
 **Do not invent APIs**: where actual exchange endpoints are unknown, create thin adapters that call **`hl_core.api`** placeholders and keep all HTTP/WS details behind interfaces.
 
-> **Repository constraints (must follow):**  
-> - Reuse the shared foundation in `src/hl_core/` (logger, config, backtest, API wrappers, infra).  
-> - Put the new bot under `src/bots/vrlg/`. PFPL (`src/bots/pfpl/`) already exists and VRLG must **share** reusable code/infra rather than duplicating (logger/config/backtest/metrics).  
-> - Keep tests in `tests/{unit,integration,e2e}`. Wire CI the same way as PFPL.  
+> **Repository constraints (must follow):**
+> - Reuse the shared foundation in `src/hl_core/` (logger, config, backtest, API wrappers, infra).
+> - Put the new bot under `src/bots/vrlg/`. PFPL (`src/bots/pfpl/`) already exists and VRLG must **share** reusable code/infra rather than duplicating (logger/config/backtest/metrics).
+> - Keep tests in `tests/{unit,integration,e2e}`. Wire CI the same way as PFPL.
 > - One source of truth for configuration via `hl_core.utils.config`.
 
 ---
 
 ## 0) Goal & Trading Summary (1 minute brief)
 
-- **Objective**: Exploit **momentary spread widening & top‑of‑book thinning** around **block proposer rotation** events on Hyperliquid by placing **post‑only Iceberg** limit orders near mid, harvesting **1–3 ticks** repeatedly.  
-- **Holding time**: 0.3–3 s, **PnL/trade** target: **4–10 bps (net)**.  
-- **Edge**: (i) minimal signal latency, (ii) controlled unwind slippage, (iii) strict kill‑switch.  
+- **Objective**: Exploit **momentary spread widening & top‑of‑book thinning** around **block proposer rotation** events on Hyperliquid by placing **post‑only Iceberg** limit orders near mid, harvesting **1–3 ticks** repeatedly.
+- **Holding time**: 0.3–3 s, **PnL/trade** target: **4–10 bps (net)**.
+- **Edge**: (i) minimal signal latency, (ii) controlled unwind slippage, (iii) strict kill‑switch.
 - **Correlation**: Medium with MES/OPDH (same "sub‑second orderbook gap" family), independent of PFPL.
 
 ---
@@ -77,10 +77,10 @@ configs/
 
 ## 3) Rotation‑Equivalent Timing Detection (no fixed period)
 
-On a rolling window (**T_roll = 30 s**), compute **autocorrelation** over `{DoB_t, spread_ticks_t}` to estimate the strongest repeating period **R\*** (seconds).  
+On a rolling window (**T_roll = 30 s**), compute **autocorrelation** over `{DoB_t, spread_ticks_t}` to estimate the strongest repeating period **R\*** (seconds).
 Define `block_phase_t = (t mod R*) / R*`. Validate that near phase boundaries (0/1) the pattern holds (thin DoB, wider spread).
 
-**Gating with significance**: require the effect to reproduce over ≥ **200** boundary samples with **p‑value ≤ 0.01**.  
+**Gating with significance**: require the effect to reproduce over ≥ **200** boundary samples with **p‑value ≤ 0.01**.
 If p‑value degrades above the threshold, **PAUSE** the strategy (“observe mode”) until it recovers.
 
 ---
@@ -235,11 +235,11 @@ async def main() -> None:
 
 - **Recorder** (`scripts/record_ws.py`): save `blocks`/`L2` (and optional `trades`) to **parquet**.
 - **Simulator** (`backtest/vrlg_sim.py`): 100 ms queue, **price‑time priority**, partial fills, cancels.
-- **Latency injection**:  
+- **Latency injection**:
   - Ingest: **10–30 ms**; Order/Cxl RTT: **30–80 ms**.
 - **Metrics**: `HitRate`, `Avg PnL/trade (bps)`, `Slip (ticks)`, `Holding (ms)`, `Trades/min`, `MaxDD`.
-- **Parameter sweep** (`optuna`):  
-  - `x ∈ {0.15, 0.2, 0.25, 0.3}`, `y ∈ {1, 2, 3}`, `TTL ∈ {0.6, 1.0, 1.4}s`.  
+- **Parameter sweep** (`optuna`):
+  - `x ∈ {0.15, 0.2, 0.25, 0.3}`, `y ∈ {1, 2, 3}`, `TTL ∈ {0.6, 1.0, 1.4}s`.
   - **Objective**: `Sharpe – 0.5 × MaxDD – 0.1 × mean|Δ|`.
 
 ---
@@ -297,18 +297,18 @@ order_rt_ms = 60
 
 ## 12) Definition of Done (acceptance gates)
 
-- **Paper 48 h**: `Slip_avg ≤ 1 tick`, `WinRate ≥ 55%`, `MaxDD ≤ 8× daily edge`, `Trades/min ∈ [3,10]`.  
+- **Paper 48 h**: `Slip_avg ≤ 1 tick`, `WinRate ≥ 55%`, `MaxDD ≤ 8× daily edge`, `Trades/min ∈ [3,10]`.
 - **Live min size**: `0.001 BTC` after paper KPI pass; then scale under risk caps.
 
 ---
 
 ## 13) Quality Bar & Coding Rules
 
-- Fully **typed**, docstring each public function (“what it does” first line).  
-- **No busy‑wait**; clean `asyncio` tasks and cancellation.  
-- **One logger** from `hl_core.utils.logger`.  
-- **Config** only via `hl_core.utils.config`.  
-- **Unit tests** for detectors; **integration tests** for strategy path; **e2e** gated by live keys.  
+- Fully **typed**, docstring each public function (“what it does” first line).
+- **No busy‑wait**; clean `asyncio` tasks and cancellation.
+- **One logger** from `hl_core.utils.logger`.
+- **Config** only via `hl_core.utils.config`.
+- **Unit tests** for detectors; **integration tests** for strategy path; **e2e** gated by live keys.
 - Keep **PFPL** and **VRLG** common parts inside `hl_core` (don’t duplicate).
 
 ---

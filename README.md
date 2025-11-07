@@ -32,5 +32,3 @@ The script will:
 Logs:
 
 - PFPL strategy logs per symbol are written to `logs/pfpl/<SYMBOL>.csv` with daily rotation.
-
-
