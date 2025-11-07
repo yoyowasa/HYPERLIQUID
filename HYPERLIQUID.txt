@@ -8,7 +8,7 @@ python -m dotenv run -- python run_bot.py pfpl --symbols ETH-PERP --order_usd 15
 $env:GO = "live"
 python -m dotenv run -- python run_bot.py pfpl --symbols ETH-PERP --order_usd 15
 
-cd "C:\HYPERLIQUID"
+cd "E:\HYPERLIQUID"
 poetry shell
 
 

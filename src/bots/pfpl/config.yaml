@@ -1,30 +1,28 @@
-# ── 市場・発注モード ───────────────────────────
-# 役割: シグナル判定を「絶対差(USD)のみ」にする（abs / pct / both のうち abs を選択）
+# PFPL bot 基本設定
 mode: abs
-testnet: true             # true: testnet / false: mainnet
-target_symbol: "ETH-PERP"  # 取引するペア
-fair_feed: oraclePrices     # 役割: fair（公正価格）のソースを index→oracle に変更し、短期の乖離を拾いやすくする
-spread_threshold: 0     # インデックス乖離率 (%)
+testnet: true               # true: testnet / false: mainnet
+target_symbol: "ETH-PERP"
+fair_feed: oraclePrices
+spread_threshold: 0         # [%]
 
-
-# ── 売買判定閾値 ───────────────────────────────
-# 役割: エントリーの絶対しきい値（USD）を 0.01（1ティック）に下げ、発火頻度をさらに高める
+# シグナル閾値
 threshold: 0.001
-threshold_pct: 0       # 割合 (%) ─ 上記 threshold と併用可
-# 役割: 連続発注のクールダウン秒数を短縮（1.0 → 0.33）し、条件が続くときの発火頻度を最大3回/秒に調整
-cooldown_sec: 0.33
-max_order_per_sec: 3       # 取引所 API 制限に合わせた同時発注上限
+threshold_pct: 0            # 0ならthresholdを使用
+cooldown_sec: 0.33          # 約3発/秒まで
+max_order_per_sec: 3
 
-# ── ポジション & サイズ管理 ────────────────────
-order_usd: 10              # 1 回の発注金額 (USD)
-max_position_usd: 100      # 総エクスポージャ上限 (USD)
-min_usd: 5                 # minSizeUsd が取得できない場合のフォールバック
+# ポジション & サイズ管理
+order_usd: 10               # 1注文の名目USD
+max_position_usd: 100       # 総ポジ上限USD
+max_daily_orders: 2000      # 1日の注文上限（デイリーリセットまで）
+min_usd: 5                  # 取引所minSizeUsd未取得時のフォールバック
 
-# ── 運用・デバッグ設定 ─────────────────────────
-dry_run: false             # true で約定せずログのみ
-log_level: "DEBUG"          # DEBUG / INFO / WARNING …
-heartbeat_sec: 30          # WS ping (CloudFront idle‑timeout 回避)
+# 実行/デバッグ
+dry_run: false
+log_level: "DEBUG"
+heartbeat_sec: 30
 funding_guard:
-  enabled: false    # false にすると資金調達回避ロジックを止められます
-  buffer_sec: 180  # 何秒前にポジションを閉じるか（例: 3 分）
-  reenter_sec: 120 # 資金調達後、何秒待って再開するか
+  enabled: false
+  buffer_sec: 180
+  reenter_sec: 120
+
