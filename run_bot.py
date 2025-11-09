@@ -29,6 +29,7 @@ ensure_project_venv()
 import argparse
 import asyncio
 import logging
+import signal
 from decimal import Decimal, ROUND_DOWN
 from importlib import import_module
 from os import getenv
@@ -224,6 +225,33 @@ async def main() -> None:
     for base in sorted(bases):
         # activeAssetCtx carries midPx/markPx/oraclePx and updates frequently
         await ws.subscribe({"type": "activeAssetCtx", "coin": base})
+
+    # Ctrl+C / SIGTERM で正常停止できるよう停止イベントを用意
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def _set_stop(*_args) -> None:  # 同期ハンドラから安全に呼ぶ
+        try:
+            loop.call_soon_threadsafe(stop.set)
+        except RuntimeError:
+            pass
+
+    for _sig in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None), getattr(signal, "SIGBREAK", None)):
+        if _sig is None:
+            continue
+        try:
+            loop.add_signal_handler(_sig, _set_stop)
+        except NotImplementedError:
+            signal.signal(_sig, lambda *_: _set_stop())
+
+    try:
+        await stop.wait()
+    finally:
+        try:
+            await ws.close()
+        except Exception:
+            pass
+    return
     await asyncio.Event().wait()  # 常駐
 
 
