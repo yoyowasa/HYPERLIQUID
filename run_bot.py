@@ -256,4 +256,13 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # 何をするコードか: Ctrl+C(SIGINT)を確実に捕捉し、安全に終了(コード130)する
+    try:
+        # 既存の起動処理に合わせて: 同期なら main(); 非同期なら asyncio.run(main())
+        import asyncio
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        import logging
+        import sys
+        logging.getLogger(__name__).info("Ctrl+C received — shutting down.")
+        sys.exit(130)

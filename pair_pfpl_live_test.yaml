@@ -1,0 +1,17 @@
+# pair_pfpl_live_test.yaml
+# 本番・極小サイズの単発検証用（IOC 前提）。
+# - 閾値をゼロにしてシグナルを通しやすく
+# - eps_pct を負値にして成行寄り（BUYは少し高く、SELLは少し安く）に寄せる
+# - 1日1件まで、毎秒1件までに制限
+# - Funding前自動クローズは無効化
+
+ETH-PERP:
+  threshold: 0
+  threshold_pct: 0
+  spread_threshold: 0
+  eps_pct: -0.001
+  max_daily_orders: 1
+  max_order_per_sec: 1
+  cooldown_sec: 5
+  funding_guard:
+    enabled: false
