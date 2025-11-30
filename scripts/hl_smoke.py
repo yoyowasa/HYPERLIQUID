@@ -6,7 +6,7 @@ Hyperliquid API 疎通スモークテスト（非破壊）
 - SDK : Wallet/Exchange 初期化のみ（発注はしない）
 
 使い方:
-  .venv\Scripts\python.exe scripts\hl_smoke.py --symbol ETH-PERP
+  .venv\\Scripts\\python.exe scripts\\hl_smoke.py --symbol ETH-PERP
 
 注意:
 - 発注は一切行いません（完全に非破壊）。
@@ -45,21 +45,28 @@ async def _rest_checks(symbol: str) -> dict[str, Any]:
 
     s = load_settings()
     base = C.MAINNET_API_URL if (s.network or "").lower() == "mainnet" else C.TESTNET_API_URL
-    info = Info(base, skip_ws=True)
+    info: Any = Info(base, skip_ws=True)
 
-    meta = info.meta()
-    uni = meta.get("universe", [])
+    meta_raw: Any = info.meta()
+    meta: dict[str, Any] = meta_raw or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    uni = meta.get("universe") or []
+    if not isinstance(uni, list):
+        uni = []
     coin = (symbol or "ETH-PERP").split("-", 1)[0]
 
     user = None
     if s.account_address:
-        try:
-            user = info.user_state(s.account_address)
-        except Exception as e:  # pragma: no cover
-            user = {"error": str(e)}
+        user_fn = getattr(info, "user_state", None)
+        if callable(user_fn):
+            try:
+                user = user_fn(s.account_address)
+            except Exception as e:  # pragma: no cover
+                user = {"error": str(e)}
 
-    # サンプル銘柄情報（存在すれば一致、なければ最初の1件）
-    sample = next((u for u in uni if u.get("name") == coin), None)
+    # サンプルを出す（なければ先頭、なければ空dict）
+    sample = next((u for u in uni if isinstance(u, dict) and u.get("name") == coin), None)
     if sample is None:
         sample = uni[0] if uni else {}
 
