@@ -1,0 +1,4 @@
+
+# helper: categorize ORDER REJECT reason
+function _placeholder():
+    pass

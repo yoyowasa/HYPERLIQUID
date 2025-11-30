@@ -7,6 +7,7 @@ https://github.com/yoyowasa/HYPERLIQUID.git
 python -m dotenv run -- python run_bot.py pfpl --symbols ETH-PERP --order_usd 15 --testnet --dry-run
 $env:GO = "live"
 python -m dotenv run -- python run_bot.py pfpl --symbols ETH-PERP --order_usd 15
+.venv\Scripts\python.exe run_bot.py pfpl --symbols ETH-PERP --log_level INFO --testnet --dry-run
 
 cd "E:\HYPERLIQUID"
 poetry shell

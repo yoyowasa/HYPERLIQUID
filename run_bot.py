@@ -34,6 +34,7 @@ from decimal import Decimal, ROUND_DOWN
 from importlib import import_module
 from os import getenv
 
+
 from hl_core.utils.dotenv_compat import load_dotenv
 
 from hl_core.config import (
@@ -162,15 +163,15 @@ async def main() -> None:
     )  # function: CLI/環境のどちらかがtrueならDRY
 
     if is_mainnet:
-        if not go_ok:
-            print("[exit] GO が未設定（GO=1|true|live|go）。本番発注を中止。")
-            return
         if effective_dry_run:
-            print("[exit] DRY_RUN=true（--dry-run または .env）。本番発注を中止。")
-            return
-        require_live_creds(
-            settings
-        )  # function: HL_PRIVATE_KEY / HL_ACCOUNT_ADDRESS を必須化
+            logger.warning("mainnet + DRY_RUN=true -> 紙トレードで起動（注文は送信しない）")
+        else:
+            if not go_ok:
+                print("[exit] GO が未設定 (GO=1|true|live|go)。本番発注を中止。")
+                return
+            require_live_creds(
+                settings
+            )  # function: HL_PRIVATE_KEY / HL_ACCOUNT_ADDRESS は必須
 
     logging.basicConfig(level=args.log_level)
 

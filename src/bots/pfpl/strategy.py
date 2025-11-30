@@ -557,6 +557,14 @@ class PFPLStrategy:
         self.allMids: dict[str, Any] = {}
         self.indexPrices: dict[str, Any] = {}
         self.oraclePrices: dict[str, Any] = {}
+        self.best_bid: Decimal | None = None
+        self.best_ask: Decimal | None = None
+        # 紙トレ用のポジション・PNL
+        self.paper_pos = Decimal("0")
+        self.paper_avg_px = Decimal("0")
+        self.paper_realized = Decimal("0")
+        self.paper_fee_bps_taker = Decimal(str(self.config.get("paper_fee_bps_taker", 0.05)))
+        self.paper_fee_bps_maker = Decimal(str(self.config.get("paper_fee_bps_maker", 0.0)))
 
         # ── 内部ステート ────────────────────────────────
         self.last_side: str | None = None
@@ -771,6 +779,16 @@ class PFPLStrategy:
             if coin != str(self.base_coin).upper():
                 return
             ctx = data.get("ctx") or {}
+            # impactPxs があれば bid/ask を保持（紙トレ判定用）
+            try:
+                imp = ctx.get("impactPxs")
+                if isinstance(imp, (list, tuple)) and len(imp) >= 2:
+                    bid_raw = imp[0]
+                    ask_raw = imp[1]
+                    self.best_bid = Decimal(str(bid_raw)) if bid_raw is not None else None
+                    self.best_ask = Decimal(str(ask_raw)) if ask_raw is not None else None
+            except Exception:
+                pass
             idx_raw = ctx.get("midPx") or ctx.get("markPx")
             ora_raw = ctx.get("oraclePx")
             updated = False
@@ -1086,6 +1104,47 @@ class PFPLStrategy:
 
     # ---------------------------------------------------------------- order
 
+    def _paper_fill(self, side: str, qty: Decimal, px: Decimal) -> Decimal:
+        """Dry-runで簡易約定を適用し、実現損益を返す。"""
+        if qty <= 0:
+            return Decimal("0")
+
+        side_sign = Decimal("1") if side.upper() == "BUY" else Decimal("-1")
+        cur_pos = getattr(self, "paper_pos", Decimal("0"))
+        cur_avg = getattr(self, "paper_avg_px", Decimal("0"))
+
+        # 同方向の追加建て: 平均価格を更新してPNLなし
+        if cur_pos == 0 or (cur_pos > 0 and side_sign > 0) or (cur_pos < 0 and side_sign < 0):
+            new_pos = cur_pos + side_sign * qty
+            try:
+                new_avg = ((abs(cur_pos) * cur_avg) + (qty * px)) / abs(new_pos)
+            except Exception:
+                new_avg = px
+            self.paper_pos = new_pos
+            self.paper_avg_px = new_avg
+            return Decimal("0")
+
+        # 反対売買: 決済分をPNL計算、残りがあれば反転建て
+        close_qty = min(abs(cur_pos), qty)
+        if cur_pos > 0:
+            realized = (px - cur_avg) * close_qty  # long決済
+        else:
+            realized = (cur_avg - px) * close_qty  # short決済
+
+        remain_qty = qty - close_qty
+        self.paper_realized += realized
+
+        if close_qty == abs(cur_pos):
+            # 全決済した場合、残りがあれば新規反対建て
+            self.paper_pos = side_sign * remain_qty
+            self.paper_avg_px = px if remain_qty > 0 else Decimal("0")
+        else:
+            # 部分決済（元ポジションが残る）
+            self.paper_pos = cur_pos + side_sign * close_qty
+            self.paper_avg_px = cur_avg
+
+        return realized
+
     async def place_order(
         self,
         side: str,
@@ -1176,10 +1235,98 @@ class PFPLStrategy:
         if limit_px is not None:
             order_kwargs["limit_px"] = limit_px
 
-        # ── Dry-run ───────────────────
+        # --- Dry-run: 紙で約定をシミュレートする --------------------------------
         if self.dry_run:
             logger.info("[DRY-RUN] %s %.4f %s", side, size, self.symbol)
             logger.info("[DRY-RUN] payload=%s", order_kwargs)
+
+            # 紙用の疑似約定（IOC想定）。bid/askが無いときは mid をフォールバック。
+            qty_dec = Decimal(str(order_kwargs.get("sz", size_dec)))
+            px_src = order_kwargs.get("limit_px")
+            px_val = (
+                Decimal(str(px_src))
+                if px_src is not None
+                else Decimal(str(mid_value or limit_px or 0))
+            )
+
+            bid = getattr(self, "best_bid", None)
+            ask = getattr(self, "best_ask", None)
+            can_fill = True
+            miss_reason: str | None = None
+            if px_val is None:
+                can_fill = False
+                miss_reason = "paper price unavailable"
+            elif bid is not None and ask is not None:
+                if is_buy and px_val < ask:
+                    can_fill = False
+                    miss_reason = f"paper ioc miss ask={ask}"
+                elif (not is_buy) and px_val > bid:
+                    can_fill = False
+                    miss_reason = f"paper ioc miss bid={bid}"
+
+            if not can_fill:
+                logger.info(
+                    "ORDER_STATUS symbol=%s asset=%s oid=%s status=%s filled=0 remaining=%.4f err=%s raw=%s",
+                    getattr(self, "symbol", None),
+                    getattr(self, "base_coin", None),
+                    "paper",
+                    "paper",
+                    float(qty_dec),
+                    miss_reason,
+                    None,
+                )
+                self.last_ts = time.time()
+                self.last_side = side
+                return
+
+            realized = self._paper_fill(side, qty_dec, px_val)
+            notional = (px_val or Decimal("0")) * qty_dec
+            fee_rate = self.paper_fee_bps_taker if getattr(self, "taker_mode", False) else self.paper_fee_bps_maker
+            fee = (notional * fee_rate) / Decimal("10000") if fee_rate else Decimal("0")
+            if fee:
+                realized -= fee
+                self.paper_realized -= fee
+
+            paper_resp = {
+                "status": "paper",
+                "response": {
+                    "type": "order",
+                    "data": {
+                        "statuses": [
+                            {
+                                "status": "filled",
+                                "filled": float(qty_dec),
+                                "remaining": 0.0,
+                                "avgPx": float(px_val),
+                            }
+                        ]
+                    },
+                },
+            }
+            logger.info(
+                "ORDER_RAW_RESPONSE symbol=%s resp=%s",
+                getattr(self, "symbol", None),
+                paper_resp,
+            )
+            logger.info(
+                "ORDER_STATUS symbol=%s asset=%s oid=%s status=%s filled=%.4f remaining=0 err=%s raw=%s",
+                getattr(self, "symbol", None),
+                getattr(self, "base_coin", None),
+                "paper",
+                "paper",
+                float(qty_dec),
+                None,
+                paper_resp,
+            )
+            if realized != 0:
+                logger.info(
+                    "PAPER_PNL symbol=%s realized=%.6f cum=%.6f pos=%.6f avg_px=%.4f",
+                    getattr(self, "symbol", None),
+                    float(realized),
+                    float(self.paper_realized),
+                    float(self.paper_pos),
+                    float(self.paper_avg_px),
+                )
             self.last_ts = time.time()
             self.last_side = side
             return

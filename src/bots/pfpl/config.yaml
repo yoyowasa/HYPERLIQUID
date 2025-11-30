@@ -1,27 +1,39 @@
 # PFPL bot 基本設定
-mode: abs
-testnet: true               # true: testnet / false: mainnet
+mode: bias
+testnet: false               # true: testnet / false: mainnet
 target_symbol: "ETH-PERP"
 fair_feed: oraclePrices
 spread_threshold: 0         # [%]
 
 # シグナル閾値
-threshold: 0.001
+threshold: 0.15
+# 目的: REJECTログで判明した asset_id=1 に対し、実運用の tick を明示し PRE-FLIGHT を発火させる
+tick_override:
+  "1":
+    px: 0.05     # 仮置き: まず 0.05 を推奨。REJECTが残る場合は 0.5 に変更して再試験
+    qty: 0.0001  # 既存ログと同一の数量tickを使用
 threshold_pct: 0            # 0ならthresholdを使用
-cooldown_sec: 0.33          # 約3発/秒まで
-max_order_per_sec: 3
+cooldown_sec: 1.0          # 約3発/秒まで
+max_order_per_sec: 1
 
 # ポジション & サイズ管理
 order_usd: 10               # 1注文の名目USD
 max_position_usd: 100       # 総ポジ上限USD
-max_daily_orders: 2000      # 1日の注文上限（デイリーリセットまで）
+max_daily_orders: 1000      # 1日の注文上限（デイリーリセットまで）
 min_usd: 5                  # 取引所minSizeUsd未取得時のフォールバック
 
 # 実行/デバッグ
-dry_run: false
+dry_run: true
 log_level: "DEBUG"
+bias_score_threshold: 1.0   # テスト用に閾値を下げて発火確認
+taker_mode: true            # テイカー優先で約定率を上げる
 heartbeat_sec: 30
 funding_guard:
   enabled: false
   buffer_sec: 180
   reenter_sec: 120
+
+
+# 紙トレ手数料設定（bps）
+paper_fee_bps_taker: 2.5    # 例: 0.05% = 5bps
+paper_fee_bps_maker: 0.0    # 例: メーカー無料なら0

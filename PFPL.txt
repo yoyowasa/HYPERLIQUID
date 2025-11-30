@@ -1,0 +1,16 @@
+役割: PFPLStrategyはHyperliquidのETH-PERPで、midとfairの乖離を基礎にIOC発注するボット。
+mode=biasではFunding/OI/ベーシスの歪みスコアζを使うコントラリアン判定に切替可能。
+データ取得: WSのallMidsでmid、indexPrices/oraclePrices/activeAssetCtxでfairやindex/oracle、
+同ctxでoiLong/oiShort・fundingRateを補足。fundingInfoで次回Funding時刻とレートも取得。
+user_stateでポジションとopenOrdersを定期Refresh。
+履歴とスコア: basis( (mid-fair)/fair )、OIバイアス( (long-short)/total )、
+Fundingをdequeで保持。zスコアを取り、FR符号×OI z×basis z = ζ。bias_score_threshold(デフォルト2.0)超で発火。
+ζ>0ならSELL、ζ<0ならBUYの逆張り。
+既存判定: modeがabs/pct/either/bothなら従来の乖離しきい値で方向決定。
+cooldownやrate limit、max_pos、min_usd/exchange_min_usd(デフォルト$10)でガード。
+オーダー: デフォルトlimit+IOC。fill_aggr_pctでmidからオフセット、tickにスナップ。
+minノミナル未満なら数量を切上げ。dup_price_window_msで価格重複連打をスキップ。
+発注時にORDER_SIGNAL→PRE-FLIGHT→SEND_READY→ORDER_RAW_RESPONSE/ORDER_STATUSログ。
+Fundingガード: 指定バッファ前後で売買停止、必要なら自動クローズ。日次で_order_countリセット。
+ログ: DECISION_SNAPSHOT/BIAS_SIGNAL/ORDER_*、POSITION SNAPSHOT(openOrders/pos_usd差分のみINFO)
+などで状態を追跡。
