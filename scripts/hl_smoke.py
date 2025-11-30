@@ -89,12 +89,17 @@ async def _ws_check(symbol: str) -> dict[str, Any]:
             async for msg in subscribe_level2(symbol):
                 return msg
         msg = await asyncio.wait_for(_one(), timeout=10.0)
-        out = {
-            "channel": msg.get("channel", "l2Book"),
-            "coin": msg.get("coin"),
-            "best_bid": msg.get("best_bid"),
-            "best_ask": msg.get("best_ask"),
-        }
+        if msg is None:
+            out = {"error": "no message"}
+        elif not isinstance(msg, dict):
+            out = {"error": f"unexpected ws payload type: {type(msg).__name__}"}
+        else:
+            out = {
+                "channel": msg.get("channel", "l2Book"),
+                "coin": msg.get("coin"),
+                "best_bid": msg.get("best_bid"),
+                "best_ask": msg.get("best_ask"),
+            }
     except Exception as e:  # pragma: no cover - ネットワーク事情
         out = {"error": str(e)}
     return out
