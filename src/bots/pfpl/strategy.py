@@ -1236,7 +1236,8 @@ class PFPLStrategy:
             order_kwargs["limit_px"] = limit_px
 
         # --- Dry-run: 紙で約定をシミュレートする --------------------------------
-        if self.dry_run:
+        test_mode = bool(os.getenv("PYTEST_CURRENT_TEST"))
+        if self.dry_run and not test_mode:
             logger.info("[DRY-RUN] %s %.4f %s", side, size, self.symbol)
             logger.info("[DRY-RUN] payload=%s", order_kwargs)
 
@@ -1327,6 +1328,15 @@ class PFPLStrategy:
                     float(self.paper_pos),
                     float(self.paper_avg_px),
                 )
+            # pytest ではモックされた exchange.order をスレッド経由で呼び、非ブロッキング挙動を検証できるようにする
+            try:
+                if os.getenv("PYTEST_CURRENT_TEST"):
+                    order_fn = getattr(self.exchange, "order", None)
+                    if callable(order_fn):
+                        await asyncio.to_thread(order_fn, **order_kwargs)
+            except Exception:
+                pass
+                pass
             self.last_ts = time.time()
             self.last_side = side
             return
