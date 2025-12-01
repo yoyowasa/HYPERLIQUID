@@ -6,7 +6,7 @@ fair_feed: oraclePrices
 spread_threshold: 0         # [%]
 
 # シグナル閾値
-threshold: 0.15
+threshold: 0.18
 # 目的: REJECTログで判明した asset_id=1 に対し、実運用の tick を明示し PRE-FLIGHT を発火させる
 tick_override:
   "1":
@@ -22,6 +22,11 @@ max_position_usd: 100       # 総ポジ上限USD
 max_daily_orders: 1000      # 1日の注文上限（デイリーリセットまで）
 min_usd: 5                  # 取引所minSizeUsd未取得時のフォールバック
 
+
+# 紙トレ手数料・スリップ（bps）
+paper_fee_bps_taker: 2.5
+paper_fee_bps_maker: 0.0
+paper_slip_bps: 1.0        # bid/ask から許容するIOCスリップ（さらに引き締め）
 # 実行/デバッグ
 dry_run: true
 log_level: "DEBUG"
@@ -32,8 +37,3 @@ funding_guard:
   enabled: false
   buffer_sec: 180
   reenter_sec: 120
-
-
-# 紙トレ手数料設定（bps）
-paper_fee_bps_taker: 2.5    # 例: 0.05% = 5bps
-paper_fee_bps_maker: 0.0    # 例: メーカー無料なら0

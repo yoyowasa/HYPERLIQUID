@@ -165,6 +165,56 @@ class PFPLStrategy:
         fallback = float(getattr(self, "min_usd", 0.0) or 0.0)
         return float(exch_min) if exch_min is not None else fallback
 
+    def _current_pos_usd(self, mid: Decimal | None = None) -> Decimal:
+        """
+        現在の建玉USDを返す。dry_run時は紙ポジション×midを使用。
+        """
+        if not getattr(self, "dry_run", False):
+            try:
+                return Decimal(str(self.pos_usd))
+            except Exception:
+                return Decimal("0")
+
+        ref_mid = mid if mid is not None else getattr(self, "mid", None)
+        if ref_mid is None:
+            return Decimal("0")
+        try:
+            return Decimal(self.paper_pos) * Decimal(str(ref_mid))
+        except Exception:
+            return Decimal("0")
+
+    def _projected_pos_usd(
+        self,
+        side: str,
+        size: Decimal,
+        *,
+        mid: Decimal | None = None,
+        price_hint: float | Decimal | None = None,
+    ) -> Decimal:
+        """
+        約定後の建玉USDを試算し、max_position判定に使う。
+        dry_run時は紙ポジションを基準に、実弾時はpos_usdを使う。
+        """
+        base = self._current_pos_usd(mid)
+        ref_px: Decimal | None
+        if mid is not None:
+            ref_px = mid
+        elif price_hint is not None:
+            try:
+                ref_px = Decimal(str(price_hint))
+            except Exception:
+                ref_px = None
+        else:
+            ref_px = None
+
+        if ref_px is None:
+            return base
+
+        notional = size * ref_px
+        if side.upper() == "BUY":
+            return base + notional
+        return base - notional
+
     # 役割: フィード辞書から対象銘柄の価格を取り出す。まず 'ETH-PERP' を探し、無ければ 'ETH'（self.feed_key）でフォールバックする
     def _get_from_feed(self, feed: dict[str, Any]) -> Any:
         if not feed:
@@ -384,6 +434,8 @@ class PFPLStrategy:
         )
         # --- Order price offset percentage（デフォルト 0.0005 = 0.05 %）
         self.eps_pct = float(self.config.get("eps_pct", 0.0005))
+        # --- taker_mode: True なら板に寄せて踏み行く価格を使う
+        self.taker_mode = _coerce_bool(self.config.get("taker_mode"), default=False)
 
         # ── ② 通貨ペア・Semaphore 初期化 ─────────────────
         self.symbol = self.config.get("target_symbol", "ETH-PERP")
@@ -565,6 +617,7 @@ class PFPLStrategy:
         self.paper_realized = Decimal("0")
         self.paper_fee_bps_taker = Decimal(str(self.config.get("paper_fee_bps_taker", 0.05)))
         self.paper_fee_bps_maker = Decimal(str(self.config.get("paper_fee_bps_maker", 0.0)))
+        self.paper_slip_bps = Decimal(str(self.config.get("paper_slip_bps", 1.0)))  # IOC許容スリップ（bps）
 
         # ── 内部ステート ────────────────────────────────
         self.last_side: str | None = None
@@ -978,14 +1031,16 @@ class PFPLStrategy:
         if now - self.last_ts < self.cooldown:
             return
 
-        # ② 最大建玉判定
-        if abs(self.pos_usd) >= self.max_pos:
-            return
-
-        # ③ 必要データ取得
+        # ② 必要データ取得
         mid = self.mid
         fair = self.fair
         if mid is None or fair is None:
+            return
+
+        # ③ 最大建玉判定（紙はpaper_pos×midで評価）
+        cur_pos_usd = abs(self._current_pos_usd(mid))
+        if cur_pos_usd >= self.max_pos:
+            logger.debug("pos_limit %.2f USD 到達 (%.2f) → skip", self.max_pos, cur_pos_usd)
             return
 
         now_ts = time.time()
@@ -1088,10 +1143,26 @@ class PFPLStrategy:
 
         # ⑧ 建玉超過チェック
         if (
-            abs(self.pos_usd + (size * mid if side == "BUY" else -size * mid))
+            abs(
+                self._projected_pos_usd(
+                    side,
+                    size,
+                    mid=mid,
+                )
+            )
             > self.max_pos
         ):
-            logger.debug("pos_limit %.2f USD 超過 → skip", self.max_pos)
+            logger.debug(
+                "pos_limit %.2f USD 超過を検知 (proj=%.2f) → skip",
+                self.max_pos,
+                abs(
+                    self._projected_pos_usd(
+                        side,
+                        size,
+                        mid=mid,
+                    )
+                ),
+            )
             return
 
         # ⑨ 発注
@@ -1206,6 +1277,8 @@ class PFPLStrategy:
             logger.error("unsupported order_type=%s", order_type)
             return
 
+        limit_px = self._taker_limit_price(side, limit_px, mid_value)
+
         try:
             size_dec = Decimal(str(size)).quantize(self.qty_tick, rounding=ROUND_DOWN)
         except InvalidOperation:
@@ -1254,16 +1327,21 @@ class PFPLStrategy:
             ask = getattr(self, "best_ask", None)
             can_fill = True
             miss_reason: str | None = None
+            slip_pct = (self.paper_slip_bps or Decimal("0")) / Decimal("10000")
             if px_val is None:
                 can_fill = False
                 miss_reason = "paper price unavailable"
             elif bid is not None and ask is not None:
-                if is_buy and px_val < ask:
-                    can_fill = False
-                    miss_reason = f"paper ioc miss ask={ask}"
-                elif (not is_buy) and px_val > bid:
-                    can_fill = False
-                    miss_reason = f"paper ioc miss bid={bid}"
+                if is_buy:
+                    threshold = ask * (Decimal("1") - slip_pct)
+                    if px_val < threshold:
+                        can_fill = False
+                        miss_reason = f"paper ioc miss ask={ask}"
+                else:
+                    threshold = bid * (Decimal("1") + slip_pct)
+                    if px_val > threshold:
+                        can_fill = False
+                        miss_reason = f"paper ioc miss bid={bid}"
 
             if not can_fill:
                 logger.info(
@@ -1416,8 +1494,9 @@ class PFPLStrategy:
             logger.warning("daily order-limit reached → trading disabled")
             return False
 
-        if abs(self.pos_usd) >= self.max_pos:
-            logger.warning("position limit %.2f USD reached", self.max_pos)
+        pos_usd_now = abs(self._current_pos_usd(getattr(self, "mid", None)))
+        if pos_usd_now >= self.max_pos:
+            logger.warning("position limit %.2f USD reached (%.2f)", self.max_pos, pos_usd_now)
             return False
 
         return True
@@ -1528,6 +1607,39 @@ class PFPLStrategy:
         if side.upper() == "BUY":
             return base_px * (1 - self.eps_pct)
         return base_px * (1 + self.eps_pct)
+
+    def _taker_limit_price(
+        self,
+        side: str,
+        candidate: float | None,
+        mid_value: Decimal | None,
+    ) -> float | None:
+        """
+        taker_mode の場合に板寄りの価格へ寄せて、IOC でもヒットしやすくする。
+
+        - BUY: ask * (1 + cushion) で上乗せして踏みに行く
+        - SELL: bid * (1 - cushion) で下げて踏みに行く
+        cushion は eps_pct と paper_slip_bps を比較して大きい方を採用
+        """
+        if not getattr(self, "taker_mode", False):
+            return candidate
+
+        bid = getattr(self, "best_bid", None)
+        ask = getattr(self, "best_ask", None)
+        # eps_pct は float なので Decimal に正規化し、paper_slip_bps と比較
+        eps_dec = Decimal(str(getattr(self, "eps_pct", 0) or 0))
+        slip_dec = (self.paper_slip_bps or Decimal("0")) / Decimal("10000")
+        cushion = max(eps_dec, slip_dec)
+
+        try:
+            if side.upper() == "BUY" and ask is not None:
+                return float(ask * (Decimal("1") + cushion))
+            if side.upper() == "SELL" and bid is not None:
+                return float(bid * (Decimal("1") - cushion))
+        except Exception:
+            return candidate
+
+        return candidate
 
 
 def log_order_decision(
