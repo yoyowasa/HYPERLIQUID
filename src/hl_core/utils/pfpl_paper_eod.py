@@ -134,6 +134,8 @@ def _pick_first_float(obj: dict[str, Any], keys: tuple[str, ...]) -> Optional[fl
         if k not in obj:
             continue
         v = obj.get(k)
+        if v is None:
+            continue
         try:
             return float(v)
         except Exception:

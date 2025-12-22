@@ -136,6 +136,8 @@ def _pick_first_float(payload: dict[str, Any], keys: tuple[str, ...]) -> Optiona
         if k not in payload:
             continue
         v = payload.get(k)
+        if v is None:
+            continue
         try:
             return float(v)
         except Exception:

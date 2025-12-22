@@ -1272,7 +1272,11 @@ class PFPLStrategy:
             # 役割: raw_usd(=本来10USD)が、どの上限/係数で rounded_usd(=2.08USD)まで落ちたかを「候補変数ごと」に特定する
             raw_usd = raw_usd_dbg
             usd = rounded_usd
-            cap_ratio = (usd / raw_usd) if (raw_usd is not None and raw_usd > 0) else None
+            cap_ratio = (
+                (usd / raw_usd)
+                if (raw_usd is not None and raw_usd > 0 and usd is not None)
+                else None
+            )
             logger.debug(
                 "SIZING_LIMITERS cap_ratio=%s qty_tick=%s max_order_usd=%s max_trade_usd=%s max_order_qty=%s max_trade_qty=%s size_scale=%s risk_scale=%s remaining_usd=%s remaining_qty=%s",
                 cap_ratio,
@@ -1366,7 +1370,11 @@ class PFPLStrategy:
             # 役割: raw_usd(=本来10USD)が、どの上限/係数で rounded_usd(=2.08USD)まで落ちたかを「候補変数ごと」に特定する
             raw_usd = raw_usd_dbg
             usd = rounded_usd
-            cap_ratio = (usd / raw_usd) if (raw_usd is not None and raw_usd > 0) else None
+            cap_ratio = (
+                (usd / raw_usd)
+                if (raw_usd is not None and raw_usd > 0 and usd is not None)
+                else None
+            )
             logger.debug(
                 "SIZING_LIMITERS cap_ratio=%s qty_tick=%s max_order_usd=%s max_trade_usd=%s max_order_qty=%s max_trade_qty=%s size_scale=%s risk_scale=%s remaining_usd=%s remaining_qty=%s",
                 cap_ratio,
