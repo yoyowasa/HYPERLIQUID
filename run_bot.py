@@ -1,8 +1,32 @@
 #!/usr/bin/env python
 # function: Hyperliquid bot runner エントリポイント
+import argparse
+import asyncio
 import datetime
+import logging
 import os
+import signal
 import sys
+from decimal import Decimal, ROUND_DOWN
+from importlib import import_module
+from os import getenv
+from pathlib import Path
+
+from hl_core.api import WSClient
+from hl_core.config import (
+    load_settings,
+    require_live_creds,
+)  # function: .env読込とlive発注の必須チェック
+from hl_core.utils.dotenv_compat import load_dotenv
+from hl_core.utils.logger import setup_logger
+
+# Prefer real SDK for runtime; fall back to local stubs if unavailable
+try:  # pragma: no cover - import resolution
+    from hyperliquid.info import Info  # type: ignore
+    from hyperliquid.utils import constants  # type: ignore
+except Exception:  # pragma: no cover - fallback for offline dev
+    from hyperliquid_stub.info import Info  # type: ignore
+    from hyperliquid_stub.utils import constants  # type: ignore
 
 # 二重起動防止フラグ（親→子で継承される環境変数を利用）
 if os.environ.get("RUN_BOT_SINGLETON") == "1":
@@ -16,16 +40,6 @@ if os.environ.get("RUN_BOT_SINGLETON") == "1":
     sys.exit(0)
 
 os.environ["RUN_BOT_SINGLETON"] = "1"
-
-from pathlib import Path
-
-import argparse
-import asyncio
-import logging
-import signal
-from decimal import Decimal, ROUND_DOWN
-from importlib import import_module
-from os import getenv
 
 print(
     "[RUN_BOT_TRACE]",
@@ -41,24 +55,6 @@ print(
     datetime.datetime.now().isoformat(),
     flush=True,
 )
-
-
-from hl_core.utils.dotenv_compat import load_dotenv
-
-from hl_core.config import (
-    load_settings,
-    require_live_creds,
-)  # function: .env読込とlive発注の必須チェック
-
-from hl_core.api import WSClient
-from hl_core.utils.logger import setup_logger
-# Prefer real SDK for runtime; fall back to local stubs if unavailable
-try:  # pragma: no cover - import resolution
-    from hyperliquid.info import Info  # type: ignore
-    from hyperliquid.utils import constants  # type: ignore
-except Exception:  # pragma: no cover - fallback for offline dev
-    from hyperliquid_stub.info import Info  # type: ignore
-    from hyperliquid_stub.utils import constants  # type: ignore
 
 
 # env
