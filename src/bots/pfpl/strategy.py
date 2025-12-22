@@ -10,6 +10,7 @@ import logging as _logging
 import logging.handlers
 import os
 import time
+from collections import deque
 from datetime import datetime, timezone  # ← 追加
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
 from pathlib import Path
@@ -243,6 +244,13 @@ class PFPLStrategy:
         threshold: Decimal | float | str | None = None,
         threshold_pct: Decimal | float | str | None = None,
         spread_threshold: Decimal | float | str | None = None,
+        pct_mode: str = "absolute",
+        pct_threshold_value: float | None = None,
+        spread_px: float | None = None,
+        spread_threshold_px: float | None = None,
+        abs_ok: bool | None = None,
+        pct_ok: bool | None = None,
+        spread_ok: bool | None = None,
     ) -> dict:
         _maybe_enable_test_propagation()
         logger = getattr(self, "logger", None) or getattr(self, "log", None) or logging.getLogger(__name__)
@@ -300,12 +308,31 @@ class PFPLStrategy:
         min_usd = getattr(self, "min_usd", 0.0)
 
         cooldown_ok = (now - (last_order_ts or 0.0)) >= cooldown
-        abs_ok = (abs(diff_abs) >= thr_abs) if has_thr_abs else True
-        pct_ok = (abs(diff_pct) >= thr_pct) if has_thr_pct else True
-        spread_ok = (abs(diff_abs) >= spread_thr) if has_spread_thr else True
+        abs_ok_val = (abs(diff_abs) >= thr_abs) if has_thr_abs else True
+        pct_threshold_display = (
+            pct_threshold_value if pct_threshold_value is not None else thr_pct
+        )
+        if pct_mode == "percentile":
+            # abs(diff) ベースのパーセンタイル。サンプル不足時は許可。
+            pct_ok_val = True if pct_threshold_value is None else abs(diff_abs) >= pct_threshold_value
+        else:
+            pct_ok_val = (abs(diff_pct) >= thr_pct) if has_thr_pct else True
+        spread_thr_disp = spread_threshold_px if spread_threshold_px is not None else spread_thr
+        if spread_threshold_px is not None and spread_px is not None:
+            spread_ok_val = spread_px <= spread_threshold_px
+        else:
+            spread_ok_val = (abs(diff_abs) >= spread_thr) if has_spread_thr else True
         pos_ok = (abs(pos_usd) + order_usd) <= max_pos
         notional_ok = order_usd >= min_usd
         funding_ok = not funding_blocked
+
+        # override が渡されていればそれを優先
+        if abs_ok is not None:
+            abs_ok_val = abs_ok
+        if pct_ok is not None:
+            pct_ok_val = pct_ok
+        if spread_ok is not None:
+            spread_ok_val = spread_ok
 
         # 方向の示唆（情報表示のみ）
         want_long = (diff_abs <= -thr_abs) if has_thr_abs else (diff_abs <= 0.0)
@@ -318,7 +345,7 @@ class PFPLStrategy:
 
         logger.debug(
             "decision mid=%.2f fair=%.2f d_abs=%+.4f d_pct=%+.5f | "
-            "abs>=%.4f:%s pct>=%.5f:%s spread>=%.4f:%s | "
+            "abs>=%.4f:%s pct(mode=%s)>=%.5f:%s spread(px)<=%.4f:%s | "
             "cooldown_ok=%s pos_ok=%s notional_ok=%s funding_ok=%s | "
             "long=%s short=%s",
             mid_px,
@@ -326,11 +353,12 @@ class PFPLStrategy:
             diff_abs,
             diff_pct,
             thr_abs,
-            abs_ok,
-            thr_pct,
-            pct_ok,
-            spread_thr,
-            spread_ok,
+            abs_ok_val,
+            pct_mode,
+            pct_threshold_display,
+            pct_ok_val,
+            spread_thr_disp,
+            spread_ok_val,
             cooldown_ok,
             pos_ok,
             notional_ok,
@@ -342,9 +370,9 @@ class PFPLStrategy:
         return {
             "diff_abs": diff_abs,
             "diff_pct": diff_pct,
-            "abs_ok": abs_ok,
-            "pct_ok": pct_ok,
-            "spread_ok": spread_ok,
+            "abs_ok": abs_ok_val,
+            "pct_ok": pct_ok_val,
+            "spread_ok": spread_ok_val,
             "cooldown_ok": cooldown_ok,
             "pos_ok": pos_ok,
             "notional_ok": notional_ok,
@@ -375,7 +403,9 @@ class PFPLStrategy:
             with yml_path.open(encoding="utf-8") as f:
                 raw_conf = f.read()
             yaml_conf = yaml.safe_load(raw_conf) or {}
-        self.config = {**config, **yaml_conf}
+        # 役割: config.yaml をデフォルトとして読み込み、run_bot.py 側の引数/外部設定で上書きできるようにする
+        #       （testnet / dry_run / target_symbol / pair_cfg などの指定が効くように）
+        self.config = {**yaml_conf, **config}
         # runtime hot-reload bookkeeping
         self._cfg_yml_path: Path | None = yml_path if yml_path.exists() else None
         self._cfg_mtime: float | None = (
@@ -611,13 +641,15 @@ class PFPLStrategy:
         self.oraclePrices: dict[str, Any] = {}
         self.best_bid: Decimal | None = None
         self.best_ask: Decimal | None = None
+        # シグナル履歴（abs(diff)）でパーセンタイル判定に使う
+        self._signal_hist: deque[tuple[float, float]] = deque()
         # 紙トレ用のポジション・PNL
         self.paper_pos = Decimal("0")
         self.paper_avg_px = Decimal("0")
         self.paper_realized = Decimal("0")
         self.paper_fee_bps_taker = Decimal(str(self.config.get("paper_fee_bps_taker", 0.05)))
         self.paper_fee_bps_maker = Decimal(str(self.config.get("paper_fee_bps_maker", 0.0)))
-        self.paper_slip_bps = Decimal(str(self.config.get("paper_slip_bps", 1.0)))  # IOC許容スリップ（bps）
+        self.paper_slip_bps = Decimal(str(self.config.get("paper_slip_bps", 0.5)))  # IOC許容スリップ（bps）
 
         # ── 内部ステート ────────────────────────────────
         self.last_side: str | None = None
@@ -1037,12 +1069,7 @@ class PFPLStrategy:
         if mid is None or fair is None:
             return
 
-        # ③ 最大建玉判定（紙はpaper_pos×midで評価）
-        cur_pos_usd = abs(self._current_pos_usd(mid))
-        if cur_pos_usd >= self.max_pos:
-            logger.debug("pos_limit %.2f USD 到達 (%.2f) → skip", self.max_pos, cur_pos_usd)
-            return
-
+        # ③ 発注可否（レート/最小発注額など）
         now_ts = time.time()
         can_fire = self._can_fire(now_ts)
 
@@ -1074,8 +1101,63 @@ class PFPLStrategy:
 
         # ④ 閾値判定
         th_abs = Decimal(str(self.config.get("threshold", "1.0")))  # USD
+        pct_mode = str(self.config.get("threshold_pct_mode", "absolute")).lower()
+        pct_quantile = float(
+            self.config.get(
+                "threshold_pct_quantile",
+                self.config.get("threshold_pct", 0.0),
+            )
+        )
+        pct_window = float(self.config.get("threshold_pct_window_sec", 900.0))
+        pct_min_samples = int(self.config.get("threshold_pct_min_samples", 50))
         th_pct = Decimal(str(self.config.get("threshold_pct", "0.05")))  # %
-        spread_thr = Decimal(str(self.config.get("spread_threshold", "0")))
+        spread_thr_usd = float(self.config.get("spread_threshold", 0.0))
+        spread_thr_bps = float(self.config.get("spread_threshold_bps", 0.0))
+        spread_thr_px = spread_thr_usd
+        if spread_thr_px <= 0 and spread_thr_bps > 0 and mid:
+            spread_thr_px = float(mid) * (spread_thr_bps / 10000)
+        bid = getattr(self, "best_bid", None)
+        ask = getattr(self, "best_ask", None)
+        spread_px = float(ask - bid) if (bid is not None and ask is not None) else None
+        spread_ok = True if spread_thr_px <= 0 or spread_px is None else spread_px <= spread_thr_px
+
+        pct_threshold_value: float | None = None
+        if pct_mode == "percentile":
+            pct_threshold_value = self._update_signal_hist(
+                abs_diff=float(abs_diff),
+                now_ts=now,
+                window_sec=pct_window,
+                quantile=pct_quantile,
+                min_samples=pct_min_samples,
+            )
+            pct_ok = True if pct_threshold_value is None else float(abs_diff) >= pct_threshold_value
+        else:
+            pct_threshold_value = float(th_pct)
+            pct_ok = pct_diff >= th_pct
+
+        abs_ok = abs_diff >= th_abs
+
+        # spreadフィルタに掛かったら早期リターン
+        if not spread_ok:
+            self._debug_evaluate_signal(
+                mid_px=float(mid),
+                fair_px=float(fair),
+                order_usd=float(self.order_usd),
+                pos_usd=float(self.pos_usd),
+                last_order_ts=self.last_ts or None,
+                funding_blocked=self._funding_pause,
+                threshold=th_abs,
+                threshold_pct=pct_threshold_value,
+                spread_threshold=Decimal(str(spread_thr_px)),
+                pct_mode=pct_mode,
+                pct_threshold_value=pct_threshold_value,
+                spread_px=spread_px,
+                spread_threshold_px=spread_thr_px,
+                abs_ok=abs_ok,
+                pct_ok=pct_ok,
+                spread_ok=spread_ok,
+            )
+            return
 
         self._debug_evaluate_signal(
             mid_px=float(mid),
@@ -1085,8 +1167,15 @@ class PFPLStrategy:
             last_order_ts=self.last_ts or None,
             funding_blocked=self._funding_pause,
             threshold=th_abs,
-            threshold_pct=th_pct,
-            spread_threshold=spread_thr,
+            threshold_pct=pct_threshold_value,
+            spread_threshold=Decimal(str(spread_thr_px)),
+            pct_mode=pct_mode,
+            pct_threshold_value=pct_threshold_value,
+            spread_px=spread_px,
+            spread_threshold_px=spread_thr_px,
+            abs_ok=abs_ok,
+            pct_ok=pct_ok,
+            spread_ok=spread_ok,
         )
         if not can_fire:
             return
@@ -1095,16 +1184,16 @@ class PFPLStrategy:
         mode = self.config.get("mode", "both")  # both / either
 
         if mode == "abs":
-            if abs_diff < th_abs:
+            if not abs_ok:
                 return
         elif mode == "pct":
-            if pct_diff < th_pct:
+            if not pct_ok:
                 return
         elif mode == "either":
-            if abs_diff < th_abs and pct_diff < th_pct:
+            if not (abs_ok or pct_ok):
                 return
         else:  # default = both
-            if abs_diff < th_abs or pct_diff < th_pct:
+            if not abs_ok or not pct_ok:
                 return
 
         # ⑤ 発注サイド決定
@@ -1115,7 +1204,26 @@ class PFPLStrategy:
             return
 
         # ⑦ 発注サイズ計算
-        raw_size = self.order_usd / mid
+        is_buy = side == "BUY"
+        mid_dec = mid
+        if mid_dec <= 0:
+            return
+
+        # 発注に使う想定 limit_px（place_order と同じヘルパーで近似）
+        limit_px_est = self._taker_limit_price(
+            side,
+            self._price_with_offset(float(mid_dec), side),
+            mid_dec,
+        )
+        limit_px_dec = (
+            Decimal(str(limit_px_est))
+            if limit_px_est is not None and limit_px_est > 0
+            else mid_dec
+        )
+        if limit_px_dec <= 0:
+            limit_px_dec = mid_dec
+
+        raw_size = (self.order_usd / limit_px_dec) if limit_px_dec > 0 else Decimal("0")
         try:
             size = raw_size.quantize(self.qty_tick, rounding=ROUND_DOWN)
         except InvalidOperation:
@@ -1125,6 +1233,13 @@ class PFPLStrategy:
                 self.qty_tick,
             )
             return
+        # 役割: 丸め前後やポジション上限による切り詰めを追えるように保持
+        size_pre_limit = size
+        pos_limit_applied = False
+        pos_limit_remaining_base: Decimal | None = None
+        pos_limit_cur_abs_pos: Decimal | None = None
+        pos_limit_max_abs_pos: Decimal | None = None
+        pos_limit_proj_abs_pos: Decimal | None = None
         if size <= 0:
             logger.debug(
                 "size %.6f quantized to zero with tick %s → skip",
@@ -1132,38 +1247,148 @@ class PFPLStrategy:
                 self.qty_tick,
             )
             return
-        if size * mid < self.min_usd:
+        if (size * mid_dec) < self.min_usd:
+            # 役割: min_usd skip の原因特定用に、丸め前/丸め後のサイズと USD を同時に記録する
+            order_usd = self.order_usd
+            limit_px = limit_px_dec
+            raw_size_dbg = (
+                (order_usd / limit_px) if (limit_px is not None and limit_px > 0) else None
+            )
+            raw_usd_dbg = (
+                (raw_size_dbg * mid_dec) if (raw_size_dbg is not None and mid_dec is not None) else None
+            )
+            rounded_usd = size * mid_dec if mid_dec is not None else None
+            logger.debug(
+                "SIZING_SNAPSHOT order_usd=%s limit_px=%s mid=%s raw_size=%s raw_usd=%s rounded_size=%s rounded_usd=%s min_usd=%s",
+                order_usd,
+                limit_px,
+                mid_dec,
+                raw_size_dbg,
+                raw_usd_dbg,
+                size,
+                rounded_usd,
+                self.min_usd,
+            )
+            # 役割: raw_usd(=本来10USD)が、どの上限/係数で rounded_usd(=2.08USD)まで落ちたかを「候補変数ごと」に特定する
+            raw_usd = raw_usd_dbg
+            usd = rounded_usd
+            cap_ratio = (usd / raw_usd) if (raw_usd is not None and raw_usd > 0) else None
+            logger.debug(
+                "SIZING_LIMITERS cap_ratio=%s qty_tick=%s max_order_usd=%s max_trade_usd=%s max_order_qty=%s max_trade_qty=%s size_scale=%s risk_scale=%s remaining_usd=%s remaining_qty=%s",
+                cap_ratio,
+                locals().get("qty_tick") or locals().get("qty_step") or locals().get("sz_tick"),
+                locals().get("max_order_usd") or locals().get("order_cap_usd") or locals().get("cap_usd"),
+                locals().get("max_trade_usd") or locals().get("trade_cap_usd"),
+                locals().get("max_order_qty") or locals().get("order_cap_qty") or locals().get("cap_qty"),
+                locals().get("max_trade_qty") or locals().get("trade_cap_qty"),
+                locals().get("size_scale") or locals().get("scale"),
+                locals().get("risk_scale"),
+                locals().get("remaining_usd") or locals().get("pos_remaining_usd"),
+                locals().get("remaining_qty") or locals().get("pos_remaining_qty"),
+            )
             logger.debug(
                 "size %.4f USD %.2f < min_usd %.2f → skip",
                 size,
-                size * mid,
+                size * mid_dec,
                 self.min_usd,
             )
             return
 
-        # ⑧ 建玉超過チェック
-        if (
-            abs(
-                self._projected_pos_usd(
-                    side,
-                    size,
-                    mid=mid,
-                )
+        # ⑧ 建玉超過チェック（方向込み + 自動切り詰め）
+        # 役割:
+        # - ポジを「減らす」方向の注文は、上限付近でも通す（exit/縮小が詰まらない）
+        # - ポジを「増やす」方向で上限を超える場合は、入る分だけサイズを切り詰める（orders=0 を回避）
+        # 現在ポジ（base）: dry_run は paper_pos、実弾は pos_usd/mid 近似
+        pos_usd_signed = self._current_pos_usd(mid_dec)
+        paper_pos = (pos_usd_signed / mid_dec) if mid_dec > 0 else Decimal("0")
+
+        cur_abs_pos = abs(paper_pos)
+
+        pos_limit_usd = self.max_pos
+        max_abs_pos = (pos_limit_usd / mid_dec) if mid_dec > 0 else Decimal("0")
+
+        proj_pos = paper_pos + (size if is_buy else -size)
+        proj_abs_pos = abs(proj_pos)
+        proj_notional = proj_abs_pos * mid_dec
+        pos_limit_cur_abs_pos = cur_abs_pos
+        pos_limit_max_abs_pos = max_abs_pos
+        pos_limit_proj_abs_pos = proj_abs_pos
+
+        # 「上限超過」かつ「今回の注文で abs(pos) が増える」時だけ制限（減らす注文は止めない）
+        if (proj_abs_pos > max_abs_pos) and (proj_abs_pos > cur_abs_pos):
+            remaining_base = max_abs_pos - cur_abs_pos
+
+            # もう 1 目盛りも増やせないならスキップ
+            if remaining_base <= 0:
+                self._log_pos_limit_skip(kind="proj", value=float(proj_notional))
+                return
+
+            # 入る分だけ切り詰める（切り詰め後のサイズで projected を更新）
+            size_before_cap = size
+            size = min(size, remaining_base)
+            try:
+                size = size.quantize(self.qty_tick, rounding=ROUND_DOWN)
+            except InvalidOperation:
+                return
+            if size <= 0:
+                self._log_pos_limit_skip(kind="proj", value=float(proj_notional))
+                return
+            if size != size_before_cap:
+                pos_limit_applied = True
+                pos_limit_remaining_base = remaining_base
+
+            proj_pos = paper_pos + (size if is_buy else -size)
+            proj_notional = abs(proj_pos) * mid_dec
+
+        # 切り詰め後に min_usd を割るならスキップ（サイズが小さすぎる）
+        if (size * mid_dec) < self.min_usd:
+            # 役割: min_usd skip の原因特定用に、丸め前/丸め後のサイズと USD を同時に記録する
+            order_usd = self.order_usd
+            limit_px = limit_px_dec
+            raw_size_dbg = (
+                (order_usd / limit_px) if (limit_px is not None and limit_px > 0) else None
             )
-            > self.max_pos
-        ):
+            raw_usd_dbg = (
+                (raw_size_dbg * mid_dec) if (raw_size_dbg is not None and mid_dec is not None) else None
+            )
+            rounded_usd = size * mid_dec if mid_dec is not None else None
             logger.debug(
-                "pos_limit %.2f USD 超過を検知 (proj=%.2f) → skip",
-                self.max_pos,
-                abs(
-                    self._projected_pos_usd(
-                        side,
-                        size,
-                        mid=mid,
-                    )
-                ),
+                "SIZING_SNAPSHOT order_usd=%s limit_px=%s mid=%s raw_size=%s raw_usd=%s rounded_size=%s rounded_usd=%s min_usd=%s",
+                order_usd,
+                limit_px,
+                mid_dec,
+                raw_size_dbg,
+                raw_usd_dbg,
+                size,
+                rounded_usd,
+                self.min_usd,
+            )
+            # 役割: raw_usd(=本来10USD)が、どの上限/係数で rounded_usd(=2.08USD)まで落ちたかを「候補変数ごと」に特定する
+            raw_usd = raw_usd_dbg
+            usd = rounded_usd
+            cap_ratio = (usd / raw_usd) if (raw_usd is not None and raw_usd > 0) else None
+            logger.debug(
+                "SIZING_LIMITERS cap_ratio=%s qty_tick=%s max_order_usd=%s max_trade_usd=%s max_order_qty=%s max_trade_qty=%s size_scale=%s risk_scale=%s remaining_usd=%s remaining_qty=%s",
+                cap_ratio,
+                locals().get("qty_tick") or locals().get("qty_step") or locals().get("sz_tick"),
+                locals().get("max_order_usd") or locals().get("order_cap_usd") or locals().get("cap_usd"),
+                locals().get("max_trade_usd") or locals().get("trade_cap_usd"),
+                locals().get("max_order_qty") or locals().get("order_cap_qty") or locals().get("cap_qty"),
+                locals().get("max_trade_qty") or locals().get("trade_cap_qty"),
+                locals().get("size_scale") or locals().get("scale"),
+                locals().get("risk_scale"),
+                locals().get("remaining_usd") or locals().get("pos_remaining_usd"),
+                locals().get("remaining_qty") or locals().get("pos_remaining_qty"),
+            )
+            logger.debug(
+                "size %.4f USD %.2f < min_usd %.2f → skip",
+                float(size),
+                float(size * mid_dec),
+                float(self.min_usd),
             )
             return
+
+        # 重要: 以降の注文サイズは size を使う（order_usd/limit_px を再計算しない）
 
         # ⑨ 発注
         # 役割: ここまで来たら「発注してOK」。カウンタだけ進め、既存の発注ロジックへ続行
@@ -1483,7 +1708,7 @@ class PFPLStrategy:
 
     # ------------------------------------------------------------------ limits
     def _check_limits(self) -> bool:
-        """日次の発注数と建玉制限を超えていないか確認"""
+        """日次の発注数制限を超えていないか確認（建玉制限は発注直前で方向込み判定）"""
         tz = getattr(self, "_tz", timezone.utc)
         today = datetime.now(tz).date()
         if today != self._start_day:  # 日付が変わったらリセット
@@ -1494,12 +1719,77 @@ class PFPLStrategy:
             logger.warning("daily order-limit reached → trading disabled")
             return False
 
-        pos_usd_now = abs(self._current_pos_usd(getattr(self, "mid", None)))
-        if pos_usd_now >= self.max_pos:
-            logger.warning("position limit %.2f USD reached (%.2f)", self.max_pos, pos_usd_now)
-            return False
-
         return True
+
+    def _log_pos_limit_skip(self, *, kind: str, value: float) -> None:
+        """
+        pos_limit超過時のログを一定時間内で集計してまとめる。
+        kind: "cur"（現建玉）/ "proj"（発注後の見込み）
+        """
+        now_ts = time.time()
+        window = getattr(self, "_pos_limit_window_sec", 60)
+        if not hasattr(self, "_pos_limit_hits_detail"):
+            self._pos_limit_hits_detail = {"total": 0, "cur": 0, "proj": 0}
+            self._pos_limit_last_log_ts = 0.0
+            self._pos_limit_max_value = 0.0
+
+        detail: dict[str, int] = self._pos_limit_hits_detail  # type: ignore[assignment]
+        detail["total"] = detail.get("total", 0) + 1
+        detail[kind] = detail.get(kind, 0) + 1
+        self._pos_limit_max_value = max(
+            getattr(self, "_pos_limit_max_value", 0.0), float(value)
+        )
+
+        if self._pos_limit_last_log_ts == 0 or now_ts - self._pos_limit_last_log_ts >= window:
+            logger.info(
+                "pos_limit skip: max=%.2f USD 直近%ds total=%d (cur=%d proj=%d) max_seen=%.2f",
+                self.max_pos,
+                window,
+                detail.get("total", 0),
+                detail.get("cur", 0),
+                detail.get("proj", 0),
+                getattr(self, "_pos_limit_max_value", 0.0),
+            )
+            self._pos_limit_last_log_ts = now_ts
+            self._pos_limit_hits_detail = {"total": 0, "cur": 0, "proj": 0}
+            self._pos_limit_max_value = 0.0
+
+    def _update_signal_hist(
+        self,
+        *,
+        abs_diff: float,
+        now_ts: float,
+        window_sec: float,
+        quantile: float,
+        min_samples: int = 50,
+    ) -> float | None:
+        """
+        abs(diff) の履歴を window_sec で保持し、quantile(0-1)の値を返す。
+        サンプル不足なら None を返し、フィルタは緩めに通す。
+        """
+        if not 0 <= quantile <= 1:
+            return None
+        if min_samples <= 0:
+            min_samples = 1
+        dq: deque[tuple[float, float]] = getattr(self, "_signal_hist", deque())
+        dq.append((now_ts, float(abs_diff)))
+        cutoff = now_ts - window_sec
+        while dq and dq[0][0] < cutoff:
+            dq.popleft()
+        # 保存し直す
+        self._signal_hist = dq
+        if len(dq) < min_samples:
+            return None
+        vals = sorted(v for _, v in dq)
+        if not vals:
+            return None
+        k = (len(vals) - 1) * quantile
+        lo = int(k)
+        hi = min(lo + 1, len(vals) - 1)
+        if lo == hi:
+            return vals[lo]
+        frac = k - lo
+        return vals[lo] + (vals[hi] - vals[lo]) * frac
 
     def _check_funding_window(self) -> bool:
         """

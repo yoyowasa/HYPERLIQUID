@@ -22,6 +22,11 @@ def strategy(monkeypatch: pytest.MonkeyPatch) -> Iterator[PFPLStrategy]:
     strat = PFPLStrategy(config={}, semaphore=Semaphore(1))
     strat.config["threshold"] = "200"
     strat.config["threshold_pct"] = "200"
+    # 役割: ログ検証を安定させる（percentile はサンプル不足で True になり得るため absolute に固定）
+    strat.config["threshold_pct_mode"] = "absolute"
+    # 役割: best_bid/best_ask が無いテスト環境でも spread ログの表示値を固定する
+    strat.config["spread_threshold"] = "0"
+    strat.config["spread_threshold_bps"] = "0"
     strat.mid = Decimal("100")
     yield strat
 
@@ -52,8 +57,8 @@ def test_evaluate_logs_signed_diff(
         and "d_abs=-1.0000" in record.message
         and "d_pct=-0.00990" in record.message
         and "abs>=200.0000:False" in record.message
-        and "pct>=200.00000:False" in record.message
-        and "spread>=0.0000:True" in record.message
+        and "pct(mode=absolute)>=200.00000:False" in record.message
+        and "spread(px)<=0.0000:True" in record.message
         for record in caplog.records
     ), "expected positive diff snapshot log"
 
@@ -69,8 +74,8 @@ def test_evaluate_logs_signed_diff(
         and "d_abs=+1.0000" in record.message
         and "d_pct=+0.01010" in record.message
         and "abs>=200.0000:False" in record.message
-        and "pct>=200.00000:False" in record.message
-        and "spread>=0.0000:True" in record.message
+        and "pct(mode=absolute)>=200.00000:False" in record.message
+        and "spread(px)<=0.0000:True" in record.message
         for record in caplog.records
     ), "expected negative diff snapshot log"
 

@@ -1,31 +1,24 @@
 #!/usr/bin/env python
-# function: プロジェクト直下の .venv の Python で必ず実行されるように再起動する（Windows/macOS/Linux 対応）
+# function: Hyperliquid bot runner エントリポイント
+import datetime
 import os
-from pathlib import Path
 import sys
 
+# 二重起動防止フラグ（親→子で継承される環境変数を利用）
+if os.environ.get("RUN_BOT_SINGLETON") == "1":
+    print(
+        "[RUN_BOT] detected child process (pid={}, ppid={}), exiting".format(
+            os.getpid(), os.getppid()
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
+    sys.exit(0)
 
-def ensure_project_venv():
-    """プロジェクト直下の .venv を優先して使う。
-    - いまの Python が .venv でなければ、.venv の python でこのスクリプトを再実行する。
-    - .venv が見つからなければ何もしない（CI 等の外部環境を許容）。
-    """
+os.environ["RUN_BOT_SINGLETON"] = "1"
 
-    project_root = Path(__file__).resolve().parent
-    venv_dir = project_root / ".venv"
-    python_name = "python.exe" if os.name == "nt" else "python"
-    candidate = venv_dir / ("Scripts" if os.name == "nt" else "bin") / python_name
-    try:
-        if candidate.exists() and candidate.resolve() != Path(sys.executable).resolve():
-            os.execv(str(candidate), [str(candidate), *sys.argv])
-    except Exception:
-        # 失敗しても続行（安全側のフォールバック）
-        pass
+from pathlib import Path
 
-
-ensure_project_venv()
-
-# ruff: noqa: E402  # runtime venv enforcement requires imports below
 import argparse
 import asyncio
 import logging
@@ -33,6 +26,21 @@ import signal
 from decimal import Decimal, ROUND_DOWN
 from importlib import import_module
 from os import getenv
+
+print(
+    "[RUN_BOT_TRACE]",
+    "pid=",
+    os.getpid(),
+    "ppid=",
+    os.getppid(),
+    "exe=",
+    sys.executable,
+    "argv=",
+    sys.argv,
+    "time=",
+    datetime.datetime.now().isoformat(),
+    flush=True,
+)
 
 
 from hl_core.utils.dotenv_compat import load_dotenv
@@ -173,7 +181,10 @@ async def main() -> None:
                 settings
             )  # function: HL_PRIVATE_KEY / HL_ACCOUNT_ADDRESS は必須
 
-    logging.basicConfig(level=args.log_level)
+    logging.basicConfig(
+        level=args.log_level,
+        format="%(asctime)s %(levelname)s %(name)s [pid=%(process)d] %(message)s",
+    )
 
     pair_params = load_pair_yaml(args.pair_cfg)
     symbols = [s.strip() for s in args.symbols.split(",")][:3]
@@ -206,7 +217,8 @@ async def main() -> None:
             "testnet": args.testnet,
             "cooldown_sec": args.cooldown,
             "order_usd": args.order_usd,
-            "dry_run": args.dry_run,
+            # 役割: ランナー側の有効dry_run（.env/CLI）と戦略側を一致させる
+            "dry_run": effective_dry_run,
             **pair_params.get(sym, {}),
         }
         st = Strategy(config=cfg, semaphore=SEMA)  # ★ semaphore を渡す
@@ -258,12 +270,12 @@ async def main() -> None:
 
 if __name__ == "__main__":
     # 何をするコードか: Ctrl+C(SIGINT)を確実に捕捉し、安全に終了(コード130)する
-    try:
-        # 既存の起動処理に合わせて: 同期なら main(); 非同期なら asyncio.run(main())
-        import asyncio
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        import logging
-        import sys
-        logging.getLogger(__name__).info("Ctrl+C received — shutting down.")
-        sys.exit(130)
+    def run() -> int:
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            logging.getLogger(__name__).info("Ctrl+C received - shutting down.")
+            return 130
+        return 0
+
+    raise SystemExit(run())

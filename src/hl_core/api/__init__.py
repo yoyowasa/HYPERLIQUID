@@ -50,10 +50,17 @@ class HTTPClient:
 
 class WSClient:
     # ── 1. __init__ ─────────────────────────────────────────────
-    def __init__(self, url: str, reconnect: bool = False, retry_sec: float = 3.0):
+    def __init__(
+        self,
+        url: str,
+        reconnect: bool = False,
+        retry_sec: float = 3.0,
+        backoff_max: float = 30.0,
+    ):
         self.url = url
         self.reconnect = reconnect
         self.retry_sec = retry_sec
+        self.backoff_max = backoff_max
 
         self._ws: Any | None = None
         # WebSocket 購読情報を JSON 文字列で保持（reconnect 時に再送）
@@ -71,6 +78,7 @@ class WSClient:
     # ── 2. connect ──────────────────────────────────────────────
     async def connect(self) -> None:
         """接続し listen を開始。切断されたら自動再接続（reconnect=True の場合）"""
+        backoff = self.retry_sec
         while True:
             try:
                 async with websockets.connect(
@@ -83,31 +91,25 @@ class WSClient:
                     self._ready.set()  # ★ open を通知
 
                     # 過去の購読を復元
-                    for sub_json in self._subs:
-                        try:
-                            subscription = json.loads(sub_json)
-                        except json.JSONDecodeError:
-                            logger.warning(
-                                "Skip invalid stored subscription: %s", sub_json
-                            )
-                            continue
-                        await ws.send(
-                            json.dumps(
-                                {"method": "subscribe", "subscription": subscription}
-                            )
-                        )
-
+                    await self._resubscribe(ws)
+                    backoff = self.retry_sec
                     await self._listen()  # 切断までブロック
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning("WS disconnected: %s", exc)
+                logger.warning(
+                    "WS disconnected: %s; reconnecting in %.1fs", exc, backoff
+                )
             finally:
                 self._ready.clear()  # ★ close を通知
 
             if not self.reconnect:
                 break
-            await anyio.sleep(self.retry_sec)
+            try:
+                await anyio.sleep(backoff)
+            except Exception:
+                await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, self.backoff_max)
 
     # ── 3. wait_ready ───────────────────────────────────────────
     async def wait_ready(self) -> None:
@@ -137,16 +139,13 @@ class WSClient:
         payload, sub_key, label = self._normalize_subscription(subscription)
 
         # まだ接続完了していない場合は待つ
-        if not self._ready.is_set():
-            logger.warning("WS not ready; skip subscribe(%s)", label)
-            return
-
         if sub_key in self._subs:
             return  # 既に購読済み
 
         ws = self._ws
-        if ws is None:
-            logger.warning("WS handle missing; skip subscribe(%s)", label)
+        if not self._ready.is_set() or ws is None:
+            # 接続前なら購読だけ記録し、次回connectで再送
+            self._subs.add(sub_key)
             return
 
         await ws.send(json.dumps({"method": "subscribe", "subscription": payload}))
@@ -185,6 +184,19 @@ class WSClient:
         self._ready.clear()
         self._ws = None
         logger.info("WS closed")
+
+    async def _resubscribe(self, ws: Any) -> None:
+        """接続直後に記録済み購読を再送する。"""
+        for sub_json in self._subs:
+            try:
+                subscription = json.loads(sub_json)
+            except json.JSONDecodeError:
+                logger.warning("Skip invalid stored subscription: %s", sub_json)
+                continue
+            await ws.send(
+                json.dumps({"method": "subscribe", "subscription": subscription})
+            )
+            logger.debug("Resubscribed %s", subscription.get("type", subscription))
 
 
 __all__ = ["HTTPClient", "WSClient"]

@@ -90,17 +90,17 @@ def test_init_adds_file_handler_once(monkeypatch):
     assert after_first == after_second == before + 1
 
 
-def test_yaml_config_overrides_cli_args(monkeypatch):
+def test_cli_args_override_yaml_config(monkeypatch):
     _set_credentials(monkeypatch, "HL_ACCOUNT_ADDRESS", "HL_PRIVATE_KEY")
 
-    yaml_override = {"target_symbol": "ETH-PERP", "dry_run": False}
+    yaml_override = {"target_symbol": "BTC-PERP", "dry_run": False}
     monkeypatch.setattr(
         strategy_module.yaml,
         "safe_load",
         lambda raw_conf: yaml_override.copy(),
     )
 
-    cli_symbol = "BTC-PERP"
+    cli_symbol = "ETH-PERP"
     cli_dry_run = True
 
     strategy = None
@@ -112,11 +112,11 @@ def test_yaml_config_overrides_cli_args(monkeypatch):
 
         assert strategy is not None
 
-        assert strategy.config.get("target_symbol") == yaml_override["target_symbol"]
-        assert strategy.symbol == yaml_override["target_symbol"]
-        assert strategy.config.get("dry_run") == yaml_override["dry_run"]
-        assert strategy.config.get("target_symbol") != cli_symbol
-        assert strategy.config.get("dry_run") != cli_dry_run
+        assert strategy.config.get("target_symbol") == cli_symbol
+        assert strategy.symbol == cli_symbol
+        assert strategy.config.get("dry_run") == cli_dry_run
+        assert strategy.config.get("target_symbol") != yaml_override["target_symbol"]
+        assert strategy.config.get("dry_run") != yaml_override["dry_run"]
     finally:
         if strategy is not None:
             _remove_strategy_handler(strategy.symbol)

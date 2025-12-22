@@ -23,8 +23,9 @@ from colorama import Fore, Style, init as _color_init
 # ────────────────────────────────────────────────────────────
 _TZ: Final = _dt.timezone(_dt.timedelta(hours=9))  # すべて UTC
 _LOG_FMT: Final = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-_CSV_FIELDS_WITH_LOGGER: Final = ("asctime", "levelname", "name", "message")
-_CSV_FIELDS_NO_LOGGER: Final = ("asctime", "levelname", "message")
+# PIDも含めてCSV出力する
+_CSV_FIELDS_WITH_LOGGER: Final = ("asctime", "levelname", "process", "name", "message")
+_CSV_FIELDS_NO_LOGGER: Final = ("asctime", "levelname", "process", "message")
 _LEVEL_COLOR: Final = {
     logging.DEBUG: Fore.CYAN,
     logging.INFO: Fore.GREEN,
