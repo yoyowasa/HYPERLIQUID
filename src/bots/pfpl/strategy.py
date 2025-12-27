@@ -5,6 +5,8 @@ import asyncio
 import hmac
 import hashlib
 import json
+# 役割: 実行中に「どの行でログが出たか(lineno)」を出して、どの分岐が動いているか確定する
+import inspect
 import logging
 import logging as _logging
 import logging.handlers
@@ -75,6 +77,8 @@ except Exception:  # noqa: F401 - fallback when eth_account isn't installed
 
 logger = logging.getLogger(__name__)
 
+# 役割: 「いま動いているプロセスが、どの strategy.py を読み込んでいるか」をログで確定させるための識別子
+PFPL_STRATEGY_BUILD_ID = "ratio_probe_2025-12-26_01"
 
 
 # 役割: この関数は PFPL 戦略ロガーの親への伝播を止め、二重ログ（runner.csv / pfpl.csv など）を防ぎます
@@ -115,10 +119,7 @@ def _coerce_bool(value: Any, *, default: bool) -> bool:
 
 # 役割: モジュールが読み込まれた瞬間に一度だけINFOログを出し、"新しい strategy.py が実行された"ことを確実に可視化する
 if not globals().get("_PFPL_STRATEGY_MODULE_BOOT_LOGGED"):
-    _logging.getLogger(__name__).info(
-        "boot: PFPLStrategy module_loaded patch=perp_fallback+guards module=%s",
-        __name__,
-    )
+    logger.info(f"boot: PFPLStrategy build_id={PFPL_STRATEGY_BUILD_ID} file={__file__}")
     globals()["_PFPL_STRATEGY_MODULE_BOOT_LOGGED"] = True
 
 
@@ -617,20 +618,8 @@ class PFPLStrategy:
         self.log = logging.getLogger(__name__)
 
 
-        # 役割: 起動時に一度だけ、現在の重要設定とパッチ状態を INFO ログへ出す（更新コードで起動したかを即判定）
-        _logger = getattr(self, "log", None) or getattr(self, "logger", None)
-        if _logger:
-            _logger.info(
-                "boot: PFPLStrategy patch=perp_fallback+guards "
-                f"fair_feed={self.fair_feed} "
-                f"target={self.target_symbol} "
-                f"feed_key={self.feed_key} "
-                f"threshold={self.config.get('threshold')} "
-                f"order_usd={self.order_usd} "
-                f"dry_run={self.dry_run} "
-                f"testnet={self.testnet} "
-                f"max_daily_orders={self.max_daily_orders}"
-            )
+        # 役割: 起動時に「build_id」と「このモジュールの実ファイルパス(__file__)」を必ず出して、読み込み元を確定する
+        logger.info(f"boot: PFPLStrategy build_id={PFPL_STRATEGY_BUILD_ID} file={__file__}")
         # ── フィード保持用 -------------------------------------------------
         self.mid: Decimal | None = None  # 板 Mid (@1)
         self.idx: Decimal | None = None  # indexPrices
@@ -1258,27 +1247,35 @@ class PFPLStrategy:
                 (raw_size_dbg * mid_dec) if (raw_size_dbg is not None and mid_dec is not None) else None
             )
             rounded_usd = size * mid_dec if mid_dec is not None else None
-            logger.debug(
-                "SIZING_SNAPSHOT order_usd=%s limit_px=%s mid=%s raw_size=%s raw_usd=%s rounded_size=%s rounded_usd=%s min_usd=%s",
-                order_usd,
-                limit_px,
-                mid_dec,
-                raw_size_dbg,
-                raw_usd_dbg,
-                size,
-                rounded_usd,
-                self.min_usd,
-            )
-            # 役割: raw_usd(=本来10USD)が、どの上限/係数で rounded_usd(=2.08USD)まで落ちたかを「候補変数ごと」に特定する
+            mid = mid_dec
             raw_usd = raw_usd_dbg
             usd = rounded_usd
+            min_usd = self.min_usd
+            logger.debug(
+                "SIZING_SNAPSHOT build_id=%s loc=%s:%s order_usd=%s limit_px=%s mid=%s raw_size=%s raw_usd=%s rounded_size=%s rounded_usd=%s min_usd=%s",
+                PFPL_STRATEGY_BUILD_ID,
+                __file__,
+                inspect.currentframe().f_lineno,
+                order_usd,
+                limit_px,
+                mid,
+                raw_size,
+                raw_usd,
+                size,
+                usd,
+                min_usd,
+            )
+            # 役割: raw_usd(=本来10USD)が、どの上限/係数で rounded_usd(=2.08USD)まで落ちたかを「候補変数ごと」に特定する
             cap_ratio = (
                 (usd / raw_usd)
                 if (raw_usd is not None and raw_usd > 0 and usd is not None)
                 else None
             )
             logger.debug(
-                "SIZING_LIMITERS cap_ratio=%s qty_tick=%s max_order_usd=%s max_trade_usd=%s max_order_qty=%s max_trade_qty=%s size_scale=%s risk_scale=%s remaining_usd=%s remaining_qty=%s",
+                "SIZING_LIMITERS build_id=%s loc=%s:%s cap_ratio=%s qty_tick=%s max_order_usd=%s max_trade_usd=%s max_order_qty=%s max_trade_qty=%s size_scale=%s risk_scale=%s remaining_usd=%s remaining_qty=%s",
+                PFPL_STRATEGY_BUILD_ID,
+                __file__,
+                inspect.currentframe().f_lineno,
                 cap_ratio,
                 locals().get("qty_tick") or locals().get("qty_step") or locals().get("sz_tick"),
                 locals().get("max_order_usd") or locals().get("order_cap_usd") or locals().get("cap_usd"),
@@ -1290,6 +1287,170 @@ class PFPLStrategy:
                 locals().get("remaining_usd") or locals().get("pos_remaining_usd"),
                 locals().get("remaining_qty") or locals().get("pos_remaining_qty"),
             )
+            # 役割: cap_ratio で潰された「実効USD(target_usd)」が、どのローカル変数（edge/diff等）と一致するかを特定する
+            _target_usd = (
+                float(raw_usd) * float(cap_ratio)
+                if (cap_ratio is not None and raw_usd is not None)
+                else None
+            )
+            if _target_usd is not None:
+                _cands = []
+                for _k, _v in locals().items():
+                    if _k.startswith("_"):
+                        continue
+                    if _k in (
+                        "usd",
+                        "raw_usd",
+                        "order_usd",
+                        "cap_ratio",
+                        "size",
+                        "raw_size",
+                        "limit_px",
+                        "mid",
+                    ):
+                        continue
+                    if isinstance(_v, bool):
+                        continue
+                    try:
+                        _vf = float(_v)
+                    except Exception:
+                        continue
+                    # 近さ判定（target_usd の ±5% または ±0.05USD）
+                    if abs(_vf - _target_usd) <= max(0.05, abs(_target_usd) * 0.05):
+                        _cands.append((abs(_vf - _target_usd), _k, _vf))
+
+                _cands.sort(key=lambda x: x[0])
+                _top = ", ".join([f"{k}={v} (Δ={d:.6g})" for d, k, v in _cands[:10]])
+
+                logger.debug(
+                    "SIZING_TARGET_MATCH build_id=%s loc=%s:%s target_usd=%s top=%s",
+                    PFPL_STRATEGY_BUILD_ID,
+                    __file__,
+                    inspect.currentframe().f_lineno,
+                    _target_usd,
+                    _top,
+                )
+            # 役割: cap_ratio で潰された「実効USD(target_usd)」が、どのローカル変数（edge/diff等）と一致するかを特定する
+            _target_usd = (
+                float(raw_usd) * float(cap_ratio)
+                if (cap_ratio is not None and raw_usd is not None)
+                else None
+            )
+            if _target_usd is not None:
+                _cands = []
+                for _k, _v in locals().items():
+                    if _k.startswith("_"):
+                        continue
+                    if _k in (
+                        "usd",
+                        "raw_usd",
+                        "order_usd",
+                        "cap_ratio",
+                        "size",
+                        "raw_size",
+                        "limit_px",
+                        "mid",
+                    ):
+                        continue
+                    if isinstance(_v, bool):
+                        continue
+                    try:
+                        _vf = float(_v)
+                    except Exception:
+                        continue
+                    # 近さ判定（target_usd の ±5% または ±0.05USD）
+                    if abs(_vf - _target_usd) <= max(0.05, abs(_target_usd) * 0.05):
+                        _cands.append((abs(_vf - _target_usd), _k, _vf))
+
+                _cands.sort(key=lambda x: x[0])
+                _top = ", ".join([f"{k}={v} (Δ={d:.6g})" for d, k, v in _cands[:10]])
+
+                logger.debug(
+                    "SIZING_TARGET_MATCH build_id=%s loc=%s:%s target_usd=%s top=%s",
+                    PFPL_STRATEGY_BUILD_ID,
+                    __file__,
+                    inspect.currentframe().f_lineno,
+                    _target_usd,
+                    _top,
+                )
+            # 役割: cap_ratio(=usd/raw_usd) と一致/近い「変数そのもの」や「比(A/B)」を自動で炙り出してログに出す
+            cap_ratio_f = float(cap_ratio) if cap_ratio is not None else None
+            if cap_ratio_f is not None:
+                _skip_names = {
+                    "cap_ratio", "cap_ratio_f",
+                    "raw_usd", "raw_size",
+                    "order_usd", "usd", "size",
+                    "limit_px", "mid", "min_usd",
+                }
+
+                _vals = []  # (name, float_value)
+
+                def _add_numeric(_name, _v):
+                    # 役割: 数値として扱えるものだけ集める（bool/文字列/巨大値は除外）
+                    if _name in _skip_names:
+                        return
+                    if isinstance(_v, bool):
+                        return
+                    try:
+                        _vf = float(_v)
+                    except Exception:
+                        return
+                    if not (abs(_vf) > 0.0 and abs(_vf) <= 1.0e9):
+                        return
+                    _vals.append((_name, _vf))
+
+                # locals() から拾う
+                for _k, _v in locals().items():
+                    _add_numeric(f"local.{_k}", _v)
+
+                # self / config から拾う（属性に倍率が隠れているケースが多い）
+                _self = locals().get("self")
+                if _self is not None:
+                    for _k, _v in getattr(_self, "__dict__", {}).items():
+                        _add_numeric(f"self.{_k}", _v)
+
+                    for _attr in ("cfg", "config", "params", "settings"):
+                        _obj = getattr(_self, _attr, None)
+                        if _obj is None:
+                            continue
+                        if isinstance(_obj, dict):
+                            for _k, _v in _obj.items():
+                                _add_numeric(f"self.{_attr}.{_k}", _v)
+                        else:
+                            for _k, _v in getattr(_obj, "__dict__", {}).items():
+                                _add_numeric(f"self.{_attr}.{_k}", _v)
+
+                # 1) 「変数そのもの」が cap_ratio に近いか（直接マッチ）
+                _direct = []
+                for _name, _vf in _vals:
+                    if 0.0 < abs(_vf) <= 1.0:
+                        _direct.append((abs(_vf - cap_ratio_f), _name, _vf))
+                _direct.sort(key=lambda x: x[0])
+                _top_direct = ", ".join([f"{n}={v} (Δ={d:.6g})" for d, n, v in _direct[:8]])
+                logger.debug("SIZING_MATCH cap_ratio=%s top=%s", cap_ratio, _top_direct)
+
+                # 2) 「比(A/B)」が cap_ratio に近いか（間接マッチ） → これで正体を特定する
+                #    ※ cap_ratio が (edge_abs / edge_cap) などで作られている場合、ここで引っかかる
+                _ratio_hits = []
+                _vals_limited = _vals[:80]  # 役割: 計算量を抑える（多すぎると重い）
+                for i in range(len(_vals_limited)):
+                    a_name, a_val = _vals_limited[i]
+                    for j in range(len(_vals_limited)):
+                        if i == j:
+                            continue
+                        b_name, b_val = _vals_limited[j]
+                        if b_val == 0:
+                            continue
+                        r = abs(a_val / b_val)
+                        d = abs(r - cap_ratio_f)
+                        if d <= 0.02:
+                            _ratio_hits.append((d, a_name, a_val, b_name, b_val, r))
+
+                _ratio_hits.sort(key=lambda x: x[0])
+                _top_ratio = ", ".join(
+                    [f"{an}/{bn}={rv:.6g} (Δ={d:.6g})" for d, an, av, bn, bv, rv in _ratio_hits[:8]]
+                )
+                logger.debug("SIZING_RATIO_MATCH cap_ratio=%s top=%s", cap_ratio, _top_ratio)
             logger.debug(
                 "size %.4f USD %.2f < min_usd %.2f → skip",
                 size,
@@ -1356,27 +1517,35 @@ class PFPLStrategy:
                 (raw_size_dbg * mid_dec) if (raw_size_dbg is not None and mid_dec is not None) else None
             )
             rounded_usd = size * mid_dec if mid_dec is not None else None
-            logger.debug(
-                "SIZING_SNAPSHOT order_usd=%s limit_px=%s mid=%s raw_size=%s raw_usd=%s rounded_size=%s rounded_usd=%s min_usd=%s",
-                order_usd,
-                limit_px,
-                mid_dec,
-                raw_size_dbg,
-                raw_usd_dbg,
-                size,
-                rounded_usd,
-                self.min_usd,
-            )
-            # 役割: raw_usd(=本来10USD)が、どの上限/係数で rounded_usd(=2.08USD)まで落ちたかを「候補変数ごと」に特定する
+            mid = mid_dec
             raw_usd = raw_usd_dbg
             usd = rounded_usd
+            min_usd = self.min_usd
+            logger.debug(
+                "SIZING_SNAPSHOT build_id=%s loc=%s:%s order_usd=%s limit_px=%s mid=%s raw_size=%s raw_usd=%s rounded_size=%s rounded_usd=%s min_usd=%s",
+                PFPL_STRATEGY_BUILD_ID,
+                __file__,
+                inspect.currentframe().f_lineno,
+                order_usd,
+                limit_px,
+                mid,
+                raw_size,
+                raw_usd,
+                size,
+                usd,
+                min_usd,
+            )
+            # 役割: raw_usd(=本来10USD)が、どの上限/係数で rounded_usd(=2.08USD)まで落ちたかを「候補変数ごと」に特定する
             cap_ratio = (
                 (usd / raw_usd)
                 if (raw_usd is not None and raw_usd > 0 and usd is not None)
                 else None
             )
             logger.debug(
-                "SIZING_LIMITERS cap_ratio=%s qty_tick=%s max_order_usd=%s max_trade_usd=%s max_order_qty=%s max_trade_qty=%s size_scale=%s risk_scale=%s remaining_usd=%s remaining_qty=%s",
+                "SIZING_LIMITERS build_id=%s loc=%s:%s cap_ratio=%s qty_tick=%s max_order_usd=%s max_trade_usd=%s max_order_qty=%s max_trade_qty=%s size_scale=%s risk_scale=%s remaining_usd=%s remaining_qty=%s",
+                PFPL_STRATEGY_BUILD_ID,
+                __file__,
+                inspect.currentframe().f_lineno,
                 cap_ratio,
                 locals().get("qty_tick") or locals().get("qty_step") or locals().get("sz_tick"),
                 locals().get("max_order_usd") or locals().get("order_cap_usd") or locals().get("cap_usd"),
@@ -1388,6 +1557,84 @@ class PFPLStrategy:
                 locals().get("remaining_usd") or locals().get("pos_remaining_usd"),
                 locals().get("remaining_qty") or locals().get("pos_remaining_qty"),
             )
+            # 役割: cap_ratio(=usd/raw_usd) と一致/近い「変数そのもの」や「比(A/B)」を自動で炙り出してログに出す
+            cap_ratio_f = float(cap_ratio) if cap_ratio is not None else None
+            if cap_ratio_f is not None:
+                _skip_names = {
+                    "cap_ratio", "cap_ratio_f",
+                    "raw_usd", "raw_size",
+                    "order_usd", "usd", "size",
+                    "limit_px", "mid", "min_usd",
+                }
+
+                _vals = []  # (name, float_value)
+
+                def _add_numeric(_name, _v):
+                    # 役割: 数値として扱えるものだけ集める（bool/文字列/巨大値は除外）
+                    if _name in _skip_names:
+                        return
+                    if isinstance(_v, bool):
+                        return
+                    try:
+                        _vf = float(_v)
+                    except Exception:
+                        return
+                    if not (abs(_vf) > 0.0 and abs(_vf) <= 1.0e9):
+                        return
+                    _vals.append((_name, _vf))
+
+                # locals() から拾う
+                for _k, _v in locals().items():
+                    _add_numeric(f"local.{_k}", _v)
+
+                # self / config から拾う（属性に倍率が隠れているケースが多い）
+                _self = locals().get("self")
+                if _self is not None:
+                    for _k, _v in getattr(_self, "__dict__", {}).items():
+                        _add_numeric(f"self.{_k}", _v)
+
+                    for _attr in ("cfg", "config", "params", "settings"):
+                        _obj = getattr(_self, _attr, None)
+                        if _obj is None:
+                            continue
+                        if isinstance(_obj, dict):
+                            for _k, _v in _obj.items():
+                                _add_numeric(f"self.{_attr}.{_k}", _v)
+                        else:
+                            for _k, _v in getattr(_obj, "__dict__", {}).items():
+                                _add_numeric(f"self.{_attr}.{_k}", _v)
+
+                # 1) 「変数そのもの」が cap_ratio に近いか（直接マッチ）
+                _direct = []
+                for _name, _vf in _vals:
+                    if 0.0 < abs(_vf) <= 1.0:
+                        _direct.append((abs(_vf - cap_ratio_f), _name, _vf))
+                _direct.sort(key=lambda x: x[0])
+                _top_direct = ", ".join([f"{n}={v} (Δ={d:.6g})" for d, n, v in _direct[:8]])
+                logger.debug("SIZING_MATCH cap_ratio=%s top=%s", cap_ratio, _top_direct)
+
+                # 2) 「比(A/B)」が cap_ratio に近いか（間接マッチ） → これで正体を特定する
+                #    ※ cap_ratio が (edge_abs / edge_cap) などで作られている場合、ここで引っかかる
+                _ratio_hits = []
+                _vals_limited = _vals[:80]  # 役割: 計算量を抑える（多すぎると重い）
+                for i in range(len(_vals_limited)):
+                    a_name, a_val = _vals_limited[i]
+                    for j in range(len(_vals_limited)):
+                        if i == j:
+                            continue
+                        b_name, b_val = _vals_limited[j]
+                        if b_val == 0:
+                            continue
+                        r = abs(a_val / b_val)
+                        d = abs(r - cap_ratio_f)
+                        if d <= 0.02:
+                            _ratio_hits.append((d, a_name, a_val, b_name, b_val, r))
+
+                _ratio_hits.sort(key=lambda x: x[0])
+                _top_ratio = ", ".join(
+                    [f"{an}/{bn}={rv:.6g} (Δ={d:.6g})" for d, an, av, bn, bv, rv in _ratio_hits[:8]]
+                )
+                logger.debug("SIZING_RATIO_MATCH cap_ratio=%s top=%s", cap_ratio, _top_ratio)
             logger.debug(
                 "size %.4f USD %.2f < min_usd %.2f → skip",
                 float(size),
