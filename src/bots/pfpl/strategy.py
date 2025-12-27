@@ -8,7 +8,6 @@ import json
 # 役割: 実行中に「どの行でログが出たか(lineno)」を出して、どの分岐が動いているか確定する
 import inspect
 import logging
-import logging as _logging
 import logging.handlers
 import os
 import time
