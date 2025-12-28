@@ -22,7 +22,7 @@ max_order_per_sec: 1
 
 # ポジション & サイズ管理
 order_usd: 10               # 1注文あたりの名目USD
-max_position_usd: 120       # 総ポジ上限USD
+max_position_usd: 4.0
 max_daily_orders: 1000      # 1日の注文上限。デイリーリセットまで有効
 min_usd: 5                  # 取引所minSizeUsd未取得時のフォールバック
 

@@ -352,6 +352,50 @@ class PFPLStrategy:
         if has_thr_pct:
             want_short = want_short or (diff_pct >= thr_pct)
 
+        # 役割: pos_limit の「残枠USD」が min_usd 未満(dust)なら、増やす方向の新規注文を decision 段階で止める
+        #       ※ Decimal/float 混在で TypeError が出ないよう、計算に使う値は必ず float に正規化する
+        max_position_usd = max_pos
+        mid = mid_px
+        paper_pos = (pos_usd / mid) if (mid is not None and mid != 0) else None
+        long = want_long
+        short = want_short
+        if (max_position_usd is not None) and (mid is not None) and (min_usd is not None) and (paper_pos is not None):
+            try:
+                _max_position_usd = float(max_position_usd)
+                _mid = float(mid)
+                _min_usd = float(min_usd)
+                _paper_pos = float(paper_pos)
+            except Exception as e:
+                logger.debug(
+                    "pos_limit dust cast failed -> skip dust check: max_position_usd=%r mid=%r min_usd=%r paper_pos=%r err=%r",
+                    max_position_usd,
+                    mid,
+                    min_usd,
+                    paper_pos,
+                    e,
+                )
+            else:
+                _cur_pos_usd = abs(_paper_pos) * _mid
+                _remaining_usd = _max_position_usd - _cur_pos_usd
+
+                # 役割: “増やす方向” だけを対象にする（減らす/クローズ方向は dust でも止めない）
+                _increasing = (long and _paper_pos >= 0) or (short and _paper_pos <= 0)
+
+                # 役割: 残枠が min_usd 未満なら、その方向の新規は成立しないので pos_ok を False に落とす
+                if _increasing and (_remaining_usd < _min_usd):
+                    pos_ok = False
+                    logger.debug(
+                        "pos_ok=False (pos_limit dust): remaining_usd=%s cur_pos_usd=%s max_position_usd=%s min_usd=%s paper_pos=%s mid=%s long=%s short=%s",
+                        _remaining_usd,
+                        _cur_pos_usd,
+                        _max_position_usd,
+                        _min_usd,
+                        _paper_pos,
+                        _mid,
+                        long,
+                        short,
+                    )
+
         logger.debug(
             "decision mid=%.2f fair=%.2f d_abs=%+.4f d_pct=%+.5f | "
             "abs>=%.4f:%s pct(mode=%s)>=%.5f:%s spread(px)<=%.4f:%s | "
@@ -612,6 +656,8 @@ class PFPLStrategy:
         self.order_usd = Decimal(self.config.get("order_usd", 10))
         self.dry_run = bool(self.config.get("dry_run"))
         self.max_pos = Decimal(self.config.get("max_position_usd", 100))
+        # 役割: decision 側が参照する self.max_position_usd を必ず初期化して、未設定(inf)にならないようにする
+        self.max_position_usd = self.max_pos
         self.fair_feed = self.config.get("fair_feed", "indexPrices")
         self.testnet = bool(self.config.get("testnet"))
         self.max_daily_orders = int(self.config.get("max_daily_orders", 500))
@@ -1279,12 +1325,44 @@ class PFPLStrategy:
                 if (raw_usd is not None and raw_usd > 0 and usd is not None)
                 else None
             )
+            # 役割: cap_ratio（=usd/raw_usd）で潰された結果「実効USD(target_usd)」が、どの変数（edge/d_abs等）由来かを同じログ行で特定する
+            _target_usd = float(raw_usd) * float(cap_ratio) if (cap_ratio is not None and raw_usd is not None) else None
+            _usd_ratio = (float(usd) / float(raw_usd)) if (raw_usd is not None and raw_usd > 0) else None
+            _size_ratio = (float(size) / float(raw_size)) if (raw_size is not None and raw_size > 0) else None
+
+            _top = ""
+            if _target_usd is not None:
+                _near = []
+                for _k, _v in locals().items():
+                    if _k.startswith("_"):
+                        continue
+                    if _k in ("usd", "raw_usd", "order_usd", "cap_ratio", "size", "raw_size", "limit_px", "mid", "min_usd"):
+                        continue
+                    if isinstance(_v, bool):
+                        continue
+                    try:
+                        _vf = float(_v)
+                    except Exception:
+                        continue
+                    if abs(_vf) > 1.0e6:
+                        continue
+                    _near.append((abs(_vf - _target_usd), _k, _vf))
+
+                _near.sort(key=lambda x: x[0])
+                _top = ", ".join([f"{k}={v} (Δ={d:.6g})" for d, k, v in _near[:10]])
+
             logger.debug(
-                "SIZING_LIMITERS build_id=%s loc=%s:%s cap_ratio=%s qty_tick=%s max_order_usd=%s max_trade_usd=%s max_order_qty=%s max_trade_qty=%s size_scale=%s risk_scale=%s remaining_usd=%s remaining_qty=%s",
+                "SIZING_LIMITERS build_id=%s loc=%s:%s cap_ratio=%s usd_ratio=%s size_ratio=%s raw_usd=%s usd=%s target_usd=%s target_top=%s qty_tick=%s max_order_usd=%s max_trade_usd=%s max_order_qty=%s max_trade_qty=%s size_scale=%s risk_scale=%s remaining_usd=%s remaining_qty=%s",
                 PFPL_STRATEGY_BUILD_ID,
                 __file__,
-                _safe_lineno(),
+                inspect.currentframe().f_lineno,
                 cap_ratio,
+                _usd_ratio,
+                _size_ratio,
+                raw_usd,
+                usd,
+                _target_usd,
+                _top,
                 locals().get("qty_tick") or locals().get("qty_step") or locals().get("sz_tick"),
                 locals().get("max_order_usd") or locals().get("order_cap_usd") or locals().get("cap_usd"),
                 locals().get("max_trade_usd") or locals().get("trade_cap_usd"),
@@ -1416,13 +1494,65 @@ class PFPLStrategy:
                     [f"{an}/{bn}={rv:.6g} (Δ={d:.6g})" for d, an, av, bn, bv, rv in _ratio_hits[:8]]
                 )
                 logger.debug("SIZING_RATIO_MATCH cap_ratio=%s top=%s", cap_ratio, _top_ratio)
-            logger.debug(
-                "size %.4f USD %.2f < min_usd %.2f → skip",
-                size,
-                size * mid_dec,
-                self.min_usd,
-            )
-            return
+            # 役割: raw_usd(=本来の10USD)は min_usd を満たすのに、pos_limit 等で usd が極小(dust)に縮んで min_usd を割るケースを
+            #       「min_usd が原因」ではなく「残枠(dust)が原因」として扱い、ログの誤誘導を防ぐ
+            if usd < min_usd:
+                _raw_usd_f = float(raw_usd) if raw_usd is not None else None
+                _usd_f = float(usd) if usd is not None else None
+                _cap_ratio = (
+                    (_usd_f / _raw_usd_f)
+                    if (_raw_usd_f is not None and _raw_usd_f > 0 and _usd_f is not None)
+                    else None
+                )
+
+                # pos_limit 文脈の値が取れるなら「残枠(dust)」を推定して出す（取れなければ None のままでもOK）
+                _poslimit_max_abs_pos = locals().get("pos_limit_max_abs_pos") or locals().get("max_abs_pos")
+                _poslimit_proj_abs_pos = locals().get("pos_limit_proj_abs_pos") or locals().get("proj_abs_pos")
+                _paper_pos = locals().get("paper_pos") or locals().get("pos") or locals().get("paper_position")
+
+                _cur_abs_pos = abs(float(_paper_pos)) if _paper_pos is not None else None
+                _max_abs_pos = float(_poslimit_max_abs_pos) if _poslimit_max_abs_pos is not None else None
+                _proj_abs_pos = float(_poslimit_proj_abs_pos) if _poslimit_proj_abs_pos is not None else None
+
+                _remaining_qty = (
+                    (_max_abs_pos - _cur_abs_pos)
+                    if (_max_abs_pos is not None and _cur_abs_pos is not None)
+                    else None
+                )
+                _remaining_usd = (
+                    (float(mid) * _remaining_qty) if (_remaining_qty is not None and mid is not None) else None
+                )
+
+                _increasing = (
+                    _proj_abs_pos is not None
+                    and _cur_abs_pos is not None
+                    and _proj_abs_pos > _cur_abs_pos + 1e-12
+                )
+                _looks_like_poslimit_dust = (
+                    (_raw_usd_f is not None and _raw_usd_f >= float(min_usd))
+                    and (_cap_ratio is not None and _cap_ratio < 0.999)
+                    and (_increasing or _proj_abs_pos is None)
+                    and (_max_abs_pos is not None)
+                )
+
+                if _looks_like_poslimit_dust:
+                    logger.debug(
+                        "pos_limit dust -> skip: raw_usd=%s usd=%s cap_ratio=%s remaining_usd=%s remaining_qty=%s cur_abs_pos=%s max_abs_pos=%s proj_abs_pos=%s min_usd=%s",
+                        raw_usd,
+                        usd,
+                        _cap_ratio,
+                        _remaining_usd,
+                        _remaining_qty,
+                        _cur_abs_pos,
+                        _max_abs_pos,
+                        _proj_abs_pos,
+                        min_usd,
+                    )
+                    return None
+
+                # それ以外は通常の min_usd スキップ（本当に小さい注文）
+                logger.debug(f"size {size:.4f} USD {usd:.2f} < min_usd {min_usd:.2f} → skip")
+                return None
 
         # ⑧ 建玉超過チェック（方向込み + 自動切り詰め）
         # 役割:
@@ -1506,12 +1636,44 @@ class PFPLStrategy:
                 if (raw_usd is not None and raw_usd > 0 and usd is not None)
                 else None
             )
+            # 役割: cap_ratio（=usd/raw_usd）で潰された結果「実効USD(target_usd)」が、どの変数（edge/d_abs等）由来かを同じログ行で特定する
+            _target_usd = float(raw_usd) * float(cap_ratio) if (cap_ratio is not None and raw_usd is not None) else None
+            _usd_ratio = (float(usd) / float(raw_usd)) if (raw_usd is not None and raw_usd > 0) else None
+            _size_ratio = (float(size) / float(raw_size)) if (raw_size is not None and raw_size > 0) else None
+
+            _top = ""
+            if _target_usd is not None:
+                _near = []
+                for _k, _v in locals().items():
+                    if _k.startswith("_"):
+                        continue
+                    if _k in ("usd", "raw_usd", "order_usd", "cap_ratio", "size", "raw_size", "limit_px", "mid", "min_usd"):
+                        continue
+                    if isinstance(_v, bool):
+                        continue
+                    try:
+                        _vf = float(_v)
+                    except Exception:
+                        continue
+                    if abs(_vf) > 1.0e6:
+                        continue
+                    _near.append((abs(_vf - _target_usd), _k, _vf))
+
+                _near.sort(key=lambda x: x[0])
+                _top = ", ".join([f"{k}={v} (Δ={d:.6g})" for d, k, v in _near[:10]])
+
             logger.debug(
-                "SIZING_LIMITERS build_id=%s loc=%s:%s cap_ratio=%s qty_tick=%s max_order_usd=%s max_trade_usd=%s max_order_qty=%s max_trade_qty=%s size_scale=%s risk_scale=%s remaining_usd=%s remaining_qty=%s",
+                "SIZING_LIMITERS build_id=%s loc=%s:%s cap_ratio=%s usd_ratio=%s size_ratio=%s raw_usd=%s usd=%s target_usd=%s target_top=%s qty_tick=%s max_order_usd=%s max_trade_usd=%s max_order_qty=%s max_trade_qty=%s size_scale=%s risk_scale=%s remaining_usd=%s remaining_qty=%s",
                 PFPL_STRATEGY_BUILD_ID,
                 __file__,
-                _safe_lineno(),
+                inspect.currentframe().f_lineno,
                 cap_ratio,
+                _usd_ratio,
+                _size_ratio,
+                raw_usd,
+                usd,
+                _target_usd,
+                _top,
                 locals().get("qty_tick") or locals().get("qty_step") or locals().get("sz_tick"),
                 locals().get("max_order_usd") or locals().get("order_cap_usd") or locals().get("cap_usd"),
                 locals().get("max_trade_usd") or locals().get("trade_cap_usd"),
@@ -1643,13 +1805,65 @@ class PFPLStrategy:
                     [f"{an}/{bn}={rv:.6g} (Δ={d:.6g})" for d, an, av, bn, bv, rv in _ratio_hits[:8]]
                 )
                 logger.debug("SIZING_RATIO_MATCH cap_ratio=%s top=%s", cap_ratio, _top_ratio)
-            logger.debug(
-                "size %.4f USD %.2f < min_usd %.2f → skip",
-                float(size),
-                float(size * mid_dec),
-                float(self.min_usd),
-            )
-            return
+            # 役割: raw_usd(=本来の10USD)は min_usd を満たすのに、pos_limit 等で usd が極小(dust)に縮んで min_usd を割るケースを
+            #       「min_usd が原因」ではなく「残枠(dust)が原因」として扱い、ログの誤誘導を防ぐ
+            if usd < min_usd:
+                _raw_usd_f = float(raw_usd) if raw_usd is not None else None
+                _usd_f = float(usd) if usd is not None else None
+                _cap_ratio = (
+                    (_usd_f / _raw_usd_f)
+                    if (_raw_usd_f is not None and _raw_usd_f > 0 and _usd_f is not None)
+                    else None
+                )
+
+                # pos_limit 文脈の値が取れるなら「残枠(dust)」を推定して出す（取れなければ None のままでもOK）
+                _poslimit_max_abs_pos = locals().get("pos_limit_max_abs_pos") or locals().get("max_abs_pos")
+                _poslimit_proj_abs_pos = locals().get("pos_limit_proj_abs_pos") or locals().get("proj_abs_pos")
+                _paper_pos = locals().get("paper_pos") or locals().get("pos") or locals().get("paper_position")
+
+                _cur_abs_pos = abs(float(_paper_pos)) if _paper_pos is not None else None
+                _max_abs_pos = float(_poslimit_max_abs_pos) if _poslimit_max_abs_pos is not None else None
+                _proj_abs_pos = float(_poslimit_proj_abs_pos) if _poslimit_proj_abs_pos is not None else None
+
+                _remaining_qty = (
+                    (_max_abs_pos - _cur_abs_pos)
+                    if (_max_abs_pos is not None and _cur_abs_pos is not None)
+                    else None
+                )
+                _remaining_usd = (
+                    (float(mid) * _remaining_qty) if (_remaining_qty is not None and mid is not None) else None
+                )
+
+                _increasing = (
+                    _proj_abs_pos is not None
+                    and _cur_abs_pos is not None
+                    and _proj_abs_pos > _cur_abs_pos + 1e-12
+                )
+                _looks_like_poslimit_dust = (
+                    (_raw_usd_f is not None and _raw_usd_f >= float(min_usd))
+                    and (_cap_ratio is not None and _cap_ratio < 0.999)
+                    and (_increasing or _proj_abs_pos is None)
+                    and (_max_abs_pos is not None)
+                )
+
+                if _looks_like_poslimit_dust:
+                    logger.debug(
+                        "pos_limit dust -> skip: raw_usd=%s usd=%s cap_ratio=%s remaining_usd=%s remaining_qty=%s cur_abs_pos=%s max_abs_pos=%s proj_abs_pos=%s min_usd=%s",
+                        raw_usd,
+                        usd,
+                        _cap_ratio,
+                        _remaining_usd,
+                        _remaining_qty,
+                        _cur_abs_pos,
+                        _max_abs_pos,
+                        _proj_abs_pos,
+                        min_usd,
+                    )
+                    return None
+
+                # それ以外は通常の min_usd スキップ（本当に小さい注文）
+                logger.debug(f"size {size:.4f} USD {usd:.2f} < min_usd {min_usd:.2f} → skip")
+                return None
 
         # 重要: 以降の注文サイズは size を使う（order_usd/limit_px を再計算しない）
 
