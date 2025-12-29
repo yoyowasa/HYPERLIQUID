@@ -27,6 +27,9 @@ def strategy(monkeypatch: pytest.MonkeyPatch) -> Iterator[PFPLStrategy]:
     # 役割: best_bid/best_ask が無いテスト環境でも spread ログの表示値を固定する
     strat.config["spread_threshold"] = "0"
     strat.config["spread_threshold_bps"] = "0"
+    strat.config["max_position_usd"] = "1000000"
+    strat.max_pos = Decimal("1000000")
+    strat.max_position_usd = strat.max_pos
     strat.mid = Decimal("100")
     yield strat
 
