@@ -1327,7 +1327,11 @@ class PFPLStrategy:
             )
             # 役割: cap_ratio（=usd/raw_usd）で潰された結果「実効USD(target_usd)」が、どの変数（edge/d_abs等）由来かを同じログ行で特定する
             _target_usd = float(raw_usd) * float(cap_ratio) if (cap_ratio is not None and raw_usd is not None) else None
-            _usd_ratio = (float(usd) / float(raw_usd)) if (raw_usd is not None and raw_usd > 0) else None
+            _usd_ratio = (
+                (float(usd) / float(raw_usd))
+                if (raw_usd is not None and raw_usd > 0 and usd is not None)
+                else None
+            )
             _size_ratio = (float(size) / float(raw_size)) if (raw_size is not None and raw_size > 0) else None
 
             _top = ""
@@ -1355,7 +1359,7 @@ class PFPLStrategy:
                 "SIZING_LIMITERS build_id=%s loc=%s:%s cap_ratio=%s usd_ratio=%s size_ratio=%s raw_usd=%s usd=%s target_usd=%s target_top=%s qty_tick=%s max_order_usd=%s max_trade_usd=%s max_order_qty=%s max_trade_qty=%s size_scale=%s risk_scale=%s remaining_usd=%s remaining_qty=%s",
                 PFPL_STRATEGY_BUILD_ID,
                 __file__,
-                inspect.currentframe().f_lineno,
+                _safe_lineno(),
                 cap_ratio,
                 _usd_ratio,
                 _size_ratio,
@@ -1496,7 +1500,7 @@ class PFPLStrategy:
                 logger.debug("SIZING_RATIO_MATCH cap_ratio=%s top=%s", cap_ratio, _top_ratio)
             # 役割: raw_usd(=本来の10USD)は min_usd を満たすのに、pos_limit 等で usd が極小(dust)に縮んで min_usd を割るケースを
             #       「min_usd が原因」ではなく「残枠(dust)が原因」として扱い、ログの誤誘導を防ぐ
-            if usd < min_usd:
+            if (usd is not None) and (min_usd is not None) and (usd < min_usd):
                 _raw_usd_f = float(raw_usd) if raw_usd is not None else None
                 _usd_f = float(usd) if usd is not None else None
                 _cap_ratio = (
@@ -1638,7 +1642,11 @@ class PFPLStrategy:
             )
             # 役割: cap_ratio（=usd/raw_usd）で潰された結果「実効USD(target_usd)」が、どの変数（edge/d_abs等）由来かを同じログ行で特定する
             _target_usd = float(raw_usd) * float(cap_ratio) if (cap_ratio is not None and raw_usd is not None) else None
-            _usd_ratio = (float(usd) / float(raw_usd)) if (raw_usd is not None and raw_usd > 0) else None
+            _usd_ratio = (
+                (float(usd) / float(raw_usd))
+                if (raw_usd is not None and raw_usd > 0 and usd is not None)
+                else None
+            )
             _size_ratio = (float(size) / float(raw_size)) if (raw_size is not None and raw_size > 0) else None
 
             _top = ""
@@ -1666,7 +1674,7 @@ class PFPLStrategy:
                 "SIZING_LIMITERS build_id=%s loc=%s:%s cap_ratio=%s usd_ratio=%s size_ratio=%s raw_usd=%s usd=%s target_usd=%s target_top=%s qty_tick=%s max_order_usd=%s max_trade_usd=%s max_order_qty=%s max_trade_qty=%s size_scale=%s risk_scale=%s remaining_usd=%s remaining_qty=%s",
                 PFPL_STRATEGY_BUILD_ID,
                 __file__,
-                inspect.currentframe().f_lineno,
+                _safe_lineno(),
                 cap_ratio,
                 _usd_ratio,
                 _size_ratio,
@@ -1807,7 +1815,7 @@ class PFPLStrategy:
                 logger.debug("SIZING_RATIO_MATCH cap_ratio=%s top=%s", cap_ratio, _top_ratio)
             # 役割: raw_usd(=本来の10USD)は min_usd を満たすのに、pos_limit 等で usd が極小(dust)に縮んで min_usd を割るケースを
             #       「min_usd が原因」ではなく「残枠(dust)が原因」として扱い、ログの誤誘導を防ぐ
-            if usd < min_usd:
+            if (usd is not None) and (min_usd is not None) and (usd < min_usd):
                 _raw_usd_f = float(raw_usd) if raw_usd is not None else None
                 _usd_f = float(usd) if usd is not None else None
                 _cap_ratio = (
