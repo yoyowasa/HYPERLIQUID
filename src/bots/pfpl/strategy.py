@@ -375,7 +375,24 @@ class PFPLStrategy:
                     e,
                 )
             else:
-                _cur_pos_usd = abs(_paper_pos) * _mid
+                # 役割: dust 判定の「現在建玉USD」は paper_pos*mid ではなく、refresh_position が更新した pos_usd を優先して使う（stale 対策）
+                _cur_pos_usd = None
+                for _v in (
+                    locals().get("pos_usd"),
+                    locals().get("paper_pos_usd"),
+                    getattr(self, "pos_usd", None),
+                    getattr(self, "paper_pos_usd", None),
+                ):
+                    if _v is None:
+                        continue
+                    try:
+                        _cur_pos_usd = float(_v)
+                        break
+                    except Exception:
+                        continue
+
+                if _cur_pos_usd is None:
+                    _cur_pos_usd = abs(_paper_pos) * _mid
                 _remaining_usd = _max_position_usd - _cur_pos_usd
 
                 # 役割: “増やす方向” だけを対象にする（減らす/クローズ方向は dust でも止めない）
@@ -385,7 +402,7 @@ class PFPLStrategy:
                 if _increasing and (_remaining_usd < _min_usd):
                     pos_ok = False
                     logger.debug(
-                        "pos_ok=False (pos_limit dust): remaining_usd=%s cur_pos_usd=%s max_position_usd=%s min_usd=%s paper_pos=%s mid=%s long=%s short=%s",
+                        "pos_ok=False (pos_limit dust) stage=order: remaining_usd=%s cur_pos_usd=%s max_position_usd=%s min_usd=%s paper_pos=%s mid=%s long=%s short=%s",
                         _remaining_usd,
                         _cur_pos_usd,
                         _max_position_usd,
@@ -395,6 +412,90 @@ class PFPLStrategy:
                         long,
                         short,
                     )
+
+        # 役割: decision 段階の pos_ok を「最終確定」する（dry_run では paper_pos を必ず使って残枠USD(dust)を判定）
+        try:
+            _min_usd = float(min_usd)
+            _mid = float(mid)
+        except Exception:
+            _min_usd = None
+            _mid = None
+
+        # 役割: max_position_usd は self.max_position_usd を優先（無ければ self.max_pos）
+        try:
+            _max_pos_usd = getattr(self, "max_position_usd", None)
+            if _max_pos_usd is None:
+                _max_pos_usd = getattr(self, "max_pos", None)
+            _max_pos_usd = float(_max_pos_usd) if _max_pos_usd is not None else None
+        except Exception:
+            _max_pos_usd = None
+
+        # 役割: long/short は locals から安全に拾う（無ければ False）
+        _long = bool(locals().get("long", False))
+        _short = bool(locals().get("short", False))
+
+        # 役割: dry_run 判定（属性名揺れに対応）
+        _is_dry = bool(
+            getattr(self, "dry_run", False)
+            or getattr(self, "is_dry_run", False)
+            or locals().get("dry_run", False)
+        )
+
+        # 役割: decision段階のdust判定で使う paper_pos を「下流(pos_limit/sizing)が参照している値」と揃える（local優先＋dry_run時にselfへ同期）
+        _paper_pos_val = None
+        for _v in (
+            locals().get("paper_pos"),           # 下流と同じローカル値を最優先
+            locals().get("pos"),
+            getattr(self, "paper_pos", None),    # フォールバック
+            getattr(self, "paper_position", None),
+        ):
+            if _v is None:
+                continue
+            try:
+                _paper_pos_val = float(_v)
+                break
+            except Exception:
+                continue
+
+        # 役割: dry_run のときは、以後の判定/ログ/処理がブレないよう self.paper_pos にも同期する
+        if _is_dry and (_paper_pos_val is not None):
+            try:
+                self.paper_pos = Decimal(str(_paper_pos_val))
+            except Exception:
+                pass
+
+        # 役割: 現在建玉USDの算出（dry_run は paper_pos*mid を必ず採用）
+        _cur_pos_usd = None
+        if _is_dry and (_paper_pos_val is not None) and (_mid is not None):
+            _cur_pos_usd = abs(_paper_pos_val) * _mid
+        else:
+            # live の場合は pos_usd を使う（無ければ 0 扱い）
+            try:
+                _cur_pos_usd = float(getattr(self, "pos_usd", 0.0) or 0.0)
+            except Exception:
+                _cur_pos_usd = 0.0
+
+        # 役割: 残枠が min_usd 未満(dust)なら、増やす方向の新規だけ pos_ok=False に落とす
+        if pos_ok and (_min_usd is not None) and (_max_pos_usd is not None) and (_paper_pos_val is not None) and (_mid is not None):
+            _remaining_usd = _max_pos_usd - _cur_pos_usd
+
+            # 役割: “増やす方向”だけを対象（減らす/クローズ方向は止めない）
+            _increasing = (_long and _paper_pos_val >= 0) or (_short and _paper_pos_val <= 0)
+
+            if _increasing and (_remaining_usd < _min_usd):
+                pos_ok = False
+                logger.debug(
+                    "pos_ok=False (pos_limit dust) stage=order: remaining_usd=%s cur_pos_usd=%s max_position_usd=%s min_usd=%s paper_pos=%s mid=%s long=%s short=%s dry_run=%s",
+                    _remaining_usd,
+                    _cur_pos_usd,
+                    _max_pos_usd,
+                    _min_usd,
+                    _paper_pos_val,
+                    _mid,
+                    _long,
+                    _short,
+                    _is_dry,
+                )
 
         logger.debug(
             "decision mid=%.2f fair=%.2f d_abs=%+.4f d_pct=%+.5f | "
@@ -1539,9 +1640,10 @@ class PFPLStrategy:
                     and (_max_abs_pos is not None)
                 )
 
+                # 役割: pos_limit 残枠(dust)が原因で min_usd を割ったケースは、decision と同じ書式で「pos_ok=False」として記録し、集計も一貫させる
                 if _looks_like_poslimit_dust:
                     logger.debug(
-                        "pos_limit dust -> skip: raw_usd=%s usd=%s cap_ratio=%s remaining_usd=%s remaining_qty=%s cur_abs_pos=%s max_abs_pos=%s proj_abs_pos=%s min_usd=%s",
+                        "pos_ok=False (pos_limit dust) stage=order raw_usd=%s usd=%s cap_ratio=%s remaining_usd=%s remaining_qty=%s cur_abs_pos=%s max_abs_pos=%s proj_abs_pos=%s min_usd=%s",
                         raw_usd,
                         usd,
                         _cap_ratio,
@@ -1856,7 +1958,7 @@ class PFPLStrategy:
 
                 if _looks_like_poslimit_dust:
                     logger.debug(
-                        "pos_limit dust -> skip: raw_usd=%s usd=%s cap_ratio=%s remaining_usd=%s remaining_qty=%s cur_abs_pos=%s max_abs_pos=%s proj_abs_pos=%s min_usd=%s",
+                        "pos_ok=False (pos_limit dust) stage=order raw_usd=%s usd=%s cap_ratio=%s remaining_usd=%s remaining_qty=%s cur_abs_pos=%s max_abs_pos=%s proj_abs_pos=%s min_usd=%s",
                         raw_usd,
                         usd,
                         _cap_ratio,

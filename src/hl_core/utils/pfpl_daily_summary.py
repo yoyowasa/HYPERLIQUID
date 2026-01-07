@@ -40,6 +40,13 @@ _DRYRUN_RE = re.compile(r"\[DRY-RUN\]", re.IGNORECASE)
 _DRYRUN_SIDE_RE = re.compile(r"\[DRY-RUN\]\s+(BUY|SELL)\b", re.IGNORECASE)
 
 _BOOT_RE = re.compile(r"\bboot\b\s*[:=]", re.IGNORECASE)
+# 役割: skip理由（min_usd / pos_limit dust / pos_limit skip / decision段階dust）をログから数えるための正規表現
+_MIN_USD_SKIP_RE = re.compile(r"<\s*min_usd\b.*?\bskip\b", re.IGNORECASE)
+# pos_limit dust により order を出さない（新ログ形式）行を検出する
+_POS_LIMIT_DUST_SKIP_RE = re.compile(r"\bpos_ok=False\s*\(pos_limit dust\)\s*stage\s*=\s*order\b", re.IGNORECASE)
+# 役割: decision段階の dust ブロック（"pos_ok=False (pos_limit dust): ..."）を確実にカウントする
+_POS_OK_DUST_FALSE_RE = re.compile(r"pos_ok=False\s*\(pos_limit dust\)", re.IGNORECASE)
+_POS_LIMIT_SKIP_RE = re.compile(r"\bpos_limit skip\b|\bposition limit\b.*\breached\b", re.IGNORECASE)
 
 
 @dataclass
@@ -61,6 +68,11 @@ class DailyRow:
     err: int = 0
     boot: int = 0
     unique_pid_cnt: int = 0
+    # 役割: スキップ理由の内訳（ログからカウント）
+    min_usd_skip: int = 0
+    pos_limit_dust_skip: int = 0
+    pos_ok_dust_false: int = 0
+    pos_limit_skip: int = 0
 
     diff_mean_mid_fair: Optional[float] = None
 
@@ -224,6 +236,11 @@ def summarize_file(path: Path) -> DailyRow:
     err = 0
     boot = 0
     pids: set[str] = set()
+    # 役割: スキップ理由カウンタ（日別）
+    min_usd_skip = 0
+    pos_limit_dust_skip = 0
+    pos_ok_dust_false = 0
+    pos_limit_skip = 0
 
     diff_sum = 0.0
     diff_cnt = 0
@@ -251,6 +268,15 @@ def summarize_file(path: Path) -> DailyRow:
                 boot += 1
 
             payload = _try_parse_dict_from_message(msg) or {}
+            # 役割: 1行ログからスキップ理由を拾って日別カウンタを増やす
+            if _MIN_USD_SKIP_RE.search(msg):
+                min_usd_skip += 1
+            if _POS_LIMIT_DUST_SKIP_RE.search(msg):
+                pos_limit_dust_skip += 1
+            if _POS_OK_DUST_FALSE_RE.search(msg):
+                pos_ok_dust_false += 1
+            if _POS_LIMIT_SKIP_RE.search(msg):
+                pos_limit_skip += 1
 
             # dry-run のサイド（BUY/SELL）を別でカウント（ORDER_STATUS に side が無いケースが多い）
             m_dry = _DRYRUN_SIDE_RE.search(msg)
@@ -348,6 +374,11 @@ def summarize_file(path: Path) -> DailyRow:
         err=err,
         boot=boot,
         unique_pid_cnt=len(pids),
+        # 役割: スキップ理由（ログから集計した値）
+        min_usd_skip=min_usd_skip,
+        pos_limit_dust_skip=pos_limit_dust_skip,
+        pos_ok_dust_false=pos_ok_dust_false,
+        pos_limit_skip=pos_limit_skip,
         diff_mean_mid_fair=diff_mean,
         eod_ts=eod.eod_ts,
         eod_paper_pos=eod.paper_pos,
@@ -383,6 +414,10 @@ def _row_to_csv(row: DailyRow) -> str:
         str(row.err),
         str(row.boot),
         str(row.unique_pid_cnt),
+        str(row.min_usd_skip),
+        str(row.pos_limit_dust_skip),
+        str(row.pos_ok_dust_false),
+        str(row.pos_limit_skip),
         row.eod_ts or "",
         _fmt_float(row.eod_paper_pos, 10),
         _fmt_float(row.eod_mid, 6),
@@ -421,11 +456,8 @@ def main(argv: list[str]) -> int:
         print("no files")
         return 1
 
-    print(
-        "file,diff_mean(mid-fair),decision,spread_false,ALL_OK+signal,orders,"
-        "paper_buy,paper_sell,realized_sum,WARNING,ERROR,boot_cnt,unique_pid_cnt,"
-        "eod_ts,eod_paper_pos,eod_mid,eod_pos_usd,eod_unrealized,eod_realized_cum,eod_total_pnl_cum"
-    )
+    # 役割: 日別サマリCSVのヘッダ（スキップ理由列を追加）
+    print("file,diff_mean(mid-fair),decision,spread_false,ALL_OK+signal,orders,paper_buy,paper_sell,realized_sum,WARNING,ERROR,boot_cnt,unique_pid_cnt,min_usd_skip,pos_limit_dust_skip,pos_ok_dust_false,pos_limit_skip,eod_ts,eod_paper_pos,eod_mid,eod_pos_usd,eod_unrealized,eod_realized_cum,eod_total_pnl_cum")
 
     total = DailyRow(file="TOTAL")
     diff_sum = 0.0
@@ -446,6 +478,11 @@ def main(argv: list[str]) -> int:
         total.warn += r.warn
         total.err += r.err
         total.boot += r.boot
+        # 役割: TOTAL にスキップ理由カウンタを足し込む
+        total.min_usd_skip += r.min_usd_skip
+        total.pos_limit_dust_skip += r.pos_limit_dust_skip
+        total.pos_ok_dust_false += r.pos_ok_dust_false
+        total.pos_limit_skip += r.pos_limit_skip
 
         if r.diff_mean_mid_fair is not None and r.decision > 0:
             # 役割:
