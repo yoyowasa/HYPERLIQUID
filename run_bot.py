@@ -261,7 +261,6 @@ async def main() -> None:
         except Exception:
             pass
     return
-    await asyncio.Event().wait()  # 常駐
 
 
 if __name__ == "__main__":
